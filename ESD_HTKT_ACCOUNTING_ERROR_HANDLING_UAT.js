@@ -1,6 +1,7 @@
 var logger = getLog('ESD_HTKT_ACCOUNTING_ERROR_HANDLING');
 
 var ACCOUNTING_STATUS = {
+    CREATED: "CREATED",
     ERROR: "ERROR",
     IN_QUEUE: "IN_QUEUE",
     COMPLETED: "COMPLETED"
@@ -633,8 +634,47 @@ function getLatestAccountingCheckedTime(requestId) {
     return result;
 }
 
-//getLatestAccountingCheckedTime("TT.100.26.0000090");
+// Đọc kết quả của chính requestId vừa thử lại; không dùng response của lần cũ.
+function getAccountingRetryFailureMessage(requestId) {
+    var fallback = "Gửi lại giao dịch sang hệ thống tích hợp thất bại";
+    var retryRec = null;
 
+    try {
+        retryRec = new SCFile("esdHTKTaccountingInformation", SCFILE_READONLY);
+        if (retryRec.doSelect('request.id="' + escapeQueryValue(requestId) + '"') !== RC_SUCCESS) {
+            return fallback + ": không tìm thấy bản ghi theo requestId mới";
+        }
+
+        var status = String(retryRec["status"] || "").trim().toUpperCase();
+        if (status === ACCOUNTING_STATUS.CREATED) {
+            return fallback + ": chưa nhận được hoặc chưa lưu được phản hồi của lần thử lại";
+        }
+
+        var responseText = String(retryRec["response"] || "").trim();
+        if (responseText) {
+            try {
+                var response = JSON.parse(responseText);
+                var responseMessage = String(
+                    (response && response.message) ||
+                    (response && response.status && response.status.detail) ||
+                    ""
+                ).trim();
+                if (responseMessage) return responseMessage;
+            } catch (eResponse) {}
+        }
+
+        var recordMessage = String(retryRec["message"] || "").trim();
+        return recordMessage || fallback;
+    } catch (eRead) {
+        return fallback + ": không đọc được kết quả của lần thử lại";
+    } finally {
+        try {
+            if (retryRec) retryRec.doClose();
+        } catch (eClose) {}
+    }
+}
+
+//getLatestAccountingCheckedTime("TT.100.26.0000090");
 
 /**
  * Retry gửi hạch toán lỗi
@@ -733,30 +773,12 @@ function retryAccountingErrorsResult(input) {
                 accountingInfo["prepayment.id"] || row.prepaymentId || ""
             ).trim();
 
-            // Cấu hình mã mock theo loại giao dịch
-            var mockCodeByType = {
-                AP: "0",
-                GL: "0",
-                CORE: "0"
-            };
-
-            var mockMessageByCode = {
-                "0": "Thành công (Giả lập)",
-                "1": "Thất bại (Giả lập)",
-                "1001": "Lỗi server (Giả lập)",
-                "98": "Time out call sang XES (Giả lập)",
-                "202": "Lỗi kết nối database (Giả lập)",
-                "100": "Lỗi dữ liệu. Mã lỗi hệ thống chung (Giả lập)"
-            };
-
-            // Bước 8: Kiểm tra loại giao dịch và tạm comment API thật
-            if (accountingType === "AP") {
-                // retrySuccess = lib.ESD_HTKT_ACCOUNTING_UTILS.callApiAp(accountingInfo);
-            } else if (accountingType === "GL") {
-                // retrySuccess = lib.ESD_HTKT_ACCOUNTING_UTILS.callApiGl(accountingInfo);
-            } else if (accountingType === "CORE") {
-                // retrySuccess = lib.ESD_HTKT_ACCOUNTING_UTILS.callApiCore(accountingInfo);
-            } else {
+            // Bước 8: Chỉ cho phép các loại giao dịch có hàm tích hợp thật.
+            if (
+                accountingType !== "AP" &&
+                accountingType !== "GL" &&
+                accountingType !== "CORE"
+            ) {
                 result.failed++;
                 result.errors.push({
                     requestId: targetRequestId,
@@ -806,40 +828,13 @@ function retryAccountingErrorsResult(input) {
                 currentPayload.requestId = newRequestId;
             }
 
-            // Bước 10: Chọn mã mock; ưu tiên mockCode do FE truyền lên
-            var mockCode = String(
-                row.mockCode || mockCodeByType[accountingType] || "100"
-            ).trim();
-
-            var mockDetail = mockMessageByCode[mockCode] ||
-                ("Mã phản hồi không xác định: " + mockCode);
-
-            var retrySuccess = mockCode === "0";
-            var mockResponse;
-
-            // MOCK RIÊNG AP THÀNH CÔNG: mô phỏng cấu trúc response OGL.
-            if (accountingType === "AP" && retrySuccess) {
-                mockResponse = {
-                    success: true,
-                    data: {
-                        requestId: "69bf39c1-83f0-488d-8e9e-0b62dc87c4f1",
-                        transactionId: "8d756c37-4e64-4873-9f39-4da13a2a0469",
-                        referenceId: "dntt",
-                        status: "C",
-                        errorCode: null,
-                        batchName: "TH.DUY_02062026_11_01",
-                        invoiceNumber: "TH.DUY_02062026_11_01_01",
-                        paymentNumber: 114299333
-                    }
-                };
-            } else {
-                mockResponse = {
-                    status: {
-                        code: mockCode,
-                        detail: mockDetail
-                    }
-                };
-            }
+            var retryAccountingInfo = {
+                "request.id": newRequestId,
+                "prepayment.id": retryPrepaymentId,
+                type: accountingType,
+                "sub.type": accountingInfo["sub.type"],
+                data: accountingType === "CORE" ? previousData : JSON.stringify(currentPayload)
+            };
 
             // Luu snapshot cu va lien ket voi ban ghi xu ly loi truoc khi retry.
             var retryHistoryResult = createAccountingRetryHistory(
@@ -861,32 +856,21 @@ function retryAccountingErrorsResult(input) {
                 continue;
             }
 
-            // Bước 11: Lưu kết quả mock vào cùng bản ghi.
+            // Bước 10: Lưu bản ghi trước khi gọi API để callApi* query lại đúng request.id.
             accountingInfo["request.id"] = newRequestId;
-            accountingInfo["data"] = accountingType === "CORE" ? previousData : JSON.stringify(currentPayload);
-            accountingInfo["response"] = JSON.stringify(mockResponse);
-            accountingInfo["message"] = retrySuccess ? "" : mockDetail;
-            accountingInfo["status"] = retrySuccess
-                ? ACCOUNTING_STATUS.COMPLETED
-                : ACCOUNTING_STATUS.ERROR;
+            accountingInfo["data"] = retryAccountingInfo.data;
+            accountingInfo["response"] = "";
+            accountingInfo["message"] = "";
+            accountingInfo["status"] = ACCOUNTING_STATUS.CREATED;
+            accountingInfo["transaction.id"] = "";
+            accountingInfo["host.res.num"] = "";
+            accountingInfo["ref.id"] = "";
+            accountingInfo["ap.code"] = "";
+            accountingInfo["batch.name"] = "";
+            accountingInfo["payment.number"] = "";
             var retryCheckedTime = system.functions.tod();
             accountingInfo["checked.time"] = retryCheckedTime;
             accountingInfo["updated.at"] = retryCheckedTime;
-
-            // Mock ma tham chieu khi thu lai thanh cong tren SIT.
-            if (retrySuccess) {
-                accountingInfo["host.res.num"] = "ABCXYZ";
-            }
-
-            // Map dữ liệu mock AP sang các field kết quả; không dùng
-            // mockResponse.data.requestId để ghi đè request.id của bản ghi.
-            if (accountingType === "AP" && retrySuccess && mockResponse.data) {
-                accountingInfo["transaction.id"] = mockResponse.data.transactionId;
-                accountingInfo["ref.id"] = mockResponse.data.referenceId;
-                accountingInfo["batch.name"] = mockResponse.data.batchName;
-                accountingInfo["ap.code"] = mockResponse.data.invoiceNumber;
-                accountingInfo["payment.number"] = mockResponse.data.paymentNumber;
-            }
 
             var updateRc = accountingInfo.doUpdate();
 
@@ -895,9 +879,35 @@ function retryAccountingErrorsResult(input) {
                 result.errors.push({
                     requestId: targetRequestId,
                     type: accountingType,
-                    message: "Không lưu được kết quả giả lập"
+                    message: "Không lưu được bản ghi trước khi thử lại"
                 });
                 continue;
+            }
+
+            // Đóng SCFile hiện tại để tránh giữ record trong lúc callApi*
+            // mở một SCFile khác và cập nhật cùng bản ghi.
+            try {
+                accountingInfo.doClose();
+            } catch (eCloseBeforeRetry) {}
+            accountingInfo = null;
+
+            // Bước 11: Gọi luồng tích hợp thật. Phần mock đã được vô hiệu hóa.
+            // var retrySuccess = mockCode === "0";
+            // accountingInfo["response"] = JSON.stringify(mockResponse);
+            var retrySuccess = false;
+
+            if (accountingType === "AP") {
+                retrySuccess = lib.ESD_HTKT_ACCOUNTING_UTILS.callApiAp(
+                    retryAccountingInfo
+                );
+            } else if (accountingType === "GL") {
+                retrySuccess = lib.ESD_HTKT_ACCOUNTING_UTILS.callApiGl(
+                    retryAccountingInfo
+                );
+            } else if (accountingType === "CORE") {
+                retrySuccess = lib.ESD_HTKT_ACCOUNTING_UTILS.callApiCore(
+                    retryAccountingInfo
+                );
             }
 
             // Bước 13: Ghi lịch sử thử lại tại màn hình xử lý lỗi và phiếu gốc.
@@ -906,8 +916,10 @@ function retryAccountingErrorsResult(input) {
             ).trim();
             var retryActivityLines = [
                 "Thử lại giao dịch " + accountingType,
-                "Kết quả thử lại: " +
-                    (retrySuccess ? "Thành công (Giả lập)" : mockDetail)
+                "Kết quả gửi lại: " +
+                    (retrySuccess
+                        ? "Đã gửi sang hệ thống tích hợp"
+                        : "Gửi sang hệ thống tích hợp thất bại")
             ];
             var retryActivityDescription = retryActivityLines.join("\n");
 
@@ -948,7 +960,7 @@ function retryAccountingErrorsResult(input) {
                 }
             } catch (eRetryActivity) {
 //                print(
-//                    "[retryAccountingErrorsResult SIT] Không ghi được lịch sử thử lại: " +
+//                    "[retryAccountingErrorsResult] Không ghi được lịch sử thử lại: " +
 //                    String(eRetryActivity)
 //                );
             }
@@ -959,10 +971,9 @@ function retryAccountingErrorsResult(input) {
             } else {
                 result.failed++;
                 result.errors.push({
-                    requestId: targetRequestId,
+                    requestId: newRequestId,
                     type: accountingType,
-                    code: mockCode,
-                    message: mockDetail
+                    message: getAccountingRetryFailureMessage(newRequestId)
                 });
             }
 
@@ -992,7 +1003,10 @@ function retryAccountingErrorsResult(input) {
     }
 
     // Trả kết quả cuối cùng
-    result.success = result.failed === 0;
+    result.success = result.failed === 0 && result.blocked === 0;
+    if (!result.success && result.errors.length > 0) {
+        result.message = result.errors[0].message;
+    }
 
     return result;
 }
@@ -1998,6 +2012,8 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         // Giữ đúng nguồn dữ liệu: updated.at của bản ghi accountingInformation
         // vừa phát sinh trigger. Nếu trống thì bảng tổng hợp cũng để trống.
         updatedAt: newRec ? (newRec['updated.at'] || null) : null,
+        unitLv1: "",
+        unitLv2: "",
         requestUnitLv1: "",
         requestUnitLv2: "",
         paymentCreatedAt: null,
@@ -2010,8 +2026,13 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
             extraInfo.requestTypeLabel = detailRec['transaction.type'] || detailRec['transaction_type'] || "";
             extraInfo.contractCode = detailRec['contract.code'] || detailRec['contract_code'] || detailRec['contract_id'] || "";
             extraInfo.amount = Number(detailRec['amount'] || detailRec['total_amount_paid'] || 0);
+
             extraInfo.requestUnitLv1 = detailRec['unit.lv1'] || detailRec['unit_lv1'] || "";
             extraInfo.requestUnitLv2 = detailRec['unit.lv2'] || detailRec['unit_lv2'] || "";
+            var rawUnitLv1 = String(detailRec['unit_lv1'] || "");
+            var rawUnitLv2 = String(detailRec['unit_lv2'] || "");
+            extraInfo.unitLv1 = rawUnitLv1 ? Number(rawUnitLv1) : 0;
+            extraInfo.unitLv2 = rawUnitLv2 ? Number(rawUnitLv2) : 0;
             extraInfo.paymentCreatedAt = detailRec['created.at'];
             extraInfo.department = String(detailRec['department'] || "").trim();
         }
@@ -2055,6 +2076,7 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['total.trans'] = totalTrans;
         targetRec['total.error.trans'] = totalErrorTrans;
         targetRec['status'] = finalStatus;
+
         targetRec['request.type.label'] = extraInfo.requestTypeLabel;
         targetRec['contract.code'] = extraInfo.contractCode;
         targetRec['amount'] = extraInfo.amount;
@@ -2062,6 +2084,8 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['error.channel'] = extraInfo.errorChannel; // Đặt đúng kênh bị lỗi
         targetRec['updated.at'] = extraInfo.updatedAt;
         targetRec['payment.created.at'] = extraInfo.paymentCreatedAt;
+        targetRec['unit.lv1'] = extraInfo.unitLv1;
+        targetRec['unit.lv2'] = extraInfo.unitLv2;
         targetRec['request.unit.lv1'] = extraInfo.requestUnitLv1;
         targetRec['request.unit.lv2'] = extraInfo.requestUnitLv2;
         targetRec['department'] = extraInfo.department;
@@ -2085,6 +2109,7 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['status'] = finalStatus;
         targetRec['total.trans'] = totalTrans;
         targetRec['total.error.trans'] = totalErrorTrans;
+
         targetRec['request.type.label'] = extraInfo.requestTypeLabel;
         targetRec['contract.code'] = extraInfo.contractCode;
         targetRec['amount'] = extraInfo.amount;
@@ -2092,6 +2117,8 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['error.channel'] = extraInfo.errorChannel;
         targetRec['updated.at'] = extraInfo.updatedAt;
         targetRec['payment.created.at'] = extraInfo.paymentCreatedAt;
+        targetRec['unit.lv1'] = extraInfo.unitLv1;
+        targetRec['unit.lv2'] = extraInfo.unitLv2;
         targetRec['request.unit.lv1'] = extraInfo.requestUnitLv1;
         targetRec['request.unit.lv2'] = extraInfo.requestUnitLv2;
         targetRec['department'] = extraInfo.department;
