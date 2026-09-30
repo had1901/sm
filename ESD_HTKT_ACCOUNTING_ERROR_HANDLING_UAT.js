@@ -2012,8 +2012,6 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         // Giữ đúng nguồn dữ liệu: updated.at của bản ghi accountingInformation
         // vừa phát sinh trigger. Nếu trống thì bảng tổng hợp cũng để trống.
         updatedAt: newRec ? (newRec['updated.at'] || null) : null,
-        unitLv1: "",
-        unitLv2: "",
         requestUnitLv1: "",
         requestUnitLv2: "",
         paymentCreatedAt: null,
@@ -2026,13 +2024,8 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
             extraInfo.requestTypeLabel = detailRec['transaction.type'] || detailRec['transaction_type'] || "";
             extraInfo.contractCode = detailRec['contract.code'] || detailRec['contract_code'] || detailRec['contract_id'] || "";
             extraInfo.amount = Number(detailRec['amount'] || detailRec['total_amount_paid'] || 0);
-
             extraInfo.requestUnitLv1 = detailRec['unit.lv1'] || detailRec['unit_lv1'] || "";
             extraInfo.requestUnitLv2 = detailRec['unit.lv2'] || detailRec['unit_lv2'] || "";
-            var rawUnitLv1 = String(detailRec['unit_lv1'] || "");
-            var rawUnitLv2 = String(detailRec['unit_lv2'] || "");
-            extraInfo.unitLv1 = rawUnitLv1 ? Number(rawUnitLv1) : 0;
-            extraInfo.unitLv2 = rawUnitLv2 ? Number(rawUnitLv2) : 0;
             extraInfo.paymentCreatedAt = detailRec['created.at'];
             extraInfo.department = String(detailRec['department'] || "").trim();
         }
@@ -2076,7 +2069,6 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['total.trans'] = totalTrans;
         targetRec['total.error.trans'] = totalErrorTrans;
         targetRec['status'] = finalStatus;
-
         targetRec['request.type.label'] = extraInfo.requestTypeLabel;
         targetRec['contract.code'] = extraInfo.contractCode;
         targetRec['amount'] = extraInfo.amount;
@@ -2084,8 +2076,6 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['error.channel'] = extraInfo.errorChannel; // Đặt đúng kênh bị lỗi
         targetRec['updated.at'] = extraInfo.updatedAt;
         targetRec['payment.created.at'] = extraInfo.paymentCreatedAt;
-        targetRec['unit.lv1'] = extraInfo.unitLv1;
-        targetRec['unit.lv2'] = extraInfo.unitLv2;
         targetRec['request.unit.lv1'] = extraInfo.requestUnitLv1;
         targetRec['request.unit.lv2'] = extraInfo.requestUnitLv2;
         targetRec['department'] = extraInfo.department;
@@ -2109,7 +2099,6 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['status'] = finalStatus;
         targetRec['total.trans'] = totalTrans;
         targetRec['total.error.trans'] = totalErrorTrans;
-
         targetRec['request.type.label'] = extraInfo.requestTypeLabel;
         targetRec['contract.code'] = extraInfo.contractCode;
         targetRec['amount'] = extraInfo.amount;
@@ -2117,8 +2106,6 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['error.channel'] = extraInfo.errorChannel;
         targetRec['updated.at'] = extraInfo.updatedAt;
         targetRec['payment.created.at'] = extraInfo.paymentCreatedAt;
-        targetRec['unit.lv1'] = extraInfo.unitLv1;
-        targetRec['unit.lv2'] = extraInfo.unitLv2;
         targetRec['request.unit.lv1'] = extraInfo.requestUnitLv1;
         targetRec['request.unit.lv2'] = extraInfo.requestUnitLv2;
         targetRec['department'] = extraInfo.department;
