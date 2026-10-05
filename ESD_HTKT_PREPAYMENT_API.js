@@ -121,8 +121,8 @@ function run() {
                 result = lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.createAdvanceRequest(input);
                 break;
                 
-            // Danh sach hop dong
-            case 'listPurchaseContracts':
+            // Danh sách hợp đồng
+            case 'listPurchaseContracts': 
 			    result = lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.listPurchaseContracts(input);
 			    break;  
 
@@ -140,6 +140,13 @@ function run() {
                 break;
              case 'getListVendor':
                 lib.ESD_HTKT_REPORT.getListVendor(input);
+                break;
+             case 'saveReportHistory':
+                var data = lib.ESD_HTKT_REPORT.saveReportHistoryAndSchedule(input);
+                result = { success: true, data: data };
+                break;
+             case 'getListReportHistory':
+                lib.ESD_HTKT_REPORT.getListReportHistory(input);
                 break;
              // 
              

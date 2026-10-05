@@ -390,9 +390,8 @@ function listPurchaseContracts() {
 }
 
 
-
 // ===============================================================
-// ========= List HD pagination and filter =======================
+// =============================== List HD pagination ============================
 // ===============================================================
 /**
  * Bản bổ sung phân trang, filter và sort server cho listPurchaseContracts hiện tại.
@@ -470,6 +469,7 @@ function listPurchaseContracts(input) {
         ['contract.end.date', 'contract.end.date', 'S'],
         ['duration.unit', 'duration.unit', 'S'],
         ['contact.list', 'contact.list', 'S']
+
     ];
 
     // 2. Xây dựng điều kiện lọc WHERE
@@ -489,13 +489,40 @@ function listPurchaseContracts(input) {
         conditions.push("status=\"" + params.status + "\"");
     }
 
+    // Lấy thông tin quyền và unit.lv1
+    var scope = params.scope;
     var unitLv1Param = params.unitLv1 || params["unit.lv1"];
+    var cleanUnitLv1 = unitLv1Param ? String(unitLv1Param).trim() : "";
 
-    if (unitLv1Param && String(unitLv1Param).trim() === "099917000") {
-        conditions.push("unit.lv1 like \"0999*\"");
-    } else {
-        conditions.push("unit.lv1=\"" + unitLv1Param + "\"");
+    // 1. Trường hợp QT_PQDL_06: Hậu kiểm toàn hệ thống -> Xem tất cả (không filter unit.lv1)
+    if (scope === "QT_PQDL_06") {
+        print("QT_PQDL_06");
+    } else if (scope === "QT_PQDL_04") {
+        if (cleanUnitLv1.indexOf("0999") === 0) {
+            var isMappedToEntity = false;
+            var entityFile = new SCFile("esdDMentity", SCFILE_READONLY);
+            var entityQuery = 'ps.code="' + escapeQueryValue(cleanUnitLv1) + '" and status="ACTIVE" and entity.code="1010098"';
+
+            try {
+                if (entityFile.doSelect(entityQuery) === RC_SUCCESS) {
+                    isMappedToEntity = true;
+                }
+            } finally {
+                try { if (entityFile) entityFile.doClose(); } catch (e) {}
+            }
+
+            if (isMappedToEntity) {
+                conditions.push('unit.lv1 like "0999*"');
+            } else {
+                conditions.push('1=1');
+            }
+        } else if (cleanUnitLv1) {
+            conditions.push('unit.lv1="' + escapeQueryValue(cleanUnitLv1) + '"');
+        }
+    } else if (cleanUnitLv1) {
+        conditions.push('unit.lv1="' + escapeQueryValue(cleanUnitLv1) + '"');
     }
+
 
     // FILTER: bổ sung 3 điều kiện trên popup
     var categoryFilter = String(params.category || "").trim();
@@ -615,7 +642,7 @@ function listPurchaseContracts(input) {
     };
 }
 // ===============================================================
-// ========= List HD pagination and filter =======================
+// =============================== List HD pagination ============================
 // ===============================================================
 
 function mapRowToObject(scFileRecord, fieldMappings) {
@@ -997,6 +1024,7 @@ function calculateContractRemainingPayable(contractId) {
 
     return totalRemainingPayable;
 }
+
 function getNumberField(file, fieldNames) {
     for (var i = 0; i < fieldNames.length; i++) {
         var value = file[fieldNames[i]];
@@ -1361,18 +1389,18 @@ function listFileAttachment(input) {
 
     // Danh sách các cột cần lấy từ alias t (bảng esdHDtlks)
     var selectFields = "t.id, t.id.activity.vj, t.name, t.status, t.created.by, t.created.at, t.sysmodtime, t.sysmoduser, " +
-                       "t.sizeKb, t.parent.id, t.attach.type, t.note, t.executor, t.document.type, t.attach.id, " +
-                       "t.table, t.doc.id, t.document.source, t.document.date, t.category, t.step.status, t.transaction.id, " +
-                       "t.function, t.original.id ";
+        "t.sizeKb, t.parent.id, t.attach.type, t.note, t.executor, t.document.type, t.attach.id, " +
+        "t.table, t.doc.id, t.document.source, t.document.date, t.category, t.step.status, t.transaction.id, " +
+        "t.function, t.original.id ";
 
     // ==========================================
     // LUỒNG 1: DIGITIZATION (c JOIN d JOIN t)
     // ==========================================
     var querySQL1 = "SELECT " + selectFields +
-                     "FROM esdHDcontract c " +
-                     "JOIN esdHDdigitization d ON (c.id = d.id.contract) " +
-                     "JOIN esdHDtlks t ON (d.id = t.parent.id) " +
-                     "WHERE true" + baseWhereClause;
+        "FROM esdHDcontract c " +
+        "JOIN esdHDdigitization d ON (c.id = d.id.contract) " +
+        "JOIN esdHDtlks t ON (d.id = t.parent.id) " +
+        "WHERE true" + baseWhereClause;
 
     var f1 = new SCFile('esdHDtlks', SCFILE_READONLY);
     try {
@@ -1404,10 +1432,10 @@ function listFileAttachment(input) {
     // LUỒNG 2: ATTACHMENT (c JOIN a JOIN t)
     // ==========================================
     var querySQL2 = "SELECT " + selectFields +
-                     "FROM esdHDcontract c " +
-                     "JOIN esdHDattachment a ON (c.id = a.parent.id) " +
-                     "JOIN esdHDtlks t ON (t.original.id = a.id) " +
-                     "WHERE true" + baseWhereClause;
+        "FROM esdHDcontract c " +
+        "JOIN esdHDattachment a ON (c.id = a.parent.id) " +
+        "JOIN esdHDtlks t ON (t.original.id = a.id) " +
+        "WHERE true" + baseWhereClause;
 
     var f2 = new SCFile('esdHDtlks', SCFILE_READONLY);
     try {
@@ -1438,3 +1466,10 @@ function listFileAttachment(input) {
     // 4. Trả mảng kết quả tổng hợp
     input.queryReturnArray = system.functions.denull(dataArray);
 }
+
+// FILTER
+var escapeQueryValue = function(value) {
+    return String(value || "")
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"');
+};

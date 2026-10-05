@@ -264,7 +264,84 @@ function buildHTKTInvoiceDataFilter(currentUser, hasView, dataPermission) {
     return result;
 }
 
-function buildHTKTPrepaymentCreatedByFilter(currentUser, hasView) {
+/**
+ * Xác định hai role lãnh đạo được bổ sung quyền nhìn sớm / tái phân công.
+ *
+ * - 0040040002000005: approval_dmms - Lãnh đạo ĐMMS.
+ * - 0040040002000006: approval_kttc - Lãnh đạo KTTC.
+ *
+ * Chỉ đọc Functional Right hiện hữu, không thay đổi role/phase workflow.
+ */
+function getHTKTPrepaymentLeadershipAccess(rightsArray) {
+    var rights = uniqueHTKTArray(rightsArray);
+    var RIGHT_APPROVE_DMMS = "0040040002000005";
+    var RIGHT_APPROVE_KTTC = "0040040002000006";
+
+    return {
+        isApprovalDmms: rights.indexOf(RIGHT_APPROVE_DMMS) >= 0,
+        isApprovalKttc: rights.indexOf(RIGHT_APPROVE_KTTC) >= 0
+    };
+}
+
+/**
+ * Dựng scope nhìn sớm cho lãnh đạo.
+ *
+ * Quy tắc bổ sung:
+ * - approval_dmms: thấy toàn bộ hồ sơ luồng khởi tạo DMMS trong Data Permission của mình,
+ *   kể cả hồ sơ mới tạo/chưa tới phase approval_dmms.
+ * - approval_kttc: thấy hồ sơ luồng KTTC và luồng DMMS trong Data Permission của mình,
+ *   để có thể quản lý KTTC tiếp nhận / Rà soát 2 / Phê duyệt KTTC.
+ *
+ * Không có right lãnh đạo hoặc không resolve được scope => không mở rộng dữ liệu.
+ */
+function buildHTKTPrepaymentLeadershipVisibilityClause(currentUser, rightsArray, dataPermission) {
+    var safeCurrentUser = String(currentUser == null ? "" : currentUser).trim();
+    var leadership = getHTKTPrepaymentLeadershipAccess(rightsArray);
+
+    if (!safeCurrentUser || (!leadership.isApprovalDmms && !leadership.isApprovalKttc)) {
+        return "";
+    }
+
+    var normalizedPermission = normalizeHTKTDataPermission(dataPermission);
+    var permissionScope = normalizedPermission.scope;
+    var permissionUnits = normalizedPermission.unit;
+
+    var permissionQuery = buildHTKTCommonPermissionQuery(
+        permissionScope,
+        permissionUnits,
+        ["unit.lv1", "unit.lv2", "unit.lv3"],
+        "created.by",
+        safeCurrentUser
+    );
+
+    permissionQuery = String(permissionQuery == null ? "" : permissionQuery).trim();
+
+    if (!permissionQuery || permissionQuery === "false" || permissionQuery === "(1=0)") {
+        return "";
+    }
+
+    var initialRoleClause = "";
+
+    if (leadership.isApprovalKttc) {
+        // Lãnh đạo KTTC tham gia quản lý cả luồng KTTC khởi tạo và luồng DMMS chuyển sang KTTC.
+        initialRoleClause = '(initial.role="dmms" OR initial.role="kttc")';
+    } else if (leadership.isApprovalDmms) {
+        // Lãnh đạo ĐMMS chỉ được mở rộng visibility cho luồng khởi tạo từ ĐMMS.
+        initialRoleClause = 'initial.role="dmms"';
+    }
+
+    if (!initialRoleClause) {
+        return "";
+    }
+
+    if (permissionQuery === "true") {
+        return "(" + initialRoleClause + ")";
+    }
+
+    return "((" + permissionQuery + ") AND (" + initialRoleClause + "))";
+}
+
+function buildHTKTPrepaymentCreatedByFilter(currentUser, hasView, rightsArray, dataPermission) {
     var result = {
         defaultFilter: "(1=0)",
         dataScope: "Khong co quyen xem",
@@ -291,6 +368,11 @@ function buildHTKTPrepaymentCreatedByFilter(currentUser, hasView) {
         'user.approver.final="' + user + '"'
     ];
 
+    /*
+     * LOGIC GOLIVE CŨ - GIỮ NGUYÊN:
+     * - Draft: chỉ người tạo nhìn thấy.
+     * - Sau khi trình: người liên quan trong các field workflow nhìn thấy.
+     */
     var draftCreatedByCondition =
         '((status="dmms_created" OR status="kttc_created") AND created.by="' + user + '")';
 
@@ -299,14 +381,51 @@ function buildHTKTPrepaymentCreatedByFilter(currentUser, hasView) {
         relatedUserConditions.join(" OR ") +
         '))';
 
-    result.defaultFilter = "(" + draftCreatedByCondition + " OR " + nonDraftRelatedCondition + ")";
+    var visibilityConditions = [
+        draftCreatedByCondition,
+        nonDraftRelatedCondition
+    ];
 
+    /*
+     * LOGIC BỔ SUNG:
+     * Chỉ hai role approval_dmms / approval_kttc được mở rộng visibility
+     * trong đúng Data Permission của mình, không ảnh hưởng các role cũ.
+     */
+    var leadershipVisibilityClause =
+        buildHTKTPrepaymentLeadershipVisibilityClause(
+            safeCurrentUser,
+            rightsArray,
+            dataPermission
+        );
+
+    if (leadershipVisibilityClause) {
+        visibilityConditions.push(leadershipVisibilityClause);
+    }
+
+    result.defaultFilter = "(" + visibilityConditions.join(" OR ") + ")";
     result.defaultFilter = normalizeHTKTQueryForRest(result.defaultFilter);
 
-    result.dataScope = "Tao moi chi nguoi tao xem; sau khi trinh thi nguoi lien quan xem";
-    result.dataScopeCode = "HTKT_PREPAYMENT_DRAFT_AWARE_RELATED_USER";
-    result.dataScopeField = "status+created.by+related.users";
-    result.dataScopeUnits = [safeCurrentUser];
+    var leadership = getHTKTPrepaymentLeadershipAccess(rightsArray);
+
+    if (leadership.isApprovalDmms || leadership.isApprovalKttc) {
+        result.dataScope =
+            "Logic cu + lanh dao DMMS/KTTC duoc nhin som ho so trong pham vi Data Permission";
+        result.dataScopeCode =
+            "HTKT_PREPAYMENT_DRAFT_AWARE_RELATED_USER_WITH_LEADERSHIP";
+        result.dataScopeField =
+            "status+created.by+related.users+initial.role+data.permission";
+        var leadershipDataPermission = normalizeHTKTDataPermission(dataPermission);
+        result.dataScopeUnits =
+            leadershipDataPermission.scope === "QT_PQDL_01" ?
+            [safeCurrentUser] :
+            leadershipDataPermission.unit;
+    } else {
+        // Metadata cũ giữ nguyên cho toàn bộ user không thuộc 2 role lãnh đạo.
+        result.dataScope = "Tao moi chi nguoi tao xem; sau khi trinh thi nguoi lien quan xem";
+        result.dataScopeCode = "HTKT_PREPAYMENT_DRAFT_AWARE_RELATED_USER";
+        result.dataScopeField = "status+created.by+related.users";
+        result.dataScopeUnits = [safeCurrentUser];
+    }
 
     return result;
 }
@@ -707,8 +826,17 @@ function renderList() {
             unit: dataFilterInfo.dataScopeUnits
         };
     } else {
-        // GIỮ NGUYÊN 100% logic phân quyền danh sách đã UAT cho các role cũ.
-        dataFilterInfo = buildHTKTPrepaymentCreatedByFilter(currentUser, hasView);
+        /*
+         * User thường: giữ nguyên 100% logic phân quyền danh sách đã UAT.
+         * Hai role lãnh đạo approval_dmms / approval_kttc:
+         * bổ sung early visibility theo đúng Data Permission.
+         */
+        dataFilterInfo = buildHTKTPrepaymentCreatedByFilter(
+            currentUser,
+            hasView,
+            rightsArray,
+            dataPermission
+        );
     }
 
     var defaultFilter = dataFilterInfo.defaultFilter;
@@ -750,6 +878,10 @@ function renderList() {
 
             // Phân quyền chức năng hóa đơn
             rights: rightsArray,
+
+            // Metadata bổ sung cho 2 role lãnh đạo; không thay đổi permission cũ.
+            leadershipAccess: getHTKTPrepaymentLeadershipAccess(rightsArray),
+
             permission: {
                 view: isPostAuditRole ? hasPostAuditView : hasView,
                 invoiceView: hasInvoiceView,
@@ -830,17 +962,60 @@ function renderTabSugesstionInfomation(endpoint, input, extraData) {
 }
 
 
-function renderTabApprovalInfomation() {
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/ThongTinPheDuyet', '', {});
+function renderTabApprovalInfomation(endpoint, input, extraData) {
+    return getTabThongTinPheDuyet(endpoint, input, extraData);
 }
+
+// tab ho so dinh kem
+//function renderTabAttachment(endpoint, input, extraData) {
+//    var currentRecord = extraData;
+//    if (!currentRecord || (Array.isArray(currentRecord) && currentRecord.length === 0) || (typeof currentRecord === 'object' && Object.keys(currentRecord).length === 0)) {
+//        if (vars.$L_file) {
+//            currentRecord = {
+//                "id": vars.$L_file["id"],
+//                "currentPhase": vars.$L_file["current.phase"],
+//                "initialRole": vars.$L_file["initial.role"],
+//                "userCheckerKttc": vars.$L_file["user.checker.kttc"],
+//                "userCheckerDmms": vars.$L_file["user.checker.dmms"],
+//
+//                "userApproverKttc": vars.$L_file["user.approver.kttc"],
+//                "userApproverDmms": vars.$L_file["user.approver.dmms"],
+//                "userCheckerFinal": vars.$L_file["user.checker.final"],
+//                "userApproverFinal": vars.$L_file["user.approver.final"],
+//                "createdBy": vars.$L_file["created.by"],
+//
+//                "currentUser": vars['$lo.contact.name'],
+//                "status": vars.$L_file["status"]
+//
+//            };
+//        }
+//    }
+//
+//    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/TabHoSoDinhKem', '', currentRecord)
+//}
 
 // tab ho so dinh kem
 function renderTabAttachment(endpoint, input, extraData) {
     var currentRecord = extraData;
     if (!currentRecord || (Array.isArray(currentRecord) && currentRecord.length === 0) || (typeof currentRecord === 'object' && Object.keys(currentRecord).length === 0)) {
         if (vars.$L_file) {
+            var prepaymentId = vars.$L_file["id"];
+            var contractId = vars.$L_file["contract.id"];
+
+            // Query bảng esdHTKTprepayment để lấy contract.id nếu chưa có
+            if (!contractId && prepaymentId) {
+                var prepFile = new SCFile("esdHTKTprepayment");
+                var sqlPrep = "id=\"" + prepaymentId + "\"";
+                var rcPrep = prepFile.doSelect(sqlPrep);
+
+                if (rcPrep == RC_SUCCESS) {
+                    contractId = prepFile["contract.id"];
+                }
+            }
+
             currentRecord = {
                 "id": vars.$L_file["id"],
+                "contractId": contractId,
                 "currentPhase": vars.$L_file["current.phase"],
                 "initialRole": vars.$L_file["initial.role"],
                 "userCheckerKttc": vars.$L_file["user.checker.kttc"],
@@ -854,12 +1029,11 @@ function renderTabAttachment(endpoint, input, extraData) {
 
                 "currentUser": vars['$lo.contact.name'],
                 "status": vars.$L_file["status"]
-
             };
         }
     }
 
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/TabHoSoDinhKem', '', currentRecord)
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/TabHoSoDinhKem', '', currentRecord);
 }
 
 // tab thong tin hach toan
@@ -1260,7 +1434,7 @@ function renderEntityCategory() {
 
 function renderHdsd() {
     var scFile = new SCFile('esdAttachments');
-    var result = scFile.doSelect(`id = "HDSD" and module = "HTKT" and function = "Tam ung"`);
+    var result = scFile.doSelect(`id = "HDSD_HTKT_Tam_ung" and module = "HTKT" and function = "Tam ung"`);
     var base64PDF = "";
     if (result == RC_SUCCESS) {
         var attachments = scFile.getAttachments();

@@ -294,33 +294,160 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
 }
 
 function generateDocumentCode(docType, branchCode) {
-    var now = new Date();
-    var year = (now.getFullYear() % 100).toString(); // "26"
+    var fullYear = new Date().getFullYear();
+    var year = ("0" + (fullYear % 100)).slice(-2);
+    var numberClass = "esdHTKTprepayment";
 
-    var queryPattern = docType + ".*." + year + ".*";
-    var query = 'id like "' + queryPattern + '"';
+    var maxAttempts = 50;
+    var attempt = 0;
+    var synced = false;
 
-    var file = new SCFile("esdHTKTprepayment");
-    var rc = file.doSelect(query);
+    while (attempt < maxAttempts) {
+        attempt++;
 
-    var maxSeq = 0;
+        var sequence = getNextSequenceFromSm(numberClass, docType);
+        if (sequence === null) {
+            // Không gọi được getnumber từ SM -> chuyển sang fallback
+            break;
+        }
 
-    while (rc == RC_SUCCESS) {
-        var currentId = file.id;
-        if (currentId) {
-            var parts = currentId.split(".");
-            var seq = parseInt(parts[parts.length - 1], 10);
-            if (!isNaN(seq) && seq > maxSeq) {
-                maxSeq = seq;
+        var candidateId = docType + "." + branchCode + "." + year + "." +
+            ("0000000" + sequence).slice(-7);
+
+        if (!checkPrepaymentIdExists(candidateId)) {
+            return candidateId;
+        }
+
+        print("[WARN generateDocumentCode] Bộ đếm " + numberClass + " cấp mã đã tồn tại: " + candidateId + ". Tiến hành đồng bộ bộ đếm...");
+
+        // Khi phát hiện mã đã tồn tại: quét maxSeq thực tế trong DB và đồng bộ vào bảng number của SM
+        if (!synced) {
+            synced = true;
+            var maxExistingSeq = getMaxExistingPrepaymentSequence(docType, year);
+            if (maxExistingSeq >= sequence) {
+                syncSmNumberTable(numberClass, maxExistingSeq);
             }
         }
-        rc = file.getNext();
     }
 
-    var newSeq = maxSeq + 1;
-    var seqStr = ("0000000" + newSeq).slice(-7);
+    // Fallback an toàn nếu getnumber bị lỗi hoặc sau vòng lặp vẫn đụng mã trùng:
+    var safeSeq = getMaxExistingPrepaymentSequence(docType, year);
+    var finalPrepaymentId = "";
+    do {
+        safeSeq++;
+        finalPrepaymentId = docType + "." + branchCode + "." + year + "." +
+            ("0000000" + safeSeq).slice(-7);
+    } while (checkPrepaymentIdExists(finalPrepaymentId));
 
-    return docType + "." + branchCode + "." + year + "." + seqStr;
+    // Đồng bộ lại bộ đếm SM về safeSeq để các lần cấp tiếp theo không bị lệch
+    syncSmNumberTable(numberClass, safeSeq);
+
+    return finalPrepaymentId;
+}
+
+function getNextSequenceFromSm(numberClass, docType) {
+    try {
+        var numberRc = new SCDatum();
+        numberRc.setValue(-1);
+        var nextNumber = new SCDatum();
+        system.functions.rtecall(
+            "getnumber", numberRc, nextNumber, numberClass
+        );
+
+        var rcText = String(numberRc.getText()).replace(/^\s+|\s+$/g, "");
+        var rawNumber = String(nextNumber.getText()).replace(/^\s+|\s+$/g, "");
+
+        if (/^"[^"]*"$/.test(rawNumber) || /^'[^']*'$/.test(rawNumber)) {
+            rawNumber = rawNumber.substring(1, rawNumber.length - 1);
+        }
+
+        if (rawNumber.indexOf(docType) === 0) {
+            rawNumber = rawNumber.substring(docType.length);
+        }
+
+        if (rcText === "0" && /^\d+$/.test(rawNumber)) {
+            var seq = Number(rawNumber);
+            if (seq >= 1 && seq <= 9999999) {
+                return seq;
+            }
+        }
+    } catch (e) {
+        print("[ERROR getNextSequenceFromSm] " + e);
+    }
+    return null;
+}
+
+function checkPrepaymentIdExists(prepaymentId) {
+    var existing = new SCFile("esdHTKTprepayment", SCFILE_READONLY);
+    try {
+        var rc = existing.doSelect('id="' + escapeSmQueryValue(prepaymentId) + '"');
+        return rc === RC_SUCCESS;
+    } catch (e) {
+        return false;
+    } finally {
+        closeSCFile(existing);
+    }
+}
+
+function getMaxExistingPrepaymentSequence(docType, year) {
+    var maxSeq = 0;
+    var file = new SCFile("esdHTKTprepayment", SCFILE_READONLY);
+    try {
+        var queryPattern = docType + ".*." + year + ".*";
+        var query = 'id like "' + queryPattern + '"';
+        var rc = file.doSelect(query);
+
+        while (rc == RC_SUCCESS) {
+            var currentId = file.id;
+            if (currentId) {
+                var parts = String(currentId).split(".");
+                if (parts.length >= 2) {
+                    var seqStr = parts[parts.length - 1];
+                    if (/^\d+$/.test(seqStr)) {
+                        var seq = parseInt(seqStr, 10);
+                        if (!isNaN(seq) && seq > maxSeq) {
+                            maxSeq = seq;
+                        }
+                    }
+                }
+            }
+            rc = file.getNext();
+        }
+    } catch (e) {
+        print("[ERROR getMaxExistingPrepaymentSequence] " + e);
+    } finally {
+        closeSCFile(file);
+    }
+    return maxSeq;
+}
+
+function syncSmNumberTable(numberClass, targetSeq) {
+    try {
+        var numFile = new SCFile("number");
+        if (numFile.doSelect('name="' + escapeSmQueryValue(numberClass) + '"') === RC_SUCCESS) {
+            var currentVal = Number(numFile["number"] || 0);
+            if (isNaN(currentVal) || targetSeq > currentVal) {
+                numFile["number"] = targetSeq;
+                var rcUpdate = numFile.doUpdate();
+                print("[INFO syncSmNumberTable] Đồng bộ bộ đếm " + numberClass + " từ " + currentVal + " lên " + targetSeq + " (rc=" + rcUpdate + ")");
+            }
+        }
+        closeSCFile(numFile);
+    } catch (eSync) {
+        print("[WARN syncSmNumberTable] Không thể cập nhật bảng number: " + eSync);
+    }
+}
+
+function escapeSmQueryValue(value) {
+    return String(value || "")
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"');
+}
+
+function closeSCFile(file) {
+    try {
+        if (file) file.doClose();
+    } catch (ignore) {}
 }
 
 //function generateDocumentCode(docType, branchCode) {
@@ -352,7 +479,7 @@ function mapRowToObject(scFileRecord, fieldMappings) {
     return item;
 }
 
-
+// =========== Lay het danh sach HD ================
 //function listPurchaseContracts(input) {
 //
 //    // 1. Lấy dữ liệu linh hoạt từ details hoặc queryString
@@ -504,8 +631,6 @@ function mapRowToObject(scFileRecord, fieldMappings) {
 //}
 
 
-
-
 /**
  * Bản bổ sung phân trang, filter và sort server cho listPurchaseContracts của tạm ứng.
  */
@@ -609,13 +734,50 @@ function listPurchaseContracts(input) {
         conditions.push("status=\"" + params.status + "\"");
     }
 
+    //    var unitLv1Param = params.unitLv1 || params["unit.lv1"];
+    //    print("unitLv1Param: " + unitLv1Param);
+    //    if (unitLv1Param && String(unitLv1Param).trim() === "099917000") {
+    //        conditions.push("unit.lv1 like \"0999*\"");
+    //    } else {
+    //        conditions.push("unit.lv1=\"" + unitLv1Param + "\"");
+    //    }
+
+    // Lấy thông tin quyền và unit.lv1
+    var scope = params.scope;
     var unitLv1Param = params.unitLv1 || params["unit.lv1"];
-    print("unitLv1Param: " + unitLv1Param);
-    if (unitLv1Param && String(unitLv1Param).trim() === "099917000") {
-        conditions.push("unit.lv1 like \"0999*\"");
-    } else {
-        conditions.push("unit.lv1=\"" + unitLv1Param + "\"");
+    var cleanUnitLv1 = unitLv1Param ? String(unitLv1Param).trim() : "";
+
+    // 1. Trường hợp QT_PQDL_06: Hậu kiểm toàn hệ thống -> Xem tất cả (không filter unit.lv1)
+    if (scope === "QT_PQDL_06") {
+        print("QT_PQDL_06");
     }
+    else if (scope === "QT_PQDL_04") {
+    print("QT_PQDL_04");
+        if (cleanUnitLv1.indexOf("0999") === 0) {
+            var isMappedToEntity = false;
+            var entityFile = new SCFile("esdDMentity", SCFILE_READONLY);
+            var entityQuery = 'ps.code="' + escapeQueryValue(cleanUnitLv1) + '" and status="ACTIVE" and entity.code="1010098"';
+
+            try {
+                if (entityFile.doSelect(entityQuery) === RC_SUCCESS) {
+                    isMappedToEntity = true;
+                }
+            } finally {
+                try { if (entityFile) entityFile.doClose(); } catch (e) {}
+            }
+            
+            if (isMappedToEntity) {
+                conditions.push('unit.lv1 like "0999*"');
+            } else {
+                conditions.push('1=1');
+            }
+        } else if (cleanUnitLv1) {
+            conditions.push('unit.lv1="' + escapeQueryValue(cleanUnitLv1) + '"');
+        }
+    } else if (cleanUnitLv1) {
+        conditions.push('unit.lv1="' + escapeQueryValue(cleanUnitLv1) + '"');
+    }
+
 
     // FILTER: bổ sung đúng các điều kiện trên popup
     var categoryFilter = String(params.category || "").trim();
@@ -739,9 +901,6 @@ function listPurchaseContracts(input) {
         hasMore: start - 1 + dataArray.length < totalCount
     };
 }
-
-
-
 
 
 function mapRowToObject(scFileRecord, fieldMappings) {
@@ -977,18 +1136,18 @@ function listFileAttachment(input) {
 
     // Danh sách các cột cần lấy từ alias t (bảng esdHDtlks)
     var selectFields = "t.id, t.id.activity.vj, t.name, t.status, t.created.by, t.created.at, t.sysmodtime, t.sysmoduser, " +
-                       "t.sizeKb, t.parent.id, t.attach.type, t.note, t.executor, t.document.type, t.attach.id, " +
-                       "t.table, t.doc.id, t.document.source, t.document.date, t.category, t.step.status, t.transaction.id, " +
-                       "t.function, t.original.id ";
+        "t.sizeKb, t.parent.id, t.attach.type, t.note, t.executor, t.document.type, t.attach.id, " +
+        "t.table, t.doc.id, t.document.source, t.document.date, t.category, t.step.status, t.transaction.id, " +
+        "t.function, t.original.id ";
 
     // ==========================================
     // LUỒNG 1: DIGITIZATION (c JOIN d JOIN t)
     // ==========================================
     var querySQL1 = "SELECT " + selectFields +
-                     "FROM esdHDcontract c " +
-                     "JOIN esdHDdigitization d ON (c.id = d.id.contract) " +
-                     "JOIN esdHDtlks t ON (d.id = t.parent.id) " +
-                     "WHERE true" + baseWhereClause;
+        "FROM esdHDcontract c " +
+        "JOIN esdHDdigitization d ON (c.id = d.id.contract) " +
+        "JOIN esdHDtlks t ON (d.id = t.parent.id) " +
+        "WHERE true" + baseWhereClause;
 
     var f1 = new SCFile('esdHDtlks', SCFILE_READONLY);
     try {
@@ -1020,10 +1179,10 @@ function listFileAttachment(input) {
     // LUỒNG 2: ATTACHMENT (c JOIN a JOIN t)
     // ==========================================
     var querySQL2 = "SELECT " + selectFields +
-                     "FROM esdHDcontract c " +
-                     "JOIN esdHDattachment a ON (c.id = a.parent.id) " +
-                     "JOIN esdHDtlks t ON (t.original.id = a.id) " +
-                     "WHERE true" + baseWhereClause;
+        "FROM esdHDcontract c " +
+        "JOIN esdHDattachment a ON (c.id = a.parent.id) " +
+        "JOIN esdHDtlks t ON (t.original.id = a.id) " +
+        "WHERE true" + baseWhereClause;
 
     var f2 = new SCFile('esdHDtlks', SCFILE_READONLY);
     try {
@@ -1054,6 +1213,7 @@ function listFileAttachment(input) {
     // 4. Trả mảng kết quả tổng hợp
     input.queryReturnArray = system.functions.denull(dataArray);
 }
+
 function nextId1(name) {
     var nextNumber = new SCDatum();
     funcs.rtecall("getnumber", 1, nextNumber, name);

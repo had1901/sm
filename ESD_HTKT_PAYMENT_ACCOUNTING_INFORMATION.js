@@ -331,6 +331,7 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
         var isPersonalVendor = normalizeIdentity(vendorRow.vendor_type) === 'canhan' ||
                 normalizeIdentity(vendorRow.vendor_type) === 'cn';
         var invoiceAmount = sumInvoiceLineAmounts(apLines);
+        updatePaymentVendorDebtAmount(payment.id || vendorRow.payment_id, vendorRow.vendor_id, invoiceAmount, vendorRow.vendor_site_id, vendorRow.id);
         var amountPayTemp = isPersonalVendor
                 ? customerPaymentAmount
                 : vendorRow.amount;
@@ -665,13 +666,15 @@ function getPayment(paymentId) {
 
 function getPaymentVendors(paymentId) {
     return selectMany(TABLE_VENDOR_ROW, 'payment.id="' + escapeQueryValue(paymentId) + '"', function (f) {
-        return { payment_id: readText(f, 'payment.id').trim(), vendor_id: readText(f, 'vendor.id').trim(),
+        return { id: readText(f, 'id').trim(),
+            payment_id: readText(f, 'payment.id').trim(), vendor_id: readText(f, 'vendor.id').trim(),
             vendor_site_id: readText(f, 'vendor.site.id').trim(),
             approved_invoice_amount: readNumber(f, 'approved.invoice.amount'), amount: readNumber(f, 'amount'),
             refund_amount: readNumber(f, 'refund.amount'), vendor_type: readText(f, 'vendor.type').trim(),
             currency: readText(f, 'currency').trim(),
             payment_method: readText(f, 'payment.method').trim(), beneficiary_bank: readText(f, 'beneficiary.bank').trim(),
             bank_branch_code: readText(f, 'bank.branch.code').trim(),
+            debt_amount: readNumber(f, 'debt.amount'),
             transaction_des: readText(f, 'transaction.des').trim() };
     });
 }
@@ -801,6 +804,34 @@ function updateEntryRequestId(entryId, paymentId, requestId) {
         if (rc === RC_SUCCESS) { f['accounting.request.id'] = requestId; rc = f.doUpdate(); }
         return rc;
     } finally { closeFile(f); }
+}
+
+function updatePaymentVendorDebtAmount(paymentId, vendorId, debtAmount, vendorSiteId, rowId) {
+    var f;
+    try {
+        f = new SCFile(TABLE_VENDOR_ROW);
+        var rc = -1;
+        if (rowId) {
+            rc = f.doSelect('id="' + escapeQueryValue(rowId) + '"');
+        }
+        if (rc !== RC_SUCCESS) {
+            var query = 'payment.id="' + escapeQueryValue(paymentId) + '" and vendor.id="' + escapeQueryValue(vendorId) + '"';
+            if (vendorSiteId) {
+                query += ' and vendor.site.id="' + escapeQueryValue(vendorSiteId) + '"';
+            }
+            rc = f.doSelect(query);
+            if (rc !== RC_SUCCESS && vendorSiteId) {
+                rc = f.doSelect('payment.id="' + escapeQueryValue(paymentId) + '" and vendor.id="' + escapeQueryValue(vendorId) + '"');
+            }
+        }
+        if (rc === RC_SUCCESS) {
+            f['debt.amount'] = debtAmount;
+            rc = f.doUpdate();
+        }
+        return rc;
+    } finally {
+        closeFile(f);
+    }
 }
 
 function clearEntryRequestIds(paymentId) {
