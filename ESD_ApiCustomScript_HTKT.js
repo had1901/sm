@@ -26,7 +26,7 @@ function run() {
             case "savePaymentApprovalField":
                 result = lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.savePaymentApprovalField(details);
                 break;
-            case "listPurchaseContracts":
+            case "listPurchaseContracts": // Danh sách hợp đồng
                 result = lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listPurchaseContracts(input);
                 break;
             case "createPaymentRequest":
@@ -194,7 +194,24 @@ function run() {
             case 'listFileAttachment':
                 lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listFileAttachment(input);
                 break;
-
+            case "getAccountingErrorApproverKttcOptions": // Danh sách cán bộ phê duyệt KTTC cho khai báo kết quả
+                result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.getAccountingErrorApproverKttcOptions(input);
+                break;
+            case "approveAccountingErrorsResult": // Phê duyệt kết quả khai báo hạch toán
+                result = { success: true, data: lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.approveAccountingErrorsResult(input) };
+                break;
+            case "getAccountingErrorHandlingApproverKttc":
+                result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.getAccountingErrorHandlingApproverKttc(input);
+                break;
+            case "getAccountingErrorExecutorOptions":
+                result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.getAccountingErrorExecutorOptions(input);
+                break;
+            case "getExpenceList":
+                result = lib.ESD_HTKT_EXPENSE_CREATE_REQUEST.getList(input);
+                break;
+            case "createExpenseRequest":
+                result = lib.ESD_HTKT_EXPENSE_CREATE_REQUEST.createExpenseRequest(input);
+                break;
 
             default:
                 result = {
