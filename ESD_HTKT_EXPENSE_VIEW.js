@@ -5,347 +5,6 @@
  * Khoi tao context cho man hinh danh sach Du chi theo cung contract initData
  * voi man hinh Thanh toan, bao gom ca pham vi du lieu cua role Hau kiem.
  */
- 
-
-// ======================================================================================
-// ======================================================================================
-// ======================================================================================
-
-
-function renderExpenseList() {
-    var currentUser = String(vars['$lo.contact.name'] || "").replace(/^\s+|\s+$/g, "");
-    var operatorName = String(system.user.name || "").replace(/^\s+|\s+$/g, "");
-    var contactInfo = htktExpenseView_readContact(currentUser);
-    var rights = htktExpenseView_getRights();
-
-    var RIGHT_EXPENSE_VIEW = "0040040003000001";
-    var RIGHT_EXPENSE_CREATE = "0040040003000002";
-    var RIGHT_EXPENSE_ACCOUNTING = "0040040003000003";
-    var RIGHT_EXPENSE_POST_AUDIT = "0040040003000010";
-
-    var hasView = rights.indexOf(RIGHT_EXPENSE_VIEW) >= 0;
-    var hasCreate = rights.indexOf(RIGHT_EXPENSE_CREATE) >= 0;
-    var hasAccounting = rights.indexOf(RIGHT_EXPENSE_ACCOUNTING) >= 0;
-    var isPostAuditRole = rights.indexOf(RIGHT_EXPENSE_POST_AUDIT) >= 0;
-    var initialRole = "";
-
-    if (hasCreate) {
-        initialRole = hasAccounting ? "kttc" : "dmms";
-    }
-
-    var dataPermission = htktExpenseView_getDataPermission(currentUser);
-    var relatedUserFields = "created.by+user.checker.kttc+user.checker.dmms+user.approver.dmms+user.approver.kttc+user.checker.final+user.approver.final";
-    var dataFilterInfo;
-
-    if (isPostAuditRole) {
-        dataFilterInfo = htktExpenseView_buildPostAuditFilter(contactInfo, dataPermission);
-        dataPermission = {
-            scope: dataFilterInfo.dataScopeCode,
-            unit: dataFilterInfo.dataScopeUnits
-        };
-    } else {
-        dataFilterInfo = {
-            defaultFilter: htktExpenseView_buildRelatedUserFilter(currentUser, hasView),
-            dataScope: "Nguoi tao hoac nguoi duoc giao xu ly",
-            dataScopeCode: "HTKT_EXPENSE_RELATED_USER",
-            dataScopeField: relatedUserFields,
-            dataScopeUnits: currentUser ? [currentUser] : []
-        };
-    }
-
-    var defaultFilter = dataFilterInfo.defaultFilter;
-
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
-        'HachToanKeToan/DuChi/DanhSachDuChi',
-        '',
-        {
-            user: currentUser,
-            currentUser: currentUser,
-            contactId: currentUser,
-            initialRole: initialRole,
-            operatorName: operatorName,
-            fullName: contactInfo.fullName,
-            branchCode: contactInfo.branchCode,
-            unit: {
-                lv1: contactInfo.lv1,
-                lv2: contactInfo.lv2,
-                lv3: contactInfo.lv3,
-                orgUnit: contactInfo.orgUnit,
-                position: contactInfo.position,
-                positionName: contactInfo.positionName
-            },
-            defaultFilter: defaultFilter,
-            permissionQuery: defaultFilter,
-            dataScope: dataFilterInfo.dataScope,
-            dataScopeCode: dataFilterInfo.dataScopeCode,
-            dataScopeField: dataFilterInfo.dataScopeField,
-            dataScopeUnits: dataFilterInfo.dataScopeUnits,
-            dataPermissionSubModule: "00401",
-            dataPermission: dataPermission,
-            rights: rights,
-            permission: {
-                view: isPostAuditRole ? true : hasView,
-                expenseView: isPostAuditRole ? true : hasView,
-                create: hasCreate,
-                accounting: hasAccounting,
-                postAudit: isPostAuditRole
-            },
-            btnConfig: [
-                { id: 'create', visible: hasCreate },
-                { id: 'accounting', visible: hasAccounting }
-            ],
-            debugSource: "ESD_HTKT_EXPENSE"
-        }
-    );
-}
-
-
-function getTabThongTinPheDuyet(endpoint, input, extraData) {
-    var payment = vars["$L.file"] || vars.$L_file || extraData;
-    var currentUser = String(vars["$lo.contact.name"] ||
-        (vars.$lo_operator ? vars.$lo_operator["contact.name"] : "") || "").trim();
-    var initData = payment
-        ? lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.getPaymentApprovalInitData(payment, currentUser)
-        : {};
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabThongTinPheDuyet', '', initData);
-}
-
-function getTabTaiLieuDinhKem() {
-    var currentRecord = {};
-    if (vars.$L_file) {
-        var prepaymentId = vars.$L_file["id"];
-        var contractId = vars.$L_file["contract.id"] || "";
-
-        if (!contractId && prepaymentId) {
-            var prepFile = new SCFile("esdHTKTpayment");
-            var sqlPrep = "id=\"" + prepaymentId + "\"";
-            var rcPrep = prepFile.doSelect(sqlPrep);
-
-            if (rcPrep == RC_SUCCESS) {
-                contractId = prepFile["contract.id"] || "";
-            }
-        }
-
-        currentRecord = {
-            "id": prepaymentId || "",
-            "contractId": contractId,
-            "vendorId": vars.$L_file["vendor.id"] || "",
-            "currentPhase": vars.$L_file["current.phase"],
-            "initialRole": vars.$L_file["initial.role"],
-            "userCheckerKttc": vars.$L_file["user.checker.kttc"],
-            "userCheckerDmms": vars.$L_file["user.checker.dmms"],
-            "userApproverKttc": vars.$L_file["user.approver.kttc"],
-            "userApproverDmms": vars.$L_file["user.approver.dmms"],
-            "userCheckerFinal": vars.$L_file["user.checker.final"],
-            "userApproverFinal": vars.$L_file["user.approver.final"],
-            "createdBy": vars.$L_file["created.by"],
-            "currentUser": vars['$lo.contact.name'],
-            "status": vars.$L_file["status"]
-        };
-    }
-
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabTaiLieuDinhKem', '', currentRecord);
-}
-
-function getTabThongTinHT(endpoint, input, extraData) {
-    var formRecord = vars['$L.file'];
-    var currentRecord = extraData || {};
-    
-    if ((!currentRecord || Object.keys(currentRecord).length === 0) && formRecord) {
-        currentRecord = formRecord;
-    }
-
-    var paymentId = currentRecord ? String(currentRecord['id'] || '') : '';
-    var currentUser = String(vars['$lo.contact.name'] || '').trim();
-    var currentPhase = formRecord ? String(formRecord['current.phase'] || '').trim() : '';
-    var userCheckerKttc = formRecord ? String(formRecord['user.checker.kttc'] || '').trim() : '';
-    var initialRole = formRecord ? String(formRecord['initial.role'] || '').trim() : '';
-    var createdBy = formRecord ? String(formRecord['created.by'] || '').trim() : '';
-    
-    var payload = {
-      id: paymentId,
-      paymentId: paymentId,
-      user: currentUser,
-      currentUser: currentUser,
-      contactId: currentUser,
-      createdBy: createdBy,
-      currentPhase: currentPhase,
-      userCheckerKttc: userCheckerKttc,
-      initialRole: initialRole,
-      currentRecord: {
-          id: paymentId,
-          currentPhase: currentPhase,
-          userCheckerKttc: userCheckerKttc,
-          initialRole: initialRole
-      }
-   }
-    
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabThongTinHachToan', '', payload);
-}
-
-/** Render màn chỉnh sửa chi tiết hạch toán Dự chi (chỉ bút toán AP). */
-function getTabChiTietThongTinHT(endpoint, input, extraData) {
-    var formRecord = vars['$L.file'] || vars.$L_file;
-    var source = extraData || {};
-    var expenseId = String(
-        source.duChiId || source.paymentId || source['payment.id'] ||
-        (formRecord ? formRecord['payment.id'] : '') || source.id ||
-        vars.$G_payment_id || (formRecord ? formRecord['id'] : '') || ''
-    ).replace(/^\s+|\s+$/g, '');
-    var expenseRecord = formRecord || source;
-
-    if (expenseId) {
-        var expenseFile = new SCFile('esdHTKTpayment');
-        var query = 'id="' + htktExpenseView_escapeQueryValue(expenseId) + '"';
-        if (expenseFile.doSelect(query) === RC_SUCCESS) {
-            expenseRecord = expenseFile;
-        }
-    }
-
-    var currentUser = String(vars['$lo.contact.name'] || '').replace(/^\s+|\s+$/g, '');
-    var currentRecord = {
-        id: expenseId,
-        duChiId: expenseId,
-        paymentId: expenseId,
-        currentPhase: expenseRecord['current.phase'] || '',
-        initialRole: expenseRecord['initial.role'] || '',
-        createdBy: expenseRecord['created.by'] || '',
-        userCheckerDmms: expenseRecord['user.checker.dmms'] || '',
-        userCheckerKttc: expenseRecord['user.checker.kttc'] || '',
-        userApproverKttc: expenseRecord['user.approver.kttc'] || '',
-        userApproverDmms: expenseRecord['user.approver.dmms'] || '',
-        userCheckerFinal: expenseRecord['user.checker.final'] || '',
-        userApproverFinal: expenseRecord['user.approver.final'] || '',
-        user: currentUser,
-        currentUser: currentUser,
-        contactId: currentUser,
-        status: expenseRecord['status'] || ''
-    };
-
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
-        'HachToanKeToan/DuChi/TabThongTinHachToan/ChiTietHachToan',
-        expenseId ? '?id=' + encodeURIComponent(expenseId) : '',
-        currentRecord
-    );
-}
-
-function getTabKetQuaHachToan() {
-    return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
-}
-
-
-function getTabKetQuaGD() {
-    return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
-}
-
-
-/**
- * Render tab Thông tin món Dự chi cho phiếu đang mở.
- * Ngoài id phiếu, tab cần cùng context người dùng/phạm vi dữ liệu như màn
- * danh sách để API listPurchaseContracts áp dụng đúng role và data scope.
- */
-function getTabThongTinMonDuChi(endpoint, input, extraData) {
-    var currentRecord = extraData || {};
-    var expenseRecord = vars["$L.file"] || vars.$L_file;
-    var expenseId = String(currentRecord.id || "").replace(/^\s+|\s+$/g, "");
-
-    if (!expenseId && expenseRecord) {
-        expenseId = String(expenseRecord["id"] || "").replace(/^\s+|\s+$/g, "");
-    }
-
-    vars.$G_payment_id = expenseId;
-
-    var currentUser = String(vars['$lo.contact.name'] || "").replace(/^\s+|\s+$/g, "");
-    var operatorName = String(system.user.name || "").replace(/^\s+|\s+$/g, "");
-    var contactInfo = htktExpenseView_readContact(currentUser);
-    var rights = htktExpenseView_getRights();
-    var hasCreate = rights.indexOf("0040040003000002") >= 0;
-    var hasAccounting = rights.indexOf("0040040003000003") >= 0;
-    var initialRole = hasCreate ? (hasAccounting ? "kttc" : "dmms") : "";
-    var dataPermission = htktExpenseView_getDataPermission(currentUser);
-
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
-        'HachToanKeToan/DuChi/TabThongTinMonDuChi',
-        expenseId ? '?id=' + encodeURIComponent(expenseId) : '',
-        {
-            id: expenseId,
-            user: currentUser,
-            currentUser: currentUser,
-            contactId: currentUser,
-            operatorName: operatorName,
-            fullName: contactInfo.fullName,
-            branchCode: contactInfo.branchCode,
-            initialRole: initialRole,
-            unit: {
-                lv1: contactInfo.lv1,
-                lv2: contactInfo.lv2,
-                lv3: contactInfo.lv3,
-                orgUnit: contactInfo.orgUnit,
-                position: contactInfo.position,
-                positionName: contactInfo.positionName
-            },
-            dataScope: dataPermission.scope,
-            dataScopeCode: dataPermission.scope,
-            dataScopeUnits: dataPermission.unit,
-            dataPermissionSubModule: "00401",
-            dataPermission: dataPermission,
-            rights: rights
-        }
-    );
-}
-
-
-function renderHdsd() {
-    var scFile = new SCFile('esdAttachments');
-    var result = scFile.doSelect(`id = "HDSD_HTKT_Thanh_toan" and module = "HTKT" and function = "Thanh toan"`);
-    var base64PDF = "";
-    if (result == RC_SUCCESS) {
-        var attachments = scFile.getAttachments();
-
-        for (var i = 0; i < attachments.length; i++) {
-            var att = attachments[i];
-            var binaryData = att.value;
-            if (att.value) {
-                var base64 = base64Encode(binaryData);
-                base64PDF = lib.ESD_HTKT_PAYMENT_COMMON.htktEscapeForJavaScript(base64);
-            }
-        }
-    }
-    if (scFile) scFile.doClose();
-    return (
-        "<div style='border-radius: 6px; height: 100%; width: 100%; box-shadow: 0 2px 8px rgb(0 0 0 / 26%); overflow: hidden; box-sizing: border-box; font-family: Arial, sans-serif;'>" +
-        "<div style='margin:10px;border-bottom: 1px solid #ddd; padding-bottom: 10px; margin: 10px 15px; font-size: 17px; font-weight: 600; color: #0835D9;'>Hướng dẫn thực hiện</div>" +
-        "<div style='margin:10px;border:1px solid #ddd;padding:0;width:100%;height:100%;font-family:Arial,sans-serif;'>" +
-        "<iframe id='htktPdfFrame' width='100%' height='100%' style='min-height:700px;border:none;background:#e5e7eb;'></iframe>" +
-        "<script>" +
-        "(function(){" +
-        "var base64='" + base64PDF + "';" +
-        "function toBytes(value){" +
-        "var binary=atob(value);" +
-        "var bytes=new Uint8Array(binary.length);" +
-        "for(var i=0;i<binary.length;i++){bytes[i]=binary.charCodeAt(i);}" +
-        "return bytes;" +
-        "}" +
-        "try{" +
-        "var blob=new Blob([toBytes(base64)],{type:'application/pdf'});" +
-        "var url=URL.createObjectURL(blob);" +
-        "var frame=document.getElementById('htktPdfFrame');" +
-        "frame.src=url+'#toolbar=0&navpanes=0&view=FitH';" +
-        "window.addEventListener('beforeunload',function(){URL.revokeObjectURL(url);});" +
-        "}catch(e){" +
-        "document.body.innerHTML='<div style=\"padding:16px;color:red;font-family:Arial;\">Lỗi render PDF: '+e+'</div>';" +
-        "}" +
-        "})();" +
-        "</script>" +
-        "</div>" +
-        "</div>"
-    );
-}
-// ======================================================================================
-// ======================================================================================
-// ======================================================================================
- 
- 
 
 function htktExpenseView_escapeQueryValue(value) {
     return (value == null ? "" : String(value))
@@ -612,4 +271,468 @@ function htktExpenseView_buildPostAuditFilter(contactInfo, dataPermission) {
 
 
 
+// ======================================================================================
+// ======================================================================================
+// ======================================================================================
 
+/**
+ * Danh sách phiếu Đề nghị dự chi
+ */
+function renderExpenseList() {
+    var currentUser = String(vars['$lo.contact.name'] || "").replace(/^\s+|\s+$/g, "");
+    var operatorName = String(system.user.name || "").replace(/^\s+|\s+$/g, "");
+    var contactInfo = htktExpenseView_readContact(currentUser);
+    var rights = htktExpenseView_getRights();
+
+    var RIGHT_EXPENSE_VIEW = "0040040003000001";
+    var RIGHT_EXPENSE_CREATE = "0040040003000002";
+    var RIGHT_EXPENSE_ACCOUNTING = "0040040003000003";
+    var RIGHT_EXPENSE_POST_AUDIT = "0040040003000010";
+
+    var hasView = rights.indexOf(RIGHT_EXPENSE_VIEW) >= 0;
+    var hasCreate = rights.indexOf(RIGHT_EXPENSE_CREATE) >= 0;
+    var hasAccounting = rights.indexOf(RIGHT_EXPENSE_ACCOUNTING) >= 0;
+    var isPostAuditRole = rights.indexOf(RIGHT_EXPENSE_POST_AUDIT) >= 0;
+    var initialRole = "";
+
+    if (hasCreate) {
+        initialRole = hasAccounting ? "kttc" : "dmms";
+    }
+
+    var dataPermission = htktExpenseView_getDataPermission(currentUser);
+    var relatedUserFields = "created.by+user.checker.kttc+user.checker.dmms+user.approver.dmms+user.approver.kttc+user.checker.final+user.approver.final";
+    var dataFilterInfo;
+
+    if (isPostAuditRole) {
+        dataFilterInfo = htktExpenseView_buildPostAuditFilter(contactInfo, dataPermission);
+        dataPermission = {
+            scope: dataFilterInfo.dataScopeCode,
+            unit: dataFilterInfo.dataScopeUnits
+        };
+    } else {
+        dataFilterInfo = {
+            defaultFilter: htktExpenseView_buildRelatedUserFilter(currentUser, hasView),
+            dataScope: "Nguoi tao hoac nguoi duoc giao xu ly",
+            dataScopeCode: "HTKT_EXPENSE_RELATED_USER",
+            dataScopeField: relatedUserFields,
+            dataScopeUnits: currentUser ? [currentUser] : []
+        };
+    }
+
+    var defaultFilter = dataFilterInfo.defaultFilter;
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
+        'HachToanKeToan/DuChi/DanhSachDuChi',
+        '',
+        {
+            user: currentUser,
+            currentUser: currentUser,
+            contactId: currentUser,
+            initialRole: initialRole,
+            operatorName: operatorName,
+            fullName: contactInfo.fullName,
+            branchCode: contactInfo.branchCode,
+            unit: {
+                lv1: contactInfo.lv1,
+                lv2: contactInfo.lv2,
+                lv3: contactInfo.lv3,
+                orgUnit: contactInfo.orgUnit,
+                position: contactInfo.position,
+                positionName: contactInfo.positionName
+            },
+            defaultFilter: defaultFilter,
+            permissionQuery: defaultFilter,
+            dataScope: dataFilterInfo.dataScope,
+            dataScopeCode: dataFilterInfo.dataScopeCode,
+            dataScopeField: dataFilterInfo.dataScopeField,
+            dataScopeUnits: dataFilterInfo.dataScopeUnits,
+            dataPermissionSubModule: "00401",
+            dataPermission: dataPermission,
+            rights: rights,
+            permission: {
+                view: isPostAuditRole ? true : hasView,
+                expenseView: isPostAuditRole ? true : hasView,
+                create: hasCreate,
+                accounting: hasAccounting,
+                postAudit: isPostAuditRole
+            },
+            btnConfig: [
+                { id: 'create', visible: hasCreate },
+                { id: 'accounting', visible: hasAccounting }
+            ],
+            debugSource: "ESD_HTKT_EXPENSE"
+        }
+    );
+}
+
+/**
+ * Tab Thông tin phê duyệt
+ */
+function getTabThongTinPheDuyet(endpoint, input, extraData) {
+    var payment = vars["$L.file"] || vars.$L_file || extraData;
+    var currentUser = String(vars["$lo.contact.name"] ||
+        (vars.$lo_operator ? vars.$lo_operator["contact.name"] : "") || "").trim();
+    var initData = payment
+        ? lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.getPaymentApprovalInitData(payment, currentUser)
+        : {};
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabThongTinPheDuyet', '', initData);
+}
+
+/**
+ * Tab Tài liệu đính kèm (Chỉ hiện tab đối với role KTTC trở đi)
+ */
+function getTabTaiLieuDinhKem() {
+    var currentRecord = {};
+    if (vars.$L_file) {
+        var prepaymentId = vars.$L_file["id"];
+        var contractId = vars.$L_file["contract.id"] || "";
+
+        if (!contractId && prepaymentId) {
+            var prepFile = new SCFile("esdHTKTpayment");
+            var sqlPrep = "id=\"" + prepaymentId + "\"";
+            var rcPrep = prepFile.doSelect(sqlPrep);
+
+            if (rcPrep == RC_SUCCESS) {
+                contractId = prepFile["contract.id"] || "";
+            }
+        }
+
+        currentRecord = {
+            "id": prepaymentId || "",
+            "contractId": contractId,
+            "vendorId": vars.$L_file["vendor.id"] || "",
+            "currentPhase": vars.$L_file["current.phase"],
+            "initialRole": vars.$L_file["initial.role"],
+            "userCheckerKttc": vars.$L_file["user.checker.kttc"],
+            "userCheckerDmms": vars.$L_file["user.checker.dmms"],
+            "userApproverKttc": vars.$L_file["user.approver.kttc"],
+            "userApproverDmms": vars.$L_file["user.approver.dmms"],
+            "userCheckerFinal": vars.$L_file["user.checker.final"],
+            "userApproverFinal": vars.$L_file["user.approver.final"],
+            "createdBy": vars.$L_file["created.by"],
+            "currentUser": vars['$lo.contact.name'],
+            "status": vars.$L_file["status"]
+        };
+    }
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabTaiLieuDinhKem', '', currentRecord);
+}
+
+/**
+ * Tab Kết quả hạch toán
+ */
+function getTabKetQuaHachToan() {
+    return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
+}
+
+/**
+ * Tab Thông tin phê duyệt
+ */
+function getTabKetQuaGD() {
+    return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
+}
+
+//Dung cho tab tài liệu đính kèm của NCC
+function renderTabTaiLieuDinhKemNCC(endpoint, input, extraData) {
+    var currentRecord = extraData;
+
+    if (!currentRecord || (Array.isArray(currentRecord) && currentRecord.length === 0) || (typeof currentRecord === 'object' && Object.keys(currentRecord).length === 0)) {
+        if (vars.$L_file) {
+            var paymentId = vars.$L_file["payment.id"];
+            var currentPhase = vars.$L_file["current.phase"];
+            var initialRole = vars.$L_file["initial.role"];
+            var userCheckerKttc = vars.$L_file["user.checker.kttc"];
+            var userCheckerDmms = vars.$L_file["use.checker.dmms"];
+            //
+            var userApproverKttc = vars.$L_file["user.approver.kttc"];
+            var userApproverDmms = vars.$L_file["user.approver.dmms"];
+            var userCheckerFinal = vars.$L_file["user.checker.final"];
+            var userApproverFinal = vars.$L_file["user.approver.final"];
+            var userApproverKttc = vars.$L_file["user.approver.kttc"];
+            var createdBy = vars.$L_file["created.by"];
+
+            var status = vars.$L_file["status"];
+
+            if ((!currentPhase || !initialRole) && paymentId) {
+                var prepFile = new SCFile("esdHTKTpayment");
+                var sqlPrep = "id=\"" + paymentId + "\"";
+                var rcPrep = prepFile.doSelect(sqlPrep);
+
+                if (rcPrep == RC_SUCCESS) {
+                    if (!currentPhase && prepFile["current.phase"]) {
+                        currentPhase = prepFile["current.phase"];
+                    }
+                    if (!initialRole && prepFile["initial.role"]) {
+                        initialRole = prepFile["initial.role"];
+                    }
+                    if (!userCheckerKttc && prepFile["user.checker.kttc"]) {
+                        userCheckerKttc = prepFile["user.checker.kttc"];
+                    }
+                    if (!userCheckerDmms && prepFile["use.checker.dmms"]) {
+                        userCheckerDmms = prepFile["use.checker.dmms"];
+                    }
+                    //
+                    if (!userApproverKttc && prepFile["user.approver.kttc"]) {
+                        userApproverKttc = prepFile["user.approver.kttc"];
+                    }
+                    if (!userApproverDmms && prepFile["user.approver.dmms"]) {
+                        userApproverDmms = prepFile["user.approver.dmms"];
+                    }
+                    if (!userCheckerFinal && prepFile["user.checker.final"]) {
+                        userCheckerFinal = prepFile["user.checker.final"];
+                    }
+                    if (!userApproverFinal && prepFile["user.approver.final"]) {
+                        userApproverFinal = prepFile["user.approver.final"];
+                    }
+                    if (!createdBy && prepFile["created.by"]) {
+                        createdBy = prepFile["created.by"];
+                    }
+                    if (!status && prepFile["status"]) {
+                        status = prepFile["status"];
+                    }
+                }
+            }
+
+            // Gán dữ liệu vào currentRecord
+            currentRecord = {
+                "id": vars.$L_file["id"],
+                "payment.id": paymentId,
+                "contract.id": vars.$L_file["contract.id"],
+                "payment.status": vars.$L_file["payment.status"],
+                "vendor.number": vars.$L_file["vendor.number"],
+                "vendor.id": vars.$L_file["vendor.id"],
+                "currentPhase": currentPhase,
+                "initialRole": initialRole,
+                "userCheckerKttc": userCheckerKttc,
+                "userCheckerDmms": userCheckerDmms,
+
+                "userApproverKttc": userApproverKttc,
+                "userApproverDmms": userApproverDmms,
+                "userCheckerFinal": userCheckerFinal,
+                "userApproverFinal": userApproverFinal,
+                "createdBy": createdBy,
+
+                "status": status,
+                "currentUser": vars['$lo.contact.name']
+            };
+        }
+    }
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabThongTinMonDuChi/TabTaiLieuDinhKem', '', currentRecord);
+}
+
+//Dung cho tab thong tin cong no của NCC
+function renderTabLiabilityInfo(endpoint, input, extraData) {
+    var currentRecord = extraData;
+
+    // 1. Kiểm tra và khởi tạo object nếu extraData trống
+    if (!currentRecord || (Array.isArray(currentRecord) && currentRecord.length === 0) || (typeof currentRecord === 'object' && Object.keys(currentRecord).length === 0)) {
+        if (vars.$L_file) {
+            currentRecord = {
+                "id": vars.$L_file["id"],
+                "payment.id": vars.$L_file["payment.id"],
+                "contract.id": vars.$L_file["contract.id"],
+                "payment.status": vars.$L_file["payment.status"],
+                "vendor.number": vars.$L_file["vendor.number"],
+                "vendor.id": vars.$L_file["vendor.id"]
+            };
+        } else {
+            currentRecord = {};
+        }
+    }
+
+    // 2. Thêm query lấy contract.id dựa vào payment.id nếu contract.id chưa có giá trị
+
+    var paymentId = currentRecord["payment.id"] || vars.$L_file["payment.id"];
+    if (paymentId && !currentRecord["contract.id"]) {
+        var paymentRec = new SCFile("esdHTKTpayment");
+        var sql = "id=\"" + paymentId + "\"";
+
+        if (paymentRec.doSelect(sql) === RC_SUCCESS) {
+            currentRecord = {
+                "id": vars.$L_file["id"],
+                "paymentId": paymentId,
+                "contractId": paymentRec["contract.id"],
+                "vendorId": vars.$L_file["vendor.id"],
+                "currentPhase": paymentRec["current.phase"],
+                "initialRole": paymentRec["initial.role"],
+                "createdBy": paymentRec["created.by"],
+                "userCheckerDmms": paymentRec["user.checker.dmms"],
+                "userCheckerKttc": paymentRec["user.checker.kttc"],
+                "userApproverKttc": paymentRec["user.approver.kttc"],
+                "userApproverDmms": paymentRec["user.approver.dmms"],
+                "userCheckerFinal": paymentRec["user.checker.final"],
+                "userApproverFinal": paymentRec["user.approver.final"],
+                "currentUser": vars['$lo.contact.name'],
+                "status": paymentRec["status"]
+            };
+        }
+    }
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS("HachToanKeToan/DuChi/TabThongTinMonDuChi/TabThongTinCongNo", '', currentRecord);
+}
+
+
+/**
+ * Render tab Thông tin hạch toán
+ */
+function getTabThongTinHT(endpoint, input, extraData) {
+    var formRecord = vars['$L.file'];
+    var currentRecord = extraData || {};
+
+    if (
+            (!currentRecord || Object.keys(currentRecord).length === 0) &&
+            formRecord
+    ) {
+        currentRecord = formRecord;
+    }
+
+    var paymentId = currentRecord ?
+            String(currentRecord['id'] || '') :
+            '';
+
+    var currentUser = String(
+            vars['$lo.contact.name'] || ''
+    ).trim();
+
+    var currentPhase = formRecord ?
+            String(formRecord['current.phase'] || '').trim() :
+            '';
+
+    var userCheckerKttc = formRecord ?
+            String(formRecord['user.checker.kttc'] || '').trim() :
+            '';
+
+    var initialRole = formRecord ?
+            String(formRecord['initial.role'] || '').trim() :
+            '';
+
+    var createdBy = formRecord ?
+            String(formRecord['created.by'] || '').trim() :
+            '';
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
+            'HachToanKeToan/DuChi/TabThongTinHachToan',
+            '', {
+                id: paymentId,
+                paymentId: paymentId,
+                user: currentUser,
+                currentUser: currentUser,
+                contactId: currentUser,
+                createdBy: createdBy,
+                currentPhase: currentPhase,
+                userCheckerKttc: userCheckerKttc,
+                initialRole: initialRole,
+                currentRecord: {
+                    id: paymentId,
+                    currentPhase: currentPhase,
+                    userCheckerKttc: userCheckerKttc,
+                    initialRole: initialRole
+                }
+            }
+    );
+}
+
+/**
+ * Render tab Thông tin món Dự chi cho phiếu đang mở.
+ * Ngoài id phiếu, tab cần cùng context người dùng/phạm vi dữ liệu như màn
+ * danh sách để API listPurchaseContracts áp dụng đúng role và data scope.
+ */
+function getTabThongTinMonDuChi(endpoint, input, extraData) {
+    var currentRecord = extraData || {};
+    var expenseRecord = vars["$L.file"] || vars.$L_file;
+    var expenseId = String(currentRecord.id || "").replace(/^\s+|\s+$/g, "");
+
+    if (!expenseId && expenseRecord) {
+        expenseId = String(expenseRecord["id"] || "").replace(/^\s+|\s+$/g, "");
+    }
+
+    vars.$G_payment_id = expenseId;
+
+    var currentUser = String(vars['$lo.contact.name'] || "").replace(/^\s+|\s+$/g, "");
+    var operatorName = String(system.user.name || "").replace(/^\s+|\s+$/g, "");
+    var contactInfo = htktExpenseView_readContact(currentUser);
+    var rights = htktExpenseView_getRights();
+    var hasCreate = rights.indexOf("0040040003000002") >= 0;
+    var hasAccounting = rights.indexOf("0040040003000003") >= 0;
+    var initialRole = hasCreate ? (hasAccounting ? "kttc" : "dmms") : "";
+    var dataPermission = htktExpenseView_getDataPermission(currentUser);
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
+        'HachToanKeToan/DuChi/TabThongTinMonDuChi',
+        expenseId ? '?id=' + encodeURIComponent(expenseId) : '',
+        {
+            id: expenseId,
+            user: currentUser,
+            currentUser: currentUser,
+            contactId: currentUser,
+            operatorName: operatorName,
+            fullName: contactInfo.fullName,
+            branchCode: contactInfo.branchCode,
+            initialRole: initialRole,
+            unit: {
+                lv1: contactInfo.lv1,
+                lv2: contactInfo.lv2,
+                lv3: contactInfo.lv3,
+                orgUnit: contactInfo.orgUnit,
+                position: contactInfo.position,
+                positionName: contactInfo.positionName
+            },
+            dataScope: dataPermission.scope,
+            dataScopeCode: dataPermission.scope,
+            dataScopeUnits: dataPermission.unit,
+            dataPermissionSubModule: "00401",
+            dataPermission: dataPermission,
+            rights: rights
+        }
+    );
+}
+// ======================================================================================
+// ======================================================================================
+// ======================================================================================
+
+function renderHdsd() {
+    var scFile = new SCFile('esdAttachments');
+    var result = scFile.doSelect(`id = "HDSD_HTKT_Thanh_toan" and module = "HTKT" and function = "Thanh toan"`);
+    var base64PDF = "";
+    if (result == RC_SUCCESS) {
+        var attachments = scFile.getAttachments();
+
+        for (var i = 0; i < attachments.length; i++) {
+            var att = attachments[i];
+            var binaryData = att.value;
+            if (att.value) {
+                var base64 = base64Encode(binaryData);
+                base64PDF = lib.ESD_HTKT_PAYMENT_COMMON.htktEscapeForJavaScript(base64);
+            }
+        }
+    }
+    if (scFile) scFile.doClose();
+    return (
+        "<div style='border-radius: 6px; height: 100%; width: 100%; box-shadow: 0 2px 8px rgb(0 0 0 / 26%); overflow: hidden; box-sizing: border-box; font-family: Arial, sans-serif;'>" +
+        "<div style='margin:10px;border-bottom: 1px solid #ddd; padding-bottom: 10px; margin: 10px 15px; font-size: 17px; font-weight: 600; color: #0835D9;'>Hướng dẫn thực hiện</div>" +
+        "<div style='margin:10px;border:1px solid #ddd;padding:0;width:100%;height:100%;font-family:Arial,sans-serif;'>" +
+        "<iframe id='htktPdfFrame' width='100%' height='100%' style='min-height:700px;border:none;background:#e5e7eb;'></iframe>" +
+        "<script>" +
+        "(function(){" +
+        "var base64='" + base64PDF + "';" +
+        "function toBytes(value){" +
+        "var binary=atob(value);" +
+        "var bytes=new Uint8Array(binary.length);" +
+        "for(var i=0;i<binary.length;i++){bytes[i]=binary.charCodeAt(i);}" +
+        "return bytes;" +
+        "}" +
+        "try{" +
+        "var blob=new Blob([toBytes(base64)],{type:'application/pdf'});" +
+        "var url=URL.createObjectURL(blob);" +
+        "var frame=document.getElementById('htktPdfFrame');" +
+        "frame.src=url+'#toolbar=0&navpanes=0&view=FitH';" +
+        "window.addEventListener('beforeunload',function(){URL.revokeObjectURL(url);});" +
+        "}catch(e){" +
+        "document.body.innerHTML='<div style=\"padding:16px;color:red;font-family:Arial;\">Lỗi render PDF: '+e+'</div>';" +
+        "}" +
+        "})();" +
+        "</script>" +
+        "</div>" +
+        "</div>"
+    );
+}

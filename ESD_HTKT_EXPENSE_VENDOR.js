@@ -63,17 +63,6 @@ function createPaymentVendor(input) {
         if (!currentUser) return { success: false, message: "Không xác định được người thực hiện." };
         if (contracts.length === 0) return { success: false, message: "Chưa chọn hợp đồng." };
 
-        paymentFile = new SCFile("esdHTKTpayment");
-        var paymentRc = paymentFile.doSelect(
-            'id="' + escapeExpenseVendorQueryValue(paymentId) + '"'
-        );
-        if (paymentRc !== RC_SUCCESS) {
-            return { success: false, message: "Không tìm thấy phiếu Dự chi " + paymentId + "." };
-        }
-        if (normalizeExpenseVendorValue(paymentFile["transaction.type"]) !== "Dự chi") {
-            return { success: false, message: "Phiếu " + paymentId + " không thuộc loại Dự chi." };
-        }
-
         var createdItems = [];
         var seen = {};
         for (var i = 0; i < contracts.length; i++) {
@@ -118,6 +107,14 @@ function createPaymentVendor(input) {
         }
 
         if (createdItems.length > 0) {
+            paymentFile = new SCFile("esdHTKTpayment");
+            var paymentRc = paymentFile.doSelect(
+                'id="' + escapeExpenseVendorQueryValue(paymentId) + '"'
+            );
+            if (paymentRc !== RC_SUCCESS) {
+                throw new Error("Không tìm thấy phiếu Dự chi " + paymentId + ".");
+            }
+
             paymentFile["total.contract"] =
                 Number(paymentFile["total.contract"] || 0) + createdItems.length;
             var updateRc = paymentFile.doUpdate();
@@ -231,7 +228,6 @@ function normalizeExpenseVendorValue(value) {
 
 function generateExpensePaymentVendorId() {
     var numberClass = "esdHTKTexpenseVendor";
-    var prefix = "DC";
     var numberRc = new SCDatum();
     numberRc.setValue(-1);
     var nextNumber = new SCDatum();
@@ -240,9 +236,6 @@ function generateExpensePaymentVendorId() {
 
     var rcText = String(numberRc.getText()).replace(/^\s+|\s+$/g, "");
     var rawNumber = String(nextNumber.getText()).replace(/^\s+|\s+$/g, "");
-    if (/^"[^"]*"$/.test(rawNumber) || /^'[^']*'$/.test(rawNumber)) {
-        rawNumber = rawNumber.substring(1, rawNumber.length - 1);
-    }
     if (rcText !== "0" || !rawNumber) {
         throw new Error(
             "Không cấp được ID từ Sequential Numbers " + numberClass +
@@ -250,7 +243,7 @@ function generateExpensePaymentVendorId() {
         );
     }
 
-    return rawNumber.indexOf(prefix) === 0 ? rawNumber : prefix + rawNumber;
+    return rawNumber;
 }
 
 function escapeExpenseVendorQueryValue(value) {
@@ -264,18 +257,25 @@ function closeExpenseVendorFile(file) {
 
 function loadPaymentVendorInfo(record) {
     var itemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+    vars.$arrVendors = [];
+    vars.$supplierdisplays = [];
+    vars.$suppliervalues = [];
 
     var itemQuery =
             'select hpv.contract.id as contract.id,' +
-            ' hv.supplier.id as supplier.id,' +
-            ' hv.vendor.name as supplier.name,' +
+            ' hv.supplier.id as current.supplier.id,' +
+            ' hv.vendor.name as current.supplier.name,' +
+            ' hv.vendor.number as current.tax.code,' +
+            ' hdVendor.supplier.id as supplier.id,' +
+            ' hdVendor.supplier.name as supplier.name,' +
+            ' dmVendor.tax.code as tax.code,' +
             ' hpv.amount as amount,' +
-            ' hv.vendor.number as tax.code,' +
             ' hpv.ogl.sync.status as ogl.sync.status,' +
             ' hvs.ogl.site.code as ogl.site.code,' +
             ' hpv.currency as currency,' +
             ' hp.unit.lv1 as unit.lv1,' +
             ' hp.unit.lv2 as unit.lv2,' +
+            ' hp.description as description,' +
             ' hp.current.phase as current.phase,' +
             ' hp.created.by as created.by,' +
             ' hp.initial.role as initial.role,' +
@@ -284,38 +284,53 @@ function loadPaymentVendorInfo(record) {
             ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
             ' LEFT JOIN esdHTKTpayment hp ON (hpv.payment.id = hp.id)' +
             ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
+            ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hpv.contract.id = hdVendor.contract.id)' +
+            ' LEFT JOIN esdDMSupplier dmVendor ON (hdVendor.supplier.id = dmVendor.id)' +
             ' where hpv.id = "' + escapeExpenseVendorQueryValue(record.id) + '"';
 
-    if (itemFile.doSelect(itemQuery) == RC_SUCCESS) {
+    arrVendors = [];
+    var supplierIds = {};
+    var itemRc = itemFile.doSelect(itemQuery);
+    var hasItem = itemRc == RC_SUCCESS;
+    var isFirstItem = true;
+    var currentPhase = "";
+    var createdBy = "";
+    var initialRole = "";
+    var checkerKttc = "";
+    var oglSyncStatus = false;
 
-        vars.$currency = itemFile["currency"];
-        vars.$supplierId = itemFile["supplier.id"];
-        vars.$taxCode = itemFile["tax.code"];
-        var contractId = normalizeExpenseVendorValue(itemFile["contract.id"]);
-        var arrVendors = [];
-        var supplierIds = {};
-        var contractVendorFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
-        try {
-            var contractVendorQuery =
-                    'select hdVendor.supplier.id as supplier.id,' +
-                    ' hdVendor.supplier.name as supplier.name' +
-                    ' from esdHDcontractSupplier hdVendor' +
-                    ' where hdVendor.contract.id = "' + escapeExpenseVendorQueryValue(contractId) + '"';
-            var contractVendorRc = contractVendorFile.doSelect(contractVendorQuery);
-            while (contractVendorRc == RC_SUCCESS) {
-                var supplierId = normalizeExpenseVendorValue(contractVendorFile["supplier.id"]);
-                if (supplierId && !supplierIds[supplierId]) {
-                    arrVendors.push({
-                        "supplier.id": supplierId,
-                        "supplier.name": contractVendorFile["supplier.name"]
-                    });
-                    supplierIds[supplierId] = true;
-                }
-                contractVendorRc = contractVendorFile.getNext();
-            }
-        } finally {
-            closeExpenseVendorFile(contractVendorFile);
+    while (itemRc == RC_SUCCESS) {
+        if (isFirstItem) {
+            vars.$currency = itemFile["currency"];
+            vars.$supplierId = itemFile["current.supplier.id"];
+            vars.$supplierName = itemFile["current.supplier.name"];
+            vars.$taxCode = itemFile["current.tax.code"];
+            vars.$oglSiteCode = itemFile["ogl.site.code"];
+            vars.$amount = itemFile["amount"];
+            vars.$unitLv1 = itemFile["unit.lv1"];
+            vars.$unitLv2 = itemFile["unit.lv2"];
+            currentPhase = itemFile["current.phase"];
+            createdBy = itemFile["created.by"];
+            initialRole = itemFile["initial.role"];
+            checkerKttc = itemFile["user.checker.kttc"];
+            oglSyncStatus = itemFile["ogl.sync.status"];
+            isFirstItem = false;
         }
+
+        var supplierId = normalizeExpenseVendorValue(itemFile["supplier.id"]);
+        if (supplierId && !supplierIds[supplierId]) {
+            arrVendors.push({
+                "supplier.id": supplierId,
+                "supplier.name": itemFile["supplier.name"],
+                "tax.code": itemFile["tax.code"],
+                "description": itemFile["description"]
+            });
+            supplierIds[supplierId] = true;
+        }
+        itemRc = itemFile.getNext();
+    }
+
+    if (hasItem) {
 
         vars.$supplierdisplays = arrVendors.map(function (vendor) {
             return vendor["supplier.name"];
@@ -323,40 +338,89 @@ function loadPaymentVendorInfo(record) {
         vars.$suppliervalues = arrVendors.map(function (vendor) {
             return vendor["supplier.id"];
         });
-        vars.$oglSiteCode = itemFile["ogl.site.code"];
-        vars.$amount = itemFile["amount"];
-        vars.$unitLv1 = itemFile["unit.lv1"];
-        vars.$unitLv2 = itemFile["unit.lv2"];
+        vars.$arrVendors = arrVendors;
 
         vars.$showSyncVendorOgl =
-                itemFile["current.phase"] == "initial_kttc" &&
+                currentPhase == "initial_kttc" &&
                 (
-                        itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
+                        checkerKttc == vars.$lo_operator["contact.name"] ||
                         (
-                                itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-                                itemFile["initial.role"] == "kttc"
+                                createdBy == vars.$lo_operator["contact.name"] &&
+                                initialRole == "kttc"
                         )
                 );
 
-        vars.$canEditSite = vars.$showSyncVendorOgl && itemFile["ogl.sync.status"] == true
+        vars.$canEditSite = vars.$showSyncVendorOgl && oglSyncStatus == true
 
         vars.$canEditObj =
                 (
-                        itemFile["current.phase"] == "initial_dmms" &&
-                        itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-                        itemFile["initial.role"] == "dmms"
+                        currentPhase == "initial_dmms" &&
+                        createdBy == vars.$lo_operator["contact.name"] &&
+                        initialRole == "dmms"
                 ) ||
                 (
-                        itemFile["current.phase"] == "initial_kttc" &&
+                        currentPhase == "initial_kttc" &&
                         (
-                                itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
+                                checkerKttc == vars.$lo_operator["contact.name"] ||
                                 (
-                                        itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-                                        itemFile["initial.role"] == "kttc"
+                                        createdBy == vars.$lo_operator["contact.name"] &&
+                                        initialRole == "kttc"
                                 )
                         )
                 );
     }
 
     closeExpenseVendorFile(itemFile);
+}
+
+/**
+ * Validate thông tin món Dự chi theo NCC trước khi lưu.
+ * Không kiểm tra hóa đơn, hoàn ứng, số tiền còn lại hoặc công nợ phải trả.
+ */
+function validateVendorAndPaymentDetails(record) {
+    var errorMss = [];
+
+    function checkMaxLength(value, maxLength, fieldName) {
+        if (value && String(value).length > maxLength) {
+            errorMss.push(fieldName + " không được vượt quá " + maxLength + " ký tự.");
+        }
+    }
+
+    function parseAmount(value) {
+        if (value === null || value === undefined) return NaN;
+        var normalizedValue = String(value).replace(/,/g, "").trim();
+        if (!normalizedValue) return NaN;
+        var numberValue = Number(normalizedValue);
+        return isFinite(numberValue) ? numberValue : NaN;
+    }
+
+    var vendorName = vars.$supplierId;
+    if (!vendorName) {
+        errorMss.push("Tên Nhà cung cấp là bắt buộc.");
+    } else {
+        checkMaxLength(vendorName, 255, "Tên Nhà cung cấp");
+    }
+
+    var taxCode = vars.$taxCode;
+    if (!taxCode) {
+        errorMss.push("Thông tin Mã số thuế là bắt buộc.");
+    } else {
+        checkMaxLength(taxCode, 255, "Thông tin Mã số thuế");
+    }
+
+    var amountField = parseAmount(vars.$amount);
+    if (isNaN(amountField)) {
+        errorMss.push("Số tiền dự chi là bắt buộc.");
+    } else if (amountField <= 0) {
+        errorMss.push("Số tiền dự chi phải lớn hơn 0.");
+    }
+
+    var transactionDescription = String(record["transaction.des"] || "").trim();
+    if (!transactionDescription) {
+        errorMss.push("Nội dung đề nghị không được để trống.");
+    } else {
+        checkMaxLength(transactionDescription, 255, "Nội dung đề nghị");
+    }
+    
+    return errorMss;
 }

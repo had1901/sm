@@ -118,6 +118,7 @@ function getListPaymentInvoice(input) {
         ["iv.unit.lv2", "unit_lv2", "S"],
         ["iv.unit.lv3", "unit_lv3", "S"],
         ["pi.deduction.type", "deduction_type", "S"],
+        ["pi.contract.id", "contract_code", "S"],
         ["pi.payment.id", "payment_id", "S"]
     ];
 
