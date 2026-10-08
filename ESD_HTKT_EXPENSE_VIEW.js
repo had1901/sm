@@ -183,6 +183,52 @@ function getTabThongTinHT(endpoint, input, extraData) {
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabThongTinHachToan', '', payload);
 }
 
+/** Render màn chỉnh sửa chi tiết hạch toán Dự chi (chỉ bút toán AP). */
+function getTabChiTietThongTinHT(endpoint, input, extraData) {
+    var formRecord = vars['$L.file'] || vars.$L_file;
+    var source = extraData || {};
+    var expenseId = String(
+        source.duChiId || source.paymentId || source['payment.id'] ||
+        (formRecord ? formRecord['payment.id'] : '') || source.id ||
+        vars.$G_payment_id || (formRecord ? formRecord['id'] : '') || ''
+    ).replace(/^\s+|\s+$/g, '');
+    var expenseRecord = formRecord || source;
+
+    if (expenseId) {
+        var expenseFile = new SCFile('esdHTKTpayment');
+        var query = 'id="' + htktExpenseView_escapeQueryValue(expenseId) + '"';
+        if (expenseFile.doSelect(query) === RC_SUCCESS) {
+            expenseRecord = expenseFile;
+        }
+    }
+
+    var currentUser = String(vars['$lo.contact.name'] || '').replace(/^\s+|\s+$/g, '');
+    var currentRecord = {
+        id: expenseId,
+        duChiId: expenseId,
+        paymentId: expenseId,
+        currentPhase: expenseRecord['current.phase'] || '',
+        initialRole: expenseRecord['initial.role'] || '',
+        createdBy: expenseRecord['created.by'] || '',
+        userCheckerDmms: expenseRecord['user.checker.dmms'] || '',
+        userCheckerKttc: expenseRecord['user.checker.kttc'] || '',
+        userApproverKttc: expenseRecord['user.approver.kttc'] || '',
+        userApproverDmms: expenseRecord['user.approver.dmms'] || '',
+        userCheckerFinal: expenseRecord['user.checker.final'] || '',
+        userApproverFinal: expenseRecord['user.approver.final'] || '',
+        user: currentUser,
+        currentUser: currentUser,
+        contactId: currentUser,
+        status: expenseRecord['status'] || ''
+    };
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
+        'HachToanKeToan/DuChi/TabThongTinHachToan/ChiTietHachToan',
+        expenseId ? '?id=' + encodeURIComponent(expenseId) : '',
+        currentRecord
+    );
+}
+
 function getTabKetQuaHachToan() {
     return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
 }
