@@ -1010,7 +1010,7 @@ function appendAccountingRetryChange(lines, label, previousValue, currentValue) 
     if (!afterText || beforeText === afterText) return;
 
     lines.push(
-        "↳ Thay đổi " + label + " từ " +
+        "Thay đổi " + label + " từ " +
         (beforeText || "(trống)") + " thành " +
         (afterText || "(trống)")
     );
@@ -1043,6 +1043,97 @@ function buildAccountingRetryTitle(accountingType, prepaymentId, subType, invoic
     }
 
     return "Thử lại giao dịch " + accountingType;
+}
+
+/**
+ * Lấy mã tham chiếu kênh đã được lưu trong payload CORE.
+ * CITAD chỉ gửi 16 ký tự request.id, còn INHOUSE gửi toàn bộ request.id.
+ */
+function resolveCoreRetryInquiryChanRefno(payload, requestId, subType) {
+    var payloadData = payload && payload.data &&
+            typeof payload.data === "object" &&
+            !Array.isArray(payload.data)
+            ? payload.data
+            : {};
+    var chanRefno = String(
+            payloadData.chanRefno ||
+            payloadData.chanRefNum ||
+            payload.chanRefno ||
+            payload.chanRefNum ||
+            payload.trnRefNum ||
+            ""
+    ).trim();
+
+    if (chanRefno) return chanRefno;
+
+    var normalizedRequestId = String(
+            payload.requestId || requestId || ""
+    ).trim();
+    return String(subType || "").trim().toUpperCase() === "CITAD"
+            ? normalizedRequestId.substring(0, 16)
+            : normalizedRequestId;
+}
+
+/**
+ * Vấn tin CORE trước khi gửi lại. Mọi lỗi vấn tin hoặc trạng thái
+ * khác C đều trả completed=false để luồng retry gọi callApiCore().
+ */
+function inquireCoreStatusBeforeRetry(payload, requestId, subType) {
+    var result = {
+        completed: false,
+        chanRefno: resolveCoreRetryInquiryChanRefno(
+                payload,
+                requestId,
+                subType
+        ),
+        pmtStatus: "",
+        hostRefNum: "",
+        inquiryResult: null
+    };
+
+    try {
+        var inquiryLib = lib.ESD_HTKT_FUND_TRANSFER_INTEGRATION;
+        if (!inquiryLib ||
+                typeof inquiryLib.inquireTransactionStatus !== "function" ||
+                !result.chanRefno) {
+            return result;
+        }
+
+        result.inquiryResult = inquiryLib.inquireTransactionStatus({
+            chanRefno: result.chanRefno,
+            useSitMock: true
+        });
+
+        var body = result.inquiryResult && result.inquiryResult.body;
+        var inquiryData = body && body.data &&
+                typeof body.data === "object"
+                ? body.data
+                : {};
+        var inquiryTransactionInfo = inquiryData.txnInfo &&
+                typeof inquiryData.txnInfo === "object"
+                ? inquiryData.txnInfo
+                : {};
+
+        result.pmtStatus = String(
+                inquiryData.pmtStatus || ""
+        ).trim().toUpperCase();
+        result.hostRefNum = String(
+                inquiryTransactionInfo.hostRefNum ||
+                inquiryData.hostRefNum ||
+                ""
+        ).trim();
+        result.completed = result.inquiryResult &&
+                String(result.inquiryResult.statusCode || "").trim() === "0" &&
+                result.pmtStatus === "C" &&
+                !!result.hostRefNum;
+    } catch (eInquiry) {
+        result.inquiryResult = {
+            success: false,
+            error: String(eInquiry && eInquiry.message || eInquiry)
+        };
+    }
+
+    return result;
 }
 
 /**
@@ -1263,6 +1354,17 @@ function retryAccountingErrorsResult(input) {
                 currentPayload.requestId = newRequestId;
             }
 
+            var retryAccountingInfo = {
+                "request.id": newRequestId,
+                "prepayment.id": retryPrepaymentId,
+                type: accountingType,
+                "sub.type": accountingInfo["sub.type"],
+                // CORE phải gửi lại đúng chuỗi data đang lưu trong DB.
+                data: accountingType === "CORE"
+                        ? previousData
+                        : JSON.stringify(currentPayload)
+            };
+
             // Bước 10: Chọn mã mock; ưu tiên mockCode do FE truyền lên
             var mockCode = String(
                 row.mockCode || mockCodeByType[accountingType] || "100"
@@ -1270,6 +1372,10 @@ function retryAccountingErrorsResult(input) {
 
             var mockDetail = mockMessageByCode[mockCode] ||
                 ("Mã phản hồi không xác định: " + mockCode);
+
+            if (accountingType === "CORE") {
+                mockDetail = "Gửi lại CORE thất bại";
+            }
 
             var retrySuccess = mockCode === "0";
             var mockResponse;
@@ -1318,43 +1424,128 @@ function retryAccountingErrorsResult(input) {
                 continue;
             }
 
-            // Bước 11: Lưu kết quả mock vào cùng bản ghi.
-            accountingInfo["request.id"] = newRequestId;
-            accountingInfo["data"] = accountingType === "CORE" ? previousData : JSON.stringify(currentPayload);
-            accountingInfo["response"] = JSON.stringify(mockResponse);
-            accountingInfo["message"] = retrySuccess ? "" : mockDetail;
-            accountingInfo["status"] = retrySuccess
-                ? ACCOUNTING_STATUS.COMPLETED
-                : ACCOUNTING_STATUS.ERROR;
-            var retryCheckedTime = system.functions.tod();
-            accountingInfo["checked.time"] = retryCheckedTime;
-            accountingInfo["updated.at"] = retryCheckedTime;
+            var coreInquiryCompleted = false;
 
-            // Mock ma tham chieu khi thu lai thanh cong tren SIT.
-            if (retrySuccess) {
-                accountingInfo["host.res.num"] = "ABCXYZ";
-            }
+            if (accountingType === "CORE") {
+                // CORE dùng tích hợp thật: vấn tin trước để tránh
+                // gửi lại một giao dịch đã được Core Banking ghi nhận.
+                var coreInquiry = inquireCoreStatusBeforeRetry(
+                        currentPayload,
+                        targetRequestId,
+                        retrySubType
+                );
 
-            // Map dữ liệu mock AP sang các field kết quả; không dùng
-            // mockResponse.data.requestId để ghi đè request.id của bản ghi.
-            if (accountingType === "AP" && retrySuccess && mockResponse.data) {
-                accountingInfo["transaction.id"] = mockResponse.data.transactionId;
-                accountingInfo["ref.id"] = mockResponse.data.referenceId;
-                accountingInfo["batch.name"] = mockResponse.data.batchName;
-                accountingInfo["ap.code"] = mockResponse.data.invoiceNumber;
-                accountingInfo["payment.number"] = mockResponse.data.paymentNumber;
-            }
+                if (coreInquiry.completed) {
+                    var inquiryCheckedTime = system.functions.tod();
+                    var inquiryBody = coreInquiry.inquiryResult &&
+                            coreInquiry.inquiryResult.body;
 
-            var updateRc = accountingInfo.doUpdate();
+                    accountingInfo["host.res.num"] = coreInquiry.hostRefNum;
+                    accountingInfo["response"] = inquiryBody
+                            ? JSON.stringify(inquiryBody)
+                            : previousResponse;
+                    accountingInfo["message"] = "";
+                    accountingInfo["status"] = ACCOUNTING_STATUS.COMPLETED;
+                    accountingInfo["checked.time"] = inquiryCheckedTime;
+                    accountingInfo["updated.at"] = inquiryCheckedTime;
 
-            if (updateRc !== RC_SUCCESS) {
-                result.failed++;
-                result.errors.push({
-                    requestId: targetRequestId,
-                    type: accountingType,
-                    message: "Không lưu được kết quả giả lập"
-                });
-                continue;
+                    if (accountingInfo.doUpdate() !== RC_SUCCESS) {
+                        result.failed++;
+                        result.errors.push({
+                            requestId: targetRequestId,
+                            type: accountingType,
+                            message: "Không lưu được kết quả vấn tin CORE"
+                        });
+                        continue;
+                    }
+
+                    retrySuccess = true;
+                    coreInquiryCompleted = true;
+                } else {
+                    // Vấn tin lỗi, không có bản ghi hoặc pmtStatus khác C:
+                    // chuyển về CREATED rồi gửi lại nguyên data trong DB.
+                    accountingInfo["data"] = previousData;
+                    accountingInfo["response"] = "";
+                    accountingInfo["message"] = "";
+                    accountingInfo["status"] = ACCOUNTING_STATUS.CREATED;
+                    accountingInfo["transaction.id"] = "";
+                    accountingInfo["host.res.num"] = "";
+                    var coreRetryTime = system.functions.tod();
+                    accountingInfo["checked.time"] = coreRetryTime;
+                    accountingInfo["updated.at"] = coreRetryTime;
+
+                    if (accountingInfo.doUpdate() !== RC_SUCCESS) {
+                        result.failed++;
+                        result.errors.push({
+                            requestId: targetRequestId,
+                            type: accountingType,
+                            message: "Không lưu được bản ghi trước khi thử lại CORE"
+                        });
+                        continue;
+                    }
+
+                    try {
+                        accountingInfo.doClose();
+                    } catch (eCloseBeforeCoreRetry) {}
+                    accountingInfo = null;
+
+                    retrySuccess = lib.ESD_HTKT_ACCOUNTING_UTILS.callApiCore(
+                            retryAccountingInfo
+                    );
+
+                    accountingInfo = new SCFile(
+                            "esdHTKTaccountingInformation",
+                            SCFILE_READONLY
+                    );
+                    if (accountingInfo.doSelect(
+                            'request.id="' +
+                            escapeQueryValue(newRequestId) +
+                            '"'
+                    ) === RC_SUCCESS) {
+                        if (!retrySuccess) {
+                            mockDetail = String(
+                                    accountingInfo["message"] ||
+                                    "Gửi lại CORE thất bại"
+                            );
+                        }
+                    }
+                }
+            } else {
+                // AP/GL trên SIT tiếp tục dùng response giả lập hiện tại.
+                accountingInfo["request.id"] = newRequestId;
+                accountingInfo["data"] = retryAccountingInfo.data;
+                accountingInfo["response"] = JSON.stringify(mockResponse);
+                accountingInfo["message"] = retrySuccess ? "" : mockDetail;
+                accountingInfo["status"] = retrySuccess
+                    ? ACCOUNTING_STATUS.COMPLETED
+                    : ACCOUNTING_STATUS.ERROR;
+                var retryCheckedTime = system.functions.tod();
+                accountingInfo["checked.time"] = retryCheckedTime;
+                accountingInfo["updated.at"] = retryCheckedTime;
+
+                if (retrySuccess) {
+                    accountingInfo["host.res.num"] = "ABCXYZ";
+                }
+
+                // Map dữ liệu mock AP sang các field kết quả; không dùng
+                // mockResponse.data.requestId để ghi đè request.id của bản ghi.
+                if (accountingType === "AP" && retrySuccess && mockResponse.data) {
+                    accountingInfo["transaction.id"] = mockResponse.data.transactionId;
+                    accountingInfo["ref.id"] = mockResponse.data.referenceId;
+                    accountingInfo["batch.name"] = mockResponse.data.batchName;
+                    accountingInfo["ap.code"] = mockResponse.data.invoiceNumber;
+                    accountingInfo["payment.number"] = mockResponse.data.paymentNumber;
+                }
+
+                if (accountingInfo.doUpdate() !== RC_SUCCESS) {
+                    result.failed++;
+                    result.errors.push({
+                        requestId: targetRequestId,
+                        type: accountingType,
+                        message: "Không lưu được kết quả giả lập"
+                    });
+                    continue;
+                }
             }
 
             // Bước 13: Ghi lịch sử thử lại tại màn hình xử lý lỗi và phiếu gốc.
@@ -1372,8 +1563,16 @@ function retryAccountingErrorsResult(input) {
                     retrySubType,
                     currentInvoiceNumber || previousInvoiceNumber
                 ),
-                "Kết quả thử lại: " +
-                    (retrySuccess ? "Thành công (Giả lập)" : mockDetail)
+                coreInquiryCompleted
+                    ? "Kết quả vấn tin: Giao dịch CORE đã hoàn thành"
+                    : "Kết quả thử lại: " +
+                        (accountingType === "CORE"
+                            ? (retrySuccess
+                                ? "Đã gửi sang hệ thống tích hợp"
+                                : mockDetail)
+                            : (retrySuccess
+                                ? "Thành công (Giả lập)"
+                                : mockDetail))
             ];
 
             if (retrySuccess && accountingType === "AP") {
@@ -1455,7 +1654,7 @@ function retryAccountingErrorsResult(input) {
                 result.errors.push({
                     requestId: targetRequestId,
                     type: accountingType,
-                    code: mockCode,
+                    code: accountingType === "CORE" ? "CORE_RETRY_FAILED" : mockCode,
                     message: mockDetail
                 });
             }
@@ -2321,14 +2520,16 @@ function approveAccountingErrorsResult(input) {
                             accountingRec,
                             handlingRequestId
                     );
-//            =======MAIL07
-// Lưu lại thông tin cũ trước khi update để làm oldAccountingRecord nếu cần thiết
+                    
+//               ======MAIL 07     
+            // Lưu lại thông tin cũ trước khi update để làm oldAccountingRecord nếu cần thiết
             var oldAccountingRecord = {
                 oldResponse: accountingRec["response"],
                 oldMessage: accountingRec["message"],
                 oldCheckedTime: accountingRec["checked.time"]
             };
-//            =========END MAIL07
+//            ========END MAIL 07
+                    
 
             accountingRec["status"] = ACCOUNTING_STATUS.COMPLETED;
             accountingRec["message"] = "";
@@ -2341,16 +2542,16 @@ function approveAccountingErrorsResult(input) {
             }
 
             result.approved++;
-            //            =======MAIL07
-            // --- TÍCH HỢP GỬI MAIL KHI PHÊ DUYỆT THÀNH CÔNG ---
+            
+            
+            
+            // --- MAIL 07 TÍCH HỢP GỬI MAIL KHI PHÊ DUYỆT THÀNH CÔNG ---
             try {
-            var processer = authenticatedUser;
-                lib.ESD_HTKT_ACTION_WF_SEND_EMAIL.sendAccountingErrorResolvedEmail(oldAccountingRecord, accountingRec,processer);
+                var processer = accountingRec["updated.by"];
+                lib.ESD_HTKT_ACTION_WF_SEND_EMAIL.sendAccountingErrorResolvedEmail(oldAccountingRecord, accountingRec, processer);
             } catch (eMailSend) {
-                print("[MAIL] Error calling sendAccountingErrorResolvedEmail: " + eMailSend);
             }
-            // --------------------------------------------------
-            //            =========END MAIL07
+            // ---------END MAIL 07-----------------------------------------
             
             
 

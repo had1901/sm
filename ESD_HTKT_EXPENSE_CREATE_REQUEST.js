@@ -118,9 +118,16 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['return.reason'] = "";
     expenseRec['unit.lv1'] = expenseData['unitLv1'] || expenseData['unit.lv1'] || "";
     expenseRec['unit.lv2'] = expenseData['unitLv2'] || expenseData['unit.lv2'] || "";
+    expenseRec['unit.lv1.name'] = expenseData['unitLv1Name'] || expenseData['unit.lv1.name'] ||
+            htktCreateExpense_getUnitName(expenseRec['unit.lv1']);
+    expenseRec['unit.lv2.name'] = expenseData['unitLv2Name'] || expenseData['unit.lv2.name'] ||
+            htktCreateExpense_getUnitName(expenseRec['unit.lv2']);
 
     expenseRec['created.at'] = new Date();
     expenseRec['created.by'] = expenseData['createdBy'];
+    expenseRec['total.transaction'] = 0;
+    expenseRec['total.contract'] = 0;
+    expenseRec['total.vendor'] = 0;
     expenseRec['total.amount.paid'] = 0;
     expenseRec['total.contract.amount'] = 0;
     expenseRec['current.phase'] = "start";
@@ -145,6 +152,27 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
                 creatorUser +
                 " chưa có quyền phù hợp để lập phiếu dự chi. Cần quyền lập đề nghị dự chi; nếu là KTTC cần thêm quyền nhập liệu hạch toán."
         );
+    }
+}
+
+/**
+ * Lấy tên đơn vị theo mã để lưu snapshot trên phiếu, tránh phải lookup lại khi tải danh sách.
+ */
+function htktCreateExpense_getUnitName(unitId) {
+    var normalizedUnitId = String(unitId || "").replace(/^\s+|\s+$/g, "");
+    if (!normalizedUnitId) return "";
+
+    var unitFile;
+    try {
+        unitFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
+        unitFile.setFields(["unit.id", "unit.name"]);
+        var rc = unitFile.doSelect('unit.id="' + escapeSmQueryValue(normalizedUnitId) + '"');
+
+        return rc === RC_SUCCESS ? String(unitFile["unit.name"] || "").replace(/^\s+|\s+$/g, "") : "";
+    } catch (error) {
+        return "";
+    } finally {
+        try { if (unitFile) unitFile.doClose(); } catch (closeError) {}
     }
 }
 
