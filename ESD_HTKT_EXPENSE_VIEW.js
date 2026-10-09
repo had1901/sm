@@ -283,11 +283,13 @@ function renderExpenseList() {
     var rights = htktExpenseView_getRights();
 
     var RIGHT_EXPENSE_VIEW = "0040040003000001";
+    var RIGHT_EXPENSE_VIEW_APPROVAL = "0040040003000009";
     var RIGHT_EXPENSE_CREATE = "0040040003000002";
     var RIGHT_EXPENSE_ACCOUNTING = "0040040003000003";
     var RIGHT_EXPENSE_POST_AUDIT = "0040040003000010";
 
-    var hasView = rights.indexOf(RIGHT_EXPENSE_VIEW) >= 0;
+    var hasView = rights.indexOf(RIGHT_EXPENSE_VIEW) >= 0 ||
+        rights.indexOf(RIGHT_EXPENSE_VIEW_APPROVAL) >= 0;
     var hasCreate = rights.indexOf(RIGHT_EXPENSE_CREATE) >= 0;
     var hasAccounting = rights.indexOf(RIGHT_EXPENSE_ACCOUNTING) >= 0;
     var isPostAuditRole = rights.indexOf(RIGHT_EXPENSE_POST_AUDIT) >= 0;
