@@ -17,7 +17,7 @@ vars.$vendorSiteOptDisp = [];
 vars.$canEditObj = false;
 arrVendors = []
 
-vars.$totalMoney = 123;
+vars.$totalMoney = "";
 
 var paymentId = String(vars.$L_file["payment.id"] || vars.$L_file.payment_id || "");
 var paymentPrefix = paymentId.split(".")[0].toUpperCase();
@@ -28,6 +28,18 @@ vars.$isExpense = isExpense;
 
 if (isExpense) {
     lib.ESD_HTKT_EXPENSE_VENDOR.loadPaymentVendorInfo(vars.$L_file);
+
+    var contractInfo = lib.ESD_HTKT_PAYMENT_VENDOR.getContractInfo(
+        vars.$L_file["contract.id"] || vars.$L_file.contract_id || ""
+    );
+    vars.$contractId = contractInfo.id;
+    vars.$contractName = contractInfo.name;
+    vars.$contractCategoryCode = contractInfo.category;
+    vars.$contractCategory = contractInfo.categoryName;
+    vars.$contractStartDate = contractInfo.startDate;
+    vars.$totalContractValue = contractInfo.totalValue;
+    vars.$totalMoney = contractInfo.totalPaidAmount;
+    vars.$contractRemainingAmount = contractInfo.remainingAmount;
 } else if (isPayment) {
     lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentVendorInfo(vars.$L_file);
 }
