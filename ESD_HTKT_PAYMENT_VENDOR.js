@@ -879,6 +879,10 @@ function mapPaymentAttachment(itemRec, feeData) {
     itemRec['payment.id'] = feeData['transactionId'];
     itemRec['invoice.id'] = feeData['id'];
     itemRec['vendor.id'] = feeData['vendorId'];
+    var contractId = String(feeData['contractId'] || feeData['contract.id'] || "").trim();
+    if (contractId) {
+        itemRec['contract.id'] = contractId;
+    }
 
     if (feeData['totalTax'] === 0) {
         itemRec['deduction.type'] = "KHAUTRU_003"; // Không khấu trừ
