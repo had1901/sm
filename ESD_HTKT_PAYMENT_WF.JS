@@ -242,6 +242,12 @@ function updateNextStatus(record, previousRecord) {
     return documentResult;
 }
 
+function htktWfIsExpense(record) {
+    var transactionType = String(record["transaction.type"] || record.transaction_type || "").trim().toLowerCase();
+    if (transactionType) return transactionType === "dự chi";
+    return String(record["id"] || "").trim().toUpperCase().indexOf("DC.") === 0;
+}
+
 /**
  * Ghi lịch sử chuyển phase workflow:
  * - Trình phê duyệt: initial_dmms / initial_kttc
@@ -287,7 +293,7 @@ function createApprovalHistory(record) {
 
         createActivity(
                 "activityHTKTpayment",
-                activityType + ' Đề nghị Thanh Toán: Mã đề nghị: "' + paymentId + '"',
+                activityType + (htktWfIsExpense(record) ? ' Đề nghị Dự chi' : ' Đề nghị Thanh Toán') + ': Mã đề nghị: "' + paymentId + '"',
                 paymentId,
                 activityType,
                 currentUser
@@ -312,7 +318,7 @@ function cancelRequest(record) {
         if (currentUser && paymentId) {
             createActivity(
                     "activityHTKTpayment",
-                    'Xóa Đề nghị Thanh toán: Mã đề nghị: "' + paymentId + '"',
+                    'Xóa ' + (htktWfIsExpense(record) ? 'Đề nghị Dự chi' : 'Đề nghị Thanh toán') + ': Mã đề nghị: "' + paymentId + '"',
                     paymentId,
                     "Xóa",
                     currentUser
@@ -360,7 +366,7 @@ function returnToUpdate(record, documentsAlreadyDeleted) {
     try {
         if (currentUser && paymentId) {
             var activityDescription =
-                    "Yêu cầu chỉnh sửa Đề nghị Thanh Toán" +
+                    "Yêu cầu chỉnh sửa " + (htktWfIsExpense(record) ? "Đề nghị Dự chi" : "Đề nghị Thanh Toán") +
                     (returnReason ? '\nLý do: "' + returnReason + '"' : "");
 
             createActivity(

@@ -606,7 +606,7 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         }
 
         payment = new SCFile("esdHTKTpayment", SCFILE_READONLY);
-        payment.setFields(["id", "initial.role"]);
+        payment.setFields(["id", "initial.role", "transaction.type"]);
 
         if (
             payment.doSelect(
@@ -653,9 +653,14 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         if (!canWriteReassignmentHistory) {
             return;
         }
+        
+        var transactionType = String(payment["transaction.type"] || "").trim().toLowerCase();
+        var isExpense = transactionType
+            ? transactionType === "dự chi"
+            : safePaymentId.toUpperCase().indexOf("DC") === 0;
 
         var activityDescription =
-            'Tái phân công Đề nghị Thanh toán: Mã đề nghị: "' + safePaymentId + '"' +
+            'Tái phân công ' + (isExpense ? 'Đề nghị Dự chi' : 'Đề nghị Thanh toán') + ': Mã đề nghị: "' + safePaymentId + '"' +
             '\nVai trò: "' + fieldLabels[safeField] + '"' +
             '\nTừ: "' + safeOldValue + '"' +
             '\nĐến: "' + safeNewValue + '"' +
