@@ -275,9 +275,7 @@ function htktExpenseView_buildPostAuditFilter(contactInfo, dataPermission) {
 // ======================================================================================
 // ======================================================================================
 
-/**
- * Danh sách phiếu Đề nghị dự chi
- */
+
 function renderExpenseList() {
     var currentUser = String(vars['$lo.contact.name'] || "").replace(/^\s+|\s+$/g, "");
     var operatorName = String(system.user.name || "").replace(/^\s+|\s+$/g, "");
@@ -364,20 +362,6 @@ function renderExpenseList() {
         }
     );
 }
-
-/**
- * Tab Thông tin phê duyệt
- */
-function getTabThongTinPheDuyet(endpoint, input, extraData) {
-    var payment = vars["$L.file"] || vars.$L_file || extraData;
-    var currentUser = String(vars["$lo.contact.name"] ||
-        (vars.$lo_operator ? vars.$lo_operator["contact.name"] : "") || "").trim();
-    var initData = payment
-        ? lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.getPaymentApprovalInitData(payment, currentUser)
-        : {};
-    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabThongTinPheDuyet', '', initData);
-}
-
 /**
  * Tab Tài liệu đính kèm (Chỉ hiện tab đối với role KTTC trở đi)
  */
@@ -425,9 +409,7 @@ function getTabKetQuaHachToan() {
     return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
 }
 
-/**
- * Tab Thông tin phê duyệt
- */
+
 function getTabKetQuaGD() {
     return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
 }
@@ -632,6 +614,47 @@ function getTabThongTinHT(endpoint, input, extraData) {
     );
 }
 
+
+/**
+ * Render tab Chi tiết thông tin hạch toán
+ */
+function getTabChiTietThongTinHT(endpoint, input, extraData) {
+    var formRecord = vars['$L.file'];
+    var currentRecord = extraData || {};
+
+    if (
+            (!currentRecord || Object.keys(currentRecord).length === 0) &&
+            formRecord
+    ) {
+        currentRecord = formRecord;
+    }
+
+    var paymentId = vars.$G_payment_id;
+    if (paymentId) {
+        var paymentRec = new SCFile("esdHTKTpayment");
+        var sql = "id=\"" + paymentId + "\"";
+
+        if (paymentRec.doSelect(sql) === RC_SUCCESS) {
+            currentRecord = {
+                "paymentId": paymentId,
+                "currentPhase": paymentRec["current.phase"],
+                "initialRole": paymentRec["initial.role"],
+                "createdBy": paymentRec["created.by"],
+                "userCheckerDmms": paymentRec["user.checker.dmms"],
+                "userCheckerKttc": paymentRec["user.checker.kttc"],
+                "userApproverKttc": paymentRec["user.approver.kttc"],
+                "userApproverDmms": paymentRec["user.approver.dmms"],
+                "userCheckerFinal": paymentRec["user.checker.final"],
+                "userApproverFinal": paymentRec["user.approver.final"],
+                "currentUser": vars['$lo.contact.name'],
+                "status": paymentRec["status"]
+            };
+        }
+    }
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabThongTinHachToan/ChiTietHachToan', '', currentRecord)
+}
+
 /**
  * Render tab Thông tin món Dự chi cho phiếu đang mở.
  * Ngoài id phiếu, tab cần cùng context người dùng/phạm vi dữ liệu như màn
@@ -640,10 +663,21 @@ function getTabThongTinHT(endpoint, input, extraData) {
 function getTabThongTinMonDuChi(endpoint, input, extraData) {
     var currentRecord = extraData || {};
     var expenseRecord = vars["$L.file"] || vars.$L_file;
+    var loadedExpenseFile = null;
     var expenseId = String(currentRecord.id || "").replace(/^\s+|\s+$/g, "");
 
     if (!expenseId && expenseRecord) {
         expenseId = String(expenseRecord["id"] || "").replace(/^\s+|\s+$/g, "");
+    }
+
+    // Luôn tải lại theo id để quyền sửa dùng phase mới nhất trong database.
+    // $L.file có thể vẫn giữ phase cũ sau khi hồ sơ vừa chuyển bước workflow.
+    if (expenseId) {
+        var expenseFile = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        if (expenseFile.doSelect('id="' + expenseId.replace(/"/g, '\\"') + '"') == RC_SUCCESS) {
+            expenseRecord = expenseFile;
+            loadedExpenseFile = expenseFile;
+        }
     }
 
     vars.$G_payment_id = expenseId;
@@ -654,7 +688,25 @@ function getTabThongTinMonDuChi(endpoint, input, extraData) {
     var rights = htktExpenseView_getRights();
     var hasCreate = rights.indexOf("0040040003000002") >= 0;
     var hasAccounting = rights.indexOf("0040040003000003") >= 0;
-    var initialRole = hasCreate ? (hasAccounting ? "kttc" : "dmms") : "";
+    var roleFromRights = hasCreate ? (hasAccounting ? "kttc" : "dmms") : "";
+    var currentPhase = String(
+        (expenseRecord && (expenseRecord["current.phase"] || expenseRecord.current_phase)) ||
+        currentRecord.currentPhase || currentRecord["current.phase"] || ""
+    ).replace(/^\s+|\s+$/g, "");
+    var initialRole = String(
+        (expenseRecord && (expenseRecord["initial.role"] || expenseRecord.initial_role)) ||
+        currentRecord.initialRole || currentRecord["initial.role"] || roleFromRights || ""
+    ).replace(/^\s+|\s+$/g, "");
+    var createdBy = String(
+        (expenseRecord && (expenseRecord["created.by"] || expenseRecord.created_by)) ||
+        currentRecord.createdBy || currentRecord["created.by"] || ""
+    ).replace(/^\s+|\s+$/g, "");
+    try {
+        if (loadedExpenseFile) loadedExpenseFile.doClose();
+    } catch (eCloseExpenseFile) {}
+    var isVendorEditable =
+        (currentPhase == "initial_dmms" && createdBy == currentUser) ||
+        (currentPhase == "initial_kttc" && initialRole == "kttc");
     var dataPermission = htktExpenseView_getDataPermission(currentUser);
 
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
@@ -669,6 +721,9 @@ function getTabThongTinMonDuChi(endpoint, input, extraData) {
             fullName: contactInfo.fullName,
             branchCode: contactInfo.branchCode,
             initialRole: initialRole,
+            currentPhase: currentPhase,
+            createdBy: createdBy,
+            isVendorEditable: isVendorEditable,
             unit: {
                 lv1: contactInfo.lv1,
                 lv2: contactInfo.lv2,

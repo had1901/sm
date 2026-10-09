@@ -131,6 +131,7 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['total.amount.paid'] = 0;
     expenseRec['total.contract.amount'] = 0;
     expenseRec['current.phase'] = "start";
+    expenseRec['currency'] = "VND";
     expenseRec['executor.payment'] = expenseData['currentUser'];
 
     var creatorUser = String(expenseData['currentUser'] || "").replace(/^\s+|\s+$/g, "");

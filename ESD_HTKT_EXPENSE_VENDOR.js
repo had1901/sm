@@ -30,6 +30,10 @@ function run() {
             case "createPaymentVendor":
                 result = createPaymentVendor(input);
                 break;
+            // Xóa món Dự chi theo ID esdHTKTpaymentVendor.
+            case "deleteExpenseVendor":
+                result = deleteExpenseVendor(input);
+                break;
             default:
                 result = {
                     success: false,
@@ -45,6 +49,34 @@ function run() {
                 error: "Gateway Error: " + e.toString()
             });
         }
+    }
+}
+
+function deleteExpenseVendor(input) {
+    var params = getExpenseVendorInputDetails(input);
+    var paymentId = normalizeExpenseVendorValue(params.paymentId || params.expenseId);
+    var paymentVendorId = normalizeExpenseVendorValue(params.paymentVendorId || params.itemId || params.id);
+
+    if (!paymentId || !paymentVendorId) {
+        return { success: false, status: "error", message: "Thiếu paymentId hoặc paymentVendorId." };
+    }
+
+    var relationFile = new SCFile("esdHTKTpaymentVendor");
+    try {
+        var query = 'id="' + escapeExpenseVendorQueryValue(paymentVendorId) +
+            '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"';
+        if (relationFile.doSelect(query) !== RC_SUCCESS) {
+            return { success: false, status: "error", message: "Không tìm thấy món Dự chi cần xóa." };
+        }
+
+        var deleteRc = relationFile.doDelete();
+        if (deleteRc !== RC_SUCCESS) {
+            return { success: false, status: "error", message: "Xóa món Dự chi thất bại. Code: " + deleteRc };
+        }
+
+        return { success: true, status: "success", message: "Xóa món Dự chi thành công." };
+    } finally {
+        closeExpenseVendorFile(relationFile);
     }
 }
 
