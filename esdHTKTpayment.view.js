@@ -14,6 +14,16 @@ try {
 
 var record = vars.$L_file;
 
+vars.$totalExpenseItemCount = "";
+var transactionType = String(record["transaction.type"] || record.transaction_type || "").trim();
+if (transactionType === "Dự chi") {
+    try {
+        vars.$totalExpenseItemCount = lib.ESD_HTKT_EXPENSE_VENDOR.getExpenseItemCount(record.id);
+    } catch (eItemCount) {
+        print("ERROR COUNT EXPENSE ITEMS: " + eItemCount);
+    }
+}
+
 vars.$showTab = false;
 vars.$descriptionReadOnly = !lib.ESD_HTKT_PAYMENT_WF.canEditInCurrenPhase(vars.$L_file);
 vars.$hideApprovalKttc = record['created.by'] == vars.$lo_operator["contact.name"] && record['initial.role'] == 'dmms';
