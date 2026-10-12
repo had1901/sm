@@ -52,9 +52,14 @@ function renderTabAccountingResults() {
         paymentId = textValue(currentRecord['id']).trim();
     }
 
+    var transactionType = textValue(currentRecord &&
+                          (currentRecord['transaction.type'] || currentRecord.transaction_type)).trim().toLowerCase();
+    var isExpense = transactionType === 'dự chi' || 
+                    paymentId.toUpperCase().indexOf('DC.') === 0;
+            
     var result = loadAccountingResults(paymentId);
 
-    return buildAccountingResultsHtml(result.rows, result.error);
+    return buildAccountingResultsHtml(result.rows, result.error, !isExpense);
 }
 
 function loadAccountingResults(paymentId) {
@@ -543,7 +548,7 @@ function isDebitAccountType(value) {
     return accountType === 'no' || accountType === 'debit';
 }
 
-function buildAccountingResultsHtml(rows, error) {
+function buildAccountingResultsHtml(rows, error, showTransferResults) {
     var accountingRows = [];
     var transferRows = [];
 
@@ -610,17 +615,17 @@ function buildAccountingResultsHtml(rows, error) {
                 'accounting-results-table',
                 false
         ),
-        buildTransferResultSection(
+        showTransferResults !== false ? buildTransferResultSection(
                 'Kết quả chuyển tiền',
                 'Số giao dịch đồng bộ thành công',
                 transferRows,
                 error,
                 'transfer-results-table'
-        ),
+        ) : '',
         '</main>',
         '<div id="accounting-cell-tooltip" class="accounting-cell-tooltip" role="tooltip" aria-hidden="true"></div>',
         buildSortingScript('accounting-results-table'),
-        buildSortingScript('transfer-results-table'),
+        showTransferResults !== false ?  buildSortingScript('transfer-results-table') : '',
         buildAccountingTooltipScript(),
         '</body></html>'
     ].join('');

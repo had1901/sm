@@ -50,13 +50,8 @@ vars["$showAccountingTab"] = !(
     accountingCurrentUser == accountingCreatedBy
 );
 
-vars["$showAttachmentTab"] = !(
-    accountingInitialRole == "kttc" &&
-    accountingCurrentUser != ""
-);
+vars["$showAttachmentTab"] = lib.ESD_HTKT_EXPENSE_VIEW.canShowAttachmentTab(accountingCurrentUser);
 
-print('[DS] record role= ', record["initial.role"]);
-print('[DS] accountingCurrentUser = ', vars["$showAttachmentTab"]);
 // chỉ hiển thị tab Kết quả giao dịch khi quy trình kết thúc và phiếu không bị hủy
 vars["$showAccountingResultTab"] =
     accountingCurrentPhase == "end" &&

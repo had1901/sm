@@ -364,10 +364,28 @@ function renderExpenseList() {
         }
     );
 }
+
 /**
- * Tab Tài liệu đính kèm (Chỉ hiện tab đối với role KTTC trở đi)
+ * Check quyen Tab Hóa đơn dành cho KTTC trở đi, theo quyền của người đang đăng nhập.
  */
-function getTabTaiLieuDinhKem() {
+function canShowAttachmentTab(currentUser) {
+    if (!String(currentUser || "").replace(/^\s+|\s+$/g, "")) {
+        return false;
+    }
+
+    var rights = htktExpenseView_getRights();
+    return (
+        rights.indexOf("0040040003000003") >= 0 || // KTTC tiếp nhận/hạch toán
+        rights.indexOf("0040040003000006") >= 0 || // Phê duyệt KTTC
+        rights.indexOf("0040040003000007") >= 0 || // Rà soát KTTC (Rà soát 2)
+        rights.indexOf("0040040003000008") >= 0    // Cấp có thẩm quyền
+    );
+}
+
+/**
+ * Tab Hóa đơn (Chỉ hiện tab đối với role KTTC trở đi)
+ */
+function getTabHoaDon() {
     var currentRecord = {};
     if (vars.$L_file) {
         var prepaymentId = vars.$L_file["id"];
@@ -400,13 +418,9 @@ function getTabTaiLieuDinhKem() {
             "status": vars.$L_file["status"]
         };
     }
-
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/DuChi/TabTaiLieuDinhKem', '', currentRecord);
 }
 
-/**
- * Tab Kết quả hạch toán
- */
 function getTabKetQuaHachToan() {
     return lib.ESD_HTKT_PAYMENT_ENTRY_RESULT.renderTabAccountingResults();
 }
@@ -570,29 +584,12 @@ function getTabThongTinHT(endpoint, input, extraData) {
         currentRecord = formRecord;
     }
 
-    var paymentId = currentRecord ?
-            String(currentRecord['id'] || '') :
-            '';
-
-    var currentUser = String(
-            vars['$lo.contact.name'] || ''
-    ).trim();
-
-    var currentPhase = formRecord ?
-            String(formRecord['current.phase'] || '').trim() :
-            '';
-
-    var userCheckerKttc = formRecord ?
-            String(formRecord['user.checker.kttc'] || '').trim() :
-            '';
-
-    var initialRole = formRecord ?
-            String(formRecord['initial.role'] || '').trim() :
-            '';
-
-    var createdBy = formRecord ?
-            String(formRecord['created.by'] || '').trim() :
-            '';
+    var paymentId = currentRecord ? String(currentRecord['id'] || '') : '';
+    var currentUser = String(vars['$lo.contact.name'] || '').trim();
+    var currentPhase = formRecord ? String(formRecord['current.phase'] || '').trim() : '';
+    var userCheckerKttc = formRecord ? String(formRecord['user.checker.kttc'] || '').trim() : '';
+    var initialRole = formRecord ? String(formRecord['initial.role'] || '').trim() : '';
+    var createdBy = formRecord ? String(formRecord['created.by'] || '').trim() : '';
 
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
             'HachToanKeToan/DuChi/TabThongTinHachToan',
