@@ -95,9 +95,9 @@ function validateFromCbDmmsToCbKttc() {
     var description = String(record["description"] || "").trim();
 
     if (description === "") {
-        errorMss.push("Nội dung giao dịch không được để trống.");
+        errorMss.push("Ghi chú giao dịch không được để trống.");
     } else if (description.length > 255) {
-        errorMss.push("Nội dung giao dịch không được vượt quá 255 ký tự.");
+        errorMss.push("Ghi chú giao dịch không được vượt quá 255 ký tự.");
     }
 
     return errorMss.length > 0 ? errorMss : null;
@@ -141,9 +141,9 @@ function validateFromCbKttc() {
     var description = String(record["description"] || "").trim();
 
     if (description === "") {
-        errorMss.push("Nội dung giao dịch không được để trống.");
+        errorMss.push("Ghi chú giao dịch không được để trống.");
     } else if (description.length > 255) {
-        errorMss.push("Nội dung giao dịch không được vượt quá 255 ký tự.");
+        errorMss.push("Ghi chú giao dịch không được vượt quá 255 ký tự.");
     }
 
     // Validate riêng theo initial_role
@@ -282,7 +282,7 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
         vendor.doClose();
     } catch (e) {}
 
-    return rc == RC_SUCCESS ? null : ["Vui lòng chọn nhà cung cấp."];
+    return rc == RC_SUCCESS ? null : ["Vui lòng thêm ít nhất một món dự chi."];
 }
 
 /**
@@ -624,6 +624,9 @@ function prepareApprovalForSignature(record) {
             return htktWfFail("DOCUMENT_NOT_SIGNABLE", "Bản trình ký Dự chi chưa sẵn sàng để ký.");
         }
 
+        vars["$L.htktSignOldAttachmentId"] = String(document.id);
+        vars["$L.htktSignOldObjectId"] = String(document.ecmObjectId);
+
         return htktWfOk({
             expenseId: contextResult.data.expenseId,
             currentPhase: contextResult.data.currentPhase,
@@ -641,15 +644,17 @@ function checkSignatureSucceeded(record) {
     var expenseId = htktWfExpenseId(record);
     var oldAttachmentId = String(vars["$L.htktSignOldAttachmentId"] || "").trim();
     var oldObjectId = String(vars["$L.htktSignOldObjectId"] || "").trim();
-    if (!expenseId || !oldAttachmentId || !oldObjectId) return "F";
+    if (!expenseId || !oldObjectId) return "F";
 
     try {
         htktWfAssertDependencies(true);
         var currentResult = htktWfDocument().getCurrentPresentation({ expenseId: expenseId });
         if (!currentResult || currentResult.success !== true || !currentResult.data) return "F";
         var current = currentResult.data;
+        // Dự chi replaces ECM IDs on the same attachment row. The attachment
+        // ID must stay the same; the Object ID must change after signing.
         return current.id && current.ecmObjectId &&
-                String(current.id) !== oldAttachmentId &&
+                (!oldAttachmentId || String(current.id) === oldAttachmentId) &&
                 String(current.ecmObjectId) !== oldObjectId ? "T" : "F";
     } catch (ignore) {
         return "F";
@@ -750,7 +755,16 @@ function updateNextStatus(record, previousRecord) {
         return htktWfFail("INVALID_CURRENT_ACTOR", "Người dùng hiện tại không được phê duyệt phiếu Dự chi này.");
     }
     if (checkSignatureSucceeded(record) !== "T") {
-        return htktWfFail("SIGNATURE_NOT_COMPLETED", "Chữ ký số chưa hoàn tất hoặc bản trình ký chưa được thay thế.");
+        return {
+            success: true,
+            code: "SIGNATURE_PENDING",
+            message: "",
+            data: {
+                expenseId: expenseId,
+                pending: true,
+                recordMustBeSaved: false
+            }
+        };
     }
 
     if (phase === HTKT_WF_PHASE.APPROVAL_FINAL) {
