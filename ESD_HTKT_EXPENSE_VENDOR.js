@@ -62,6 +62,7 @@ function deleteExpenseVendor(input) {
     }
 
     var relationFile = new SCFile("esdHTKTpaymentVendor");
+    var paymentFile = null;
     try {
         var query = 'id="' + escapeExpenseVendorQueryValue(paymentVendorId) +
             '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"';
@@ -74,8 +75,22 @@ function deleteExpenseVendor(input) {
             return { success: false, status: "error", message: "Xóa món Dự chi thất bại. Code: " + deleteRc };
         }
 
+        paymentFile = new SCFile("esdHTKTpayment");
+        if (paymentFile.doSelect('id="' + escapeExpenseVendorQueryValue(paymentId) + '"') !== RC_SUCCESS) {
+            throw new Error("Không tìm thấy phiếu Dự chi " + paymentId + ".");
+        }
+        paymentFile["total.transaction"] = Math.max(
+            0, Number(paymentFile["total.transaction"] || 0) - 1
+        );
+        var updateRc = paymentFile.doUpdate();
+        if (updateRc !== RC_SUCCESS) {
+            throw new Error("Đã xóa món nhưng không cập nhật được tổng số món Dự chi. Code: " + updateRc);
+        }
         return { success: true, status: "success", message: "Xóa món Dự chi thành công." };
+    } catch (error) {
+        return { success: false, status: "error", message: "Lỗi xóa món Dự chi: " + error.toString() };
     } finally {
+        closeExpenseVendorFile(paymentFile);
         closeExpenseVendorFile(relationFile);
     }
 }
@@ -149,6 +164,8 @@ function createPaymentVendor(input) {
 
             paymentFile["total.contract"] =
                 Number(paymentFile["total.contract"] || 0) + createdItems.length;
+            paymentFile["total.transaction"] =
+                Number(paymentFile["total.transaction"] || 0) + createdItems.length;
             var updateRc = paymentFile.doUpdate();
             if (updateRc !== RC_SUCCESS) {
                 throw new Error(
@@ -182,6 +199,104 @@ function createPaymentVendor(input) {
 }
 
 /**
+ * Chạy riêng để đồng bộ total.transaction cho các phiếu Dự chi đã có món cũ.
+ * Truyền paymentId để đồng bộ một phiếu; bỏ trống để đồng bộ tất cả phiếu Dự chi.
+ * Gán số món thực tế, nên có thể chạy lại mà không cộng trùng.
+ */
+function syncAllExpenseItemCounts(paymentId) {
+    var result = {
+        success: true,
+        processed: 0,
+        updated: 0,
+        unchanged: 0,
+        failed: 0,
+        errors: []
+    };
+    var requestedId = normalizeExpenseVendorValue(paymentId);
+    var listFile = null;
+
+    try {
+        listFile = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        listFile.setFields(["id"]);
+        var filter = 'transaction.type="Dự chi"';
+        if (requestedId) {
+            filter += ' and id="' + escapeExpenseVendorQueryValue(requestedId) + '"';
+        }
+
+        var listRc = listFile.doSelect(filter);
+        while (listRc === RC_SUCCESS) {
+            var id = normalizeExpenseVendorValue(listFile["id"]);
+            var paymentFile = null;
+            var itemFile = null;
+            result.processed++;
+
+            try {
+                if (!id) throw new Error("Phiếu Dự chi không có mã id.");
+                paymentFile = new SCFile("esdHTKTpayment");
+                var paymentRc = paymentFile.doSelect(
+                    'id="' + escapeExpenseVendorQueryValue(id) + '" and transaction.type="Dự chi"'
+                );
+                if (paymentRc !== RC_SUCCESS) {
+                    throw new Error("Không đọc được phiếu Dự chi. Code: " + paymentRc);
+                }
+
+                itemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+                var countRc = itemFile.doSelect(
+                    'SELECT count(*) FROM esdHTKTpaymentVendor WHERE payment.id="' +
+                    escapeExpenseVendorQueryValue(id) + '"'
+                );
+                if (countRc !== RC_SUCCESS) {
+                    throw new Error("Không đếm được số món Dự chi. Code: " + countRc);
+                }
+
+                var rawCount = itemFile[0];
+                var totalItems = Number(rawCount);
+                if (rawCount == null || normalizeExpenseVendorValue(rawCount) === "" ||
+                    !isFinite(totalItems) || totalItems < 0 || Math.floor(totalItems) !== totalItems) {
+                    throw new Error("Kết quả đếm số món Dự chi không hợp lệ.");
+                }
+
+                var currentTotal = paymentFile["total.transaction"];
+                if (currentTotal != null && normalizeExpenseVendorValue(currentTotal) !== "" &&
+                    Number(currentTotal) === totalItems) {
+                    result.unchanged++;
+                } else {
+                    paymentFile["total.transaction"] = totalItems;
+                    var updateRc = paymentFile.doUpdate();
+                    if (updateRc !== RC_SUCCESS) {
+                        throw new Error("Không cập nhật được total.transaction. Code: " + updateRc);
+                    }
+                    result.updated++;
+                }
+            } catch (error) {
+                result.success = false;
+                result.failed++;
+                result.errors.push({ paymentId: id, message: error.toString() });
+            } finally {
+                closeExpenseVendorFile(itemFile);
+                closeExpenseVendorFile(paymentFile);
+            }
+
+            listRc = listFile.getNext();
+        }
+
+        if (listRc !== RC_NO_MORE) {
+            throw new Error("Không duyệt hết danh sách phiếu Dự chi. Code: " + listRc);
+        }
+        if (requestedId && result.processed === 0) {
+            throw new Error("Không tìm thấy phiếu Dự chi " + requestedId + ".");
+        }
+    } catch (scanError) {
+        result.success = false;
+        result.scanError = scanError.toString();
+    } finally {
+        closeExpenseVendorFile(listFile);
+    }
+
+    return result;
+}
+
+/**
  * Lấy danh sách nhà cung cấp theo paymentId/expenseId nhận từ request.
  *
  */
@@ -209,25 +324,6 @@ function getListExpenseVendor(input) {
     }
     print("resultList" + JSON.stringify(resultList))
     return resultList;
-}
-
-/** Đếm toàn bộ món trên phiếu, kể cả món chưa chọn NCC. */
-function getExpenseItemCount(paymentId) {
-    var id = normalizeExpenseVendorValue(paymentId);
-    if (!id) return 0;
-
-    var itemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
-    try {
-        var query = 'SELECT count(*) FROM esdHTKTpaymentVendor WHERE payment.id="' +
-            escapeExpenseVendorQueryValue(id) + '"';
-        var rc = itemFile.doSelect(query);
-        if (rc != RC_SUCCESS) {
-            throw new Error("Không lấy được tổng số món Dự chi. Code: " + rc);
-        }
-        return Number(itemFile[0] || 0);
-    } finally {
-        closeExpenseVendorFile(itemFile);
-    }
 }
 
 function buildExpenseVendorItem(paymentVendorFile) {
