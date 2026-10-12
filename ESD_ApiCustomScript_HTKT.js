@@ -216,6 +216,9 @@ function run() {
             case "createPaymentVendor":
                 result = lib.ESD_HTKT_EXPENSE_VENDOR.createPaymentVendor(input);
                 break;
+            case "deleteExpenseVendor":
+                result = lib.ESD_HTKT_EXPENSE_VENDOR.deleteExpenseVendor(input);
+                break;
             case "getListExpenseVendor":
                 result = {
                     success: true,
