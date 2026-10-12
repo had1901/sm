@@ -1,5 +1,5 @@
 /**
- * ScriptLibrary: ESD_HTKT_EXPENSES_EFORM_SERVICE
+ * ScriptLibrary: ESD_HTKT_EXPENSE_EFORM_SERVICE
  *
  * Mapping dữ liệu phiếu Dự chi từ esdHTKTpayment sang template
  * ChungtuDuchi_mapped.docx. Service chỉ phụ thuộc thư viện common;
@@ -512,12 +512,12 @@ function dcGetAccountingEntryOrder(entryType) {
 
 function dcGetAccountingGroupInfo(source) {
     /*
-     * Dự chi chỉ có bảng AP. Mỗi nhóm AP được tách theo nhà cung cấp;
-     * dữ liệu cũ thiếu vendor.id được gom vào một bảng AP mặc định.
+     * Mỗi ref.id tương ứng một bảng hạch toán AP. Các dòng chưa có ref.id
+     * cùng thuộc một nhóm rỗng để không làm mất dữ liệu cũ.
      */
-    var vendorId = DC_COMMON.trim(source.vendorId);
+    var refId = DC_COMMON.trim(source.refId);
     return {
-        key: "AP:" + (vendorId || "DEFAULT")
+        key: "REF:" + refId
     };
 }
 
@@ -568,7 +568,7 @@ function dcGetAccountingData(paymentId, currency) {
                 description: DC_COMMON.readString(entryFile, ["description"]),
                 amountRaw: DC_COMMON.readNumber(entryFile, ["amount"]),
                 order: DC_COMMON.readNumber(entryFile, ["order"]),
-                vendorId: DC_COMMON.readString(entryFile, ["vendor.id"])
+                refId: DC_COMMON.readString(entryFile, ["ref.id"])
             });
             rc = entryFile.getNext();
         }

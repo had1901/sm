@@ -256,8 +256,8 @@ function callApiAp(esdHTKTacountingInfo) {
         if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.THANH_TOAN ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.TAM_UNG ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.THUE) {
-//            apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApInvoice(payload);
-            apiResult = { success: false }
+            apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApInvoice(payload);
+//            apiResult = { success: false }
         } else if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.TAT_TOAN) {
             apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApPayment(payload);
         } else {
@@ -522,7 +522,7 @@ function createJobCheckAccounting(requestId) {
 }
 
 //createJobCheckAccounting('8257D136-145F-4B85-8C12-CAB1E6001A51');
-//checkAccountingInfo('1BCFEC01-BED7-4BBB-9E98-C376F7001A44');
+//checkAccountingInfo('704c54f8-da3b-40da-b9e1-0e3001a34315');
 
 
 // Moi lan kiem tra xong 1 row

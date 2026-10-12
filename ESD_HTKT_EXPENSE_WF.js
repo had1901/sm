@@ -282,7 +282,7 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
         vendor.doClose();
     } catch (e) {}
 
-    return rc == RC_SUCCESS ? null : ["Vui lòng thêm ít nhất một món dự chi."];
+    return rc == RC_SUCCESS ? null : ["Vui lòng chọn ít nhất một món dự chi."];
 }
 
 /**

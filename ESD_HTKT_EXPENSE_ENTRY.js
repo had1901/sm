@@ -262,12 +262,6 @@ function getExpenseSummaryMeta(expenseId, request, metaParams) {
             }
             totalTaxAmount += vendorTax;
         }
-    } else {
-        var links = getExpenseLinkedInvoices(expenseId);
-        for (var invIdx = 0; invIdx < links.length; invIdx++) {
-            var inv = getInvoiceById(links[invIdx].invoice_id);
-            totalTaxAmount += toNumber(inv.total_tax);
-        }
     }
     if (totalTaxAmount === 0 && (req.total_tax_amount || req['total.tax.amount'])) {
         totalTaxAmount = toNumber(req.total_tax_amount || req['total.tax.amount']);
@@ -1073,6 +1067,11 @@ function buildExpenseEntryRow(params) {
     var beneficiary = getBeneficiaryByEntryType(entryType, params.vendor);
     var branch = params.branchOverride || params.request.creator_unit_code || '';
     var contractId = safeString(params.vendor && params.vendor.contract_id || params.contractId || '').trim();
+    var paymentVendorId = safeString(params.vendor && params.vendor.payment_vendor_id).trim();
+
+    if (!paymentVendorId) {
+        throw new Error('Thiếu paymentVendorId khi sinh bút toán ' + entryType + ' cho món Dự chi.');
+    }
 
     return {
         id: '',
@@ -1091,7 +1090,8 @@ function buildExpenseEntryRow(params) {
         currency: params.vendor.currency,
         description: safeString(params.vendor.transaction_description).trim(),
         vendor_id: params.vendor.vendor_id,
-        ref_id: params.vendor.payment_vendor_id,
+        ref_id: paymentVendorId,
+        'ref.id': paymentVendorId,
         type: TYPE.AP,
         order: params.order,
         accounting_request_id: '',
@@ -1163,7 +1163,8 @@ function getBeneficiaryByEntryType(entryType, vendor) {
  * - Có gắn hóa đơn, Loại khấu trừ khác "Không khấu trừ", và Số tiền thuế > 0
  */
 function getExpenseInvoiceTaxInfo(expenseId, vendor, vendorCount) {
-    var links = getExpenseLinkedInvoices(expenseId);
+    var paymentVendorId = safeString(vendor && vendor.payment_vendor_id).trim();
+    var links = getExpenseLinkedInvoices(expenseId, paymentVendorId);
     var taxAmounts = {};
     var deductionTypes = [DEDUCTION_TYPE_FULL, DEDUCTION_TYPE_RATE];
     var result = {
@@ -1258,7 +1259,8 @@ function getTaxDeductionAccount(deductionType) {
 }
 
 function hasLinkedInvoicesForVendor(expenseId, vendor, vendorCount) {
-    var links = getExpenseLinkedInvoices(expenseId);
+    var paymentVendorId = safeString(vendor && vendor.payment_vendor_id).trim();
+    var links = getExpenseLinkedInvoices(expenseId, paymentVendorId);
 
     for (var i = 0; i < links.length; i++) {
         var invoice = getInvoiceById(links[i].invoice_id);
@@ -1304,13 +1306,20 @@ function isInvoiceForVendor(invoice, vendor, vendorCount, invoiceLink) {
     return vendorCount <= 1;
 }
 
-function getExpenseLinkedInvoices(expenseId) {
+function getExpenseLinkedInvoices(expenseId, paymentVendorId) {
+    paymentVendorId = safeString(paymentVendorId).trim();
+    if (!paymentVendorId) {
+        throw new Error('Thiếu paymentVendorId khi lấy danh sách hóa đơn của món Dự chi.');
+    }
+
     var list = [];
     var f = new SCFile(TABLE_PAYMENT_INVOICE, SCFILE_READONLY);
     var rc;
+    var query = 'payment.id="' + escapeQueryValue(expenseId) +
+        '" and ref.id="' + escapeQueryValue(paymentVendorId) + '"';
 
     try {
-        rc = f.doSelect('payment.id="' + escapeQueryValue(expenseId) + '"');
+        rc = f.doSelect(query);
     } catch (e) {
         closeFile(f);
         return list;
@@ -1323,6 +1332,7 @@ function getExpenseLinkedInvoices(expenseId) {
                 invoice_id: invoiceId,
                 contract_id: readText(f, 'contract.id'),
                 vendor_id: readText(f, 'vendor.id'),
+                ref_id: readText(f, 'ref.id'),
                 deduction_type: readText(f, 'deduction.type'),
                 deduction_amount: readNumber(f, 'deduction.amount'),
                 deduction_rate: readNumber(f, 'deduction.rate')
@@ -1754,7 +1764,7 @@ function toPaymentEntryRecord(row) {
         description: row.description,
         'vendor.id': row.vendor_id,
         type: row.type,
-        'ref.id': row.ref_id,
+        'ref.id': row.ref_id || row['ref.id'],
         'ap.code': row.ap_code,
         order: row.order
     };

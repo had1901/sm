@@ -56,7 +56,7 @@ var TABLE_ENTITY = 'esdDMentity';
 var CURRENT_PHASE_END = 'end';
 var STATUS_CREATED = 'CREATED';
 var TYPE_AP = 'AP';
-var SUB_PAYMENT = 'THANH_TOAN';
+var SUB_EXPENSE = 'DU_CHI';
 var SUB_TAT_TOAN = 'TAT_TOAN';
 var SUB_TAX = 'THUE';
 var CASH_YES = 'Y';
@@ -261,7 +261,7 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
         };
         var invoiceValidation = validateInvoicePayload(invoicePayload);
         if (!invoiceValidation.success) return invalidPayload('AP_INVOICE', invoiceValidation, invoicePayload);
-        result.push(makePrepared(invoiceRequestId, TYPE_AP, SUB_PAYMENT,
+        result.push(makePrepared(invoiceRequestId, TYPE_AP, SUB_EXPENSE,
                 vendorRow.vendor_id, invoiceAmount, invoicePayload, apEntryIds, vendorRow.contract_id));
     }
 
@@ -805,4 +805,4 @@ function sumEntryCreditAmounts(rows) {
     return n;
 }
 
-testGeneratePaymentAccountingInformation("DC.100.26.0000024")
+testGeneratePaymentAccountingInformation("DC.100.26.0000030")
