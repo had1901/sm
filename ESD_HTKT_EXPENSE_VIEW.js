@@ -746,7 +746,7 @@ function getTabThongTinMonDuChi(endpoint, input, extraData) {
 
 function renderHdsd() {
     var scFile = new SCFile('esdAttachments');
-    var result = scFile.doSelect(`id = "HDSD_HTKT_Thanh_toan" and module = "HTKT" and function = "Thanh toan"`);
+    var result = scFile.doSelect(`id = "HDSD_HTKT_Du_chi" and module = "HTKT" and function = "Du chi"`);
     var base64PDF = "";
     if (result == RC_SUCCESS) {
         var attachments = scFile.getAttachments();

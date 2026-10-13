@@ -185,6 +185,9 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
     var payablePayments = [];
     var customerPaymentAmount = 0;
     var payableDebitAmount = 0;
+    var paymentVendorRefId = entries.length > 0
+            ? safeString(entries[0].ref_id).trim()
+            : '';
 
     for (var i = 0; i < entries.length; i++) {
         var entry = entries[i];
@@ -257,7 +260,7 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
             cashout: context.cashout,
             contractId: vendorRow.contract_id, liabilityAccount: liabilityAccount,
             invoiceLineList: apLines, applyList: applyList,
-            vatList: getVatList(payment.id, context.vendorNumber, vendorRow.payment_vendor_count)
+            vatList: getVatList(payment.id, paymentVendorRefId)
         };
         var invoiceValidation = validateInvoicePayload(invoicePayload);
         if (!invoiceValidation.success) return invalidPayload('AP_INVOICE', invoiceValidation, invoicePayload);
@@ -333,7 +336,8 @@ function buildAccountingInformationRow(payment, item, createdTime) {
         'request.id': item.requestId, 'prepayment.id': payment.id,
         'vendor.id': item.vendorId, type: item.type, 'sub.type': item.subType,
         data: JSON.stringify(item.payload), status: STATUS_CREATED, message: '', response: '',
-        'transaction.id': '', 'ref.id': '', 'ap.code': '', 'batch.name': '',
+        'transaction.id': '', 'ref.id': '', 'internal.ref.id': item.sourceRefId,
+        'ap.code': '', 'batch.name': '',
         'created.time': createdTime, 'checked.time': null,
         amount: item.amount, 'contract.id': item.contractId
     };
@@ -572,18 +576,18 @@ function getPaymentEntries(paymentId) {
     return rows;
 }
 
-function getVatList(paymentId, vendorNumber, vendorCount) {
+function getVatList(paymentId, paymentVendorRefId) {
     var result = [];
     var links = selectMany(TABLE_PAYMENT_INVOICE,
-            'payment.id="' + escapeQueryValue(paymentId) + '"', function (f) {
+            'payment.id="' + escapeQueryValue(paymentId) + '" and ref.id="' +
+            escapeQueryValue(paymentVendorRefId) + '"', function (f) {
                 return { invoiceId: readText(f, 'invoice.id'), deductionType: readText(f, 'deduction.type') };
             });
     for (var i = 0; i < links.length; i++) {
         var invoice = selectOne(TABLE_INVOICE, 'id="' + escapeQueryValue(links[i].invoiceId) + '"', function (f) {
-            return { oglId: readText(f, 'ogl.id'), taxCode: readText(f, 'seller.tax.code') };
+            return { oglId: readText(f, 'ogl.id') };
         });
-        if (invoice && (toNumber(vendorCount) === 1 ||
-                normalizeIdentity(invoice.taxCode) === normalizeIdentity(vendorNumber))) {
+        if (invoice) {
             result.push({ id: invoice.oglId, discountType: mapDiscountType(links[i].deductionType) });
         }
     }
@@ -805,4 +809,4 @@ function sumEntryCreditAmounts(rows) {
     return n;
 }
 
-testGeneratePaymentAccountingInformation("DC.100.26.0000030")
+//testGeneratePaymentAccountingInformation("DC.100.26.0000069")

@@ -201,18 +201,22 @@ function addAccountingResultGroup(groupMap, groups, record) {
 }
 
 function makeAccountingResultGroupKey(info) {
-    var accountingType = textValue(info.accountingType).trim().toUpperCase();
-    var glGroupOrder =
-            accountingType === GL_ENTRY_TYPE
-                    ? textValue(info.glGroupOrder).trim() || '1'
-                    : '';
-
-    return [
-        accountingType,
-        textValue(info.vendorId).trim(),
-        textValue(info.subType).trim(),
-        glGroupOrder
-    ].join('|');
+    // Logic tách giao dịch hạch toán thành từng bản ghi để hiển thị riêng trên UI
+    return textValue(info.requestId).trim();
+    
+    // Logic gộp giao dịch hạch toán theo NCC 
+//    var accountingType = textValue(info.accountingType).trim().toUpperCase();
+//    var glGroupOrder =
+//            accountingType === GL_ENTRY_TYPE
+//                    ? textValue(info.glGroupOrder).trim() || '1'
+//                    : '';
+//
+//    return [
+//        accountingType,
+//        textValue(info.vendorId).trim(),
+//        textValue(info.subType).trim(),
+//        glGroupOrder
+//    ].join('|');
 }
 
 /**
