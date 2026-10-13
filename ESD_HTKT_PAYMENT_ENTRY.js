@@ -1408,9 +1408,17 @@ function normalizeEditedEntries(paymentId, entries, savedEntries) {
     var combined = (savedEntries || []).concat(entries || []);
     var nextManualApSequence = getNextManualEntryIdSequence(paymentId, combined);
     var nextGlRowSequence = getNextGlRowSequence(paymentId, 1, combined);
+    var savedById = {};
+    for (var savedIndex = 0; savedIndex < savedEntries.length; savedIndex++) {
+        savedById[safeString(savedEntries[savedIndex].id).trim()] = savedEntries[savedIndex];
+    }
 
     for (var i = 0; i < entries.length; i++) {
         var row = normalizeEditedEntry(entries[i]);
+        var savedRow = savedById[row.id];
+        if (!row.contract_id && savedRow) {
+            row.contract_id = safeString(savedRow.contract_id || savedRow['contract.id']).trim();
+        }
 
         if (!savedIds[row.id] || usedIds[row.id]) {
             if (isAdditionalEntryType(row.type)) {
@@ -1538,6 +1546,7 @@ function normalizeEditedEntry(raw) {
         currency: safeString(raw.currency).trim(),
         description: safeString(raw.description).trim(),
         vendor_id: safeString(raw.vendor_id).trim(),
+        contract_id: safeString(raw.contract_id || raw['contract.id']).trim(),
         type: isGlEntry ? TYPE.GL : TYPE.AP,
         order: toNumber(raw.order),
         ref_id: safeString(raw.ref_id).trim(),
@@ -2492,6 +2501,7 @@ function buildEntryRow(params) {
         currency: params.vendor.currency,
         description: safeString(params.vendor.transaction_description).trim(),
         vendor_id: params.vendor.vendor_id,
+        contract_id: safeString(params.vendor.contract_id).trim(),
         type: TYPE.AP,
         order: params.order,
         accounting_request_id: '',
@@ -3904,6 +3914,7 @@ function getPaymentVendors(paymentId, vendorId) {
     while (rc === RC_SUCCESS) {
         list.push({
             vendor_id: readText(f, 'vendor.id'),
+            contract_id: readText(f, 'contract.id'),
             vendor_site_id: readText(f, 'vendor.site.id'),
             approved_invoice_amount: readNumber(f, 'approved.invoice.amount'),
             amount: readNumber(f, 'amount'),
@@ -4067,6 +4078,7 @@ function getPaymentEntryFields() {
         ['e.currency', 'currency', 'S'],
         ['e.description', 'description', 'S'],
         ['e.vendor.id', 'vendor_id', 'S'],
+        ['e.contract.id', 'contract_id', 'S'],
         ['v.vendor.name', 'vendor_name', 'S'],
         ['e.type', 'type', 'S'],
         ['e.order', 'order', 'N'],
@@ -4202,6 +4214,7 @@ function toPaymentEntryRecord(row) {
         currency: row.currency,
         description: row.description,
         'vendor.id': row.vendor_id,
+        'contract.id': row.contract_id || row['contract.id'] || '',
         type: row.type,
         'ref.id': row.ref_id,
         'ap.code': row.ap_code,
