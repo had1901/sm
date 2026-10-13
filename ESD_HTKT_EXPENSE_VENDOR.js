@@ -192,6 +192,7 @@ function createListInvoinVendor(input) {
                     checkStatus: checkStatusList
                 };
             }
+            syncExpenseTotalAmount(paymentId);
         }
 
         if (successInvoiceIds.length === rows.length) {
@@ -255,6 +256,7 @@ function deleteExpenseVendor(input) {
         paymentFile["total.transaction"] = Math.max(
             0, Number(paymentFile["total.transaction"] || 0) - 1
         );
+        paymentFile["total.amount.paid"] = getExpenseTotalAmount(paymentId);
         var updateRc = paymentFile.doUpdate();
         if (updateRc !== RC_SUCCESS) {
             throw new Error("Đã xóa món nhưng không cập nhật được tổng số món Dự chi. Code: " + updateRc);
@@ -340,6 +342,7 @@ function createPaymentVendor(input) {
             //     Number(paymentFile["total.contract"] || 0) + createdItems.length;
             paymentFile["total.transaction"] =
                 Number(paymentFile["total.transaction"] || 0) + createdItems.length;
+            paymentFile["total.amount.paid"] = getExpenseTotalAmount(paymentId);
             var updateRc = paymentFile.doUpdate();
             if (updateRc !== RC_SUCCESS) {
                 throw new Error(
@@ -367,6 +370,69 @@ function createPaymentVendor(input) {
             success: false,
             message: "Lỗi thêm hợp đồng vào phiếu Dự chi: " + error.toString()
         };
+    } finally {
+        closeExpenseVendorFile(paymentFile);
+    }
+}
+
+/**
+ * Tổng giá trị đề nghị Dự chi lấy từ amount của tất cả món đã lưu trên phiếu.
+ * Cộng bằng chuỗi tiền để giữ chính xác phần thập phân và số tiền lớn.
+ */
+function getExpenseTotalAmount(paymentId) {
+    var normalizedId = normalizeExpenseVendorValue(paymentId);
+    if (!normalizedId) throw new Error("Thiếu mã phiếu Dự chi để tính tổng giá trị.");
+
+    var itemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+    try {
+        itemFile.setFields(["amount"]);
+        var itemRc = itemFile.doSelect(
+            'payment.id="' + escapeExpenseVendorQueryValue(normalizedId) + '"'
+        );
+        var totalAmount = "0";
+        while (itemRc === RC_SUCCESS) {
+            totalAmount = lib.ESD_HTKT_Utils.addStringsManual(
+                totalAmount, String(itemFile["amount"] || "0")
+            );
+            itemRc = itemFile.getNext();
+        }
+        if (itemRc !== RC_NO_MORE) {
+            throw new Error("Không đọc được đầy đủ số tiền các món Dự chi. Code: " + itemRc);
+        }
+        return totalAmount;
+    } finally {
+        closeExpenseVendorFile(itemFile);
+    }
+}
+
+/**
+ * Cập nhật tổng trong DB sau khi số tiền các món Dự chi thay đổi.
+ * Chỉ cập nhật total.amount.paid của phiếu Dự chi.
+ */
+function syncExpenseTotalAmount(paymentId) {
+    var normalizedId = normalizeExpenseVendorValue(paymentId);
+    if (!normalizedId) throw new Error("Thiếu mã phiếu Dự chi để cập nhật tổng giá trị.");
+
+    var paymentFile = new SCFile("esdHTKTpayment");
+    try {
+        var paymentRc = paymentFile.doSelect(
+            'id="' + escapeExpenseVendorQueryValue(normalizedId) + '"'
+        );
+        if (paymentRc !== RC_SUCCESS) {
+            throw new Error("Không tìm thấy phiếu Dự chi " + normalizedId + ". Code: " + paymentRc);
+        }
+        if (normalizeExpenseVendorValue(paymentFile["transaction.type"]) !== "Dự chi") return;
+
+        var totalAmount = getExpenseTotalAmount(normalizedId);
+        var storedAmount = normalizeExpenseVendorValue(paymentFile["total.amount.paid"]);
+        if (!storedAmount || lib.ESD_HTKT_Utils.compareMoneyStrings(storedAmount, totalAmount) !== 0) {
+            paymentFile["total.amount.paid"] = totalAmount;
+            var updateRc = paymentFile.doUpdate();
+            if (updateRc !== RC_SUCCESS) {
+                throw new Error("Không cập nhật được tổng giá trị đề nghị Dự chi. Code: " + updateRc);
+            }
+        }
+        return totalAmount;
     } finally {
         closeExpenseVendorFile(paymentFile);
     }

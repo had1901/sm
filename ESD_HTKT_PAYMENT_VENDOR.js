@@ -465,25 +465,26 @@ function createListInvoinVendor(input) {
         // =========================================================================
         var totalGrandTotal = "0";
         var paymentId = dataObj[0]['transactionId'] || "";
+        var paymentVendorId = dataObj[0]['paymentVendorId'] || dataObj[0]['payment.vendor.id'] || "";
         var vendorId = dataObj[0]['vendorId'] || "";
 
-        if (paymentId === "" || vendorId === "") {
+        if (paymentId === "" || paymentVendorId === "") {
             return {
                 success: false,
-                message: "Thiếu thông tin mã giao dịch (transactionId) hoặc mã nhà cung cấp (vendorId).",
+                message: "Thiếu thông tin mã giao dịch (transactionId) hoặc mã khoản thanh toán nhà cung cấp (paymentVendorId).",
                 checkStatus: []
             };
         }
 
-        // Bước 2.1: Kiểm tra xem cặp payment.id và vendor.id đã có dữ liệu chưa trong bảng esdHTKTpaymentVendor
+        // Bước 2.1: Tìm đúng khoản thanh toán nhà cung cấp theo ID bản ghi.
         var checkVendorFile = new SCFile("esdHTKTpaymentVendor");
-        var checkVendorQuery = "payment.id=\"" + paymentId + "\" and vendor.id=\"" + vendorId + "\"";
+        var checkVendorQuery = "id=\"" + paymentVendorId + "\"";
         var rcCheckVendor = checkVendorFile.doSelect(checkVendorQuery);
 
         if (rcCheckVendor != RC_SUCCESS) {
             return {
                 success: false,
-                message: "Không tìm thấy thông tin khoản thanh toán của nhà cung cấp (Payment ID: " + paymentId + ", Vendor ID: " + vendorId + ") trong hệ thống. Thao tác đã bị hủy.",
+                message: "Không tìm thấy thông tin khoản thanh toán của nhà cung cấp (ID: " + paymentVendorId + ") trong hệ thống. Thao tác đã bị hủy.",
                 checkStatus: []
             };
         }
@@ -555,6 +556,7 @@ function createListInvoinVendor(input) {
             // Tạo bản ghi mới trong bảng liên kết
             var itemRec = new SCFile("esdHTKTpaymentInvoice");
             mapPaymentAttachment(itemRec, feeData);
+            itemRec["ref.id"] = paymentVendorId;
 
             var rc = itemRec.doInsert();
 
@@ -1721,6 +1723,12 @@ function handleVendorChangeUpdate(record) {
     var f = null;
 
     try {
+        // đồng bộ tổng giá trị Dự chi.
+        if (String(paymentId).split(".")[0].toUpperCase() === "DC") {
+            lib.ESD_HTKT_EXPENSE_VENDOR.syncExpenseTotalAmount(paymentId);
+            return;
+        }
+        
         // Tính lại tổng dữ liệu Vendor của phiếu
         var totals = getPaymentVendorList(paymentId);
 
