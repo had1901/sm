@@ -188,7 +188,7 @@ function run() {
                 result = { success: true, data: lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.retryAccountingErrorsResult(input) };
                 break;
             case "saveAccountingErrorsResult": // Lưu khai báo kết quả hạch toán
-                result = { success: true, data: lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.saveAccountingErrorsResult(input) };
+                result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.saveAccountingErrorsResult(input);
                 break;
 
             case 'listFileAttachment':
@@ -224,6 +224,36 @@ function run() {
                     success: true,
                     data: lib.ESD_HTKT_EXPENSE_VENDOR.getListExpenseVendor(input)
                 };
+                break;
+            case "getListExpenseEntry":
+                result = lib.ESD_HTKT_EXPENSE_ENTRY.getListExpenseEntry(details);
+                break;    
+            case "saveExpenseEntryEdit":
+                result = lib.ESD_HTKT_EXPENSE_ENTRY.saveExpenseEntryEdit(details);
+                break;
+            case "deleteExpenseVendor":
+                result = lib.ESD_HTKT_EXPENSE_VENDOR.deleteExpenseVendor(input);
+                break;
+            case "createListInvoinExpenseVendor":
+                result = {
+                    success: true,
+                    data: lib.ESD_HTKT_EXPENSE_VENDOR.createListInvoinVendor(input)
+                };
+                break;
+            case "addExpenseFileAttachment":
+                result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.addFileAttachment(input);
+                break;
+            case "getExpenseFileAttachments":
+                result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.getFileAttachments(input);
+                break;
+            case "viewExpenseFileAttachment":
+                result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.viewFileAttachment(input);
+                break;
+            case "downloadExpenseFileAttachment":
+                result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.downloadFileAttachment(input);
+                break;
+            case "deleteExpenseFileAttachment":
+                result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.deleteFileAttachment(input);
                 break;
 
             default:
