@@ -282,11 +282,11 @@ function renderExpenseList() {
     var contactInfo = htktExpenseView_readContact(currentUser);
     var rights = htktExpenseView_getRights();
 
-    var RIGHT_EXPENSE_VIEW = "0040040003000001";
-    var RIGHT_EXPENSE_VIEW_APPROVAL = "0040040003000009";
-    var RIGHT_EXPENSE_CREATE = "0040040003000002";
-    var RIGHT_EXPENSE_ACCOUNTING = "0040040003000003";
-    var RIGHT_EXPENSE_POST_AUDIT = "0040040003000010";
+    var RIGHT_EXPENSE_VIEW = "0040040004000001";
+    var RIGHT_EXPENSE_VIEW_APPROVAL = "0040040004000009";
+    var RIGHT_EXPENSE_CREATE = "0040040004000002";
+    var RIGHT_EXPENSE_ACCOUNTING = "0040040004000003";
+    var RIGHT_EXPENSE_POST_AUDIT = "0040040004000010";
 
     var hasView = rights.indexOf(RIGHT_EXPENSE_VIEW) >= 0 ||
                   rights.indexOf(RIGHT_EXPENSE_VIEW_APPROVAL) >= 0;
@@ -351,7 +351,6 @@ function renderExpenseList() {
             rights: rights,
             permission: {
                 view: isPostAuditRole ? true : hasView,
-                expenseView: isPostAuditRole ? true : hasView,
                 create: hasCreate,
                 accounting: hasAccounting,
                 postAudit: isPostAuditRole
@@ -360,7 +359,7 @@ function renderExpenseList() {
                 { id: 'create', visible: hasCreate },
                 { id: 'accounting', visible: hasAccounting }
             ],
-            debugSource: "ESD_HTKT_EXPENSE"
+            debugSource: "ESD_HTKT_EXPENSE_VIEW"
         }
     );
 }
@@ -375,10 +374,10 @@ function canShowAttachmentTab(currentUser) {
 
     var rights = htktExpenseView_getRights();
     return (
-        rights.indexOf("0040040003000003") >= 0 || // KTTC tiếp nhận/hạch toán
-        rights.indexOf("0040040003000006") >= 0 || // Phê duyệt KTTC
-        rights.indexOf("0040040003000007") >= 0 || // Rà soát KTTC (Rà soát 2)
-        rights.indexOf("0040040003000008") >= 0    // Cấp có thẩm quyền
+        rights.indexOf("0040040004000003") >= 0 || // KTTC tiếp nhận/hạch toán Dự chi
+        rights.indexOf("0040040004000006") >= 0 || // Phê duyệt KTTC Dự chi
+        rights.indexOf("0040040004000007") >= 0 || // Rà soát KTTC Dự chi (Rà soát 2)
+        rights.indexOf("0040040004000008") >= 0    // Cấp có thẩm quyền Dự chi
     );
 }
 
@@ -685,8 +684,8 @@ function getTabThongTinMonDuChi(endpoint, input, extraData) {
     var operatorName = String(system.user.name || "").replace(/^\s+|\s+$/g, "");
     var contactInfo = htktExpenseView_readContact(currentUser);
     var rights = htktExpenseView_getRights();
-    var hasCreate = rights.indexOf("0040040003000002") >= 0;
-    var hasAccounting = rights.indexOf("0040040003000003") >= 0;
+    var hasCreate = rights.indexOf("0040040004000002") >= 0;
+    var hasAccounting = rights.indexOf("0040040004000003") >= 0;
     var roleFromRights = hasCreate ? (hasAccounting ? "kttc" : "dmms") : "";
     var currentPhase = String(
         (expenseRecord && (expenseRecord["current.phase"] || expenseRecord.current_phase)) ||

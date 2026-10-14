@@ -243,17 +243,17 @@ function generateDocumentCode(docType, branchCode) {
 
 function htktCreateExpense_detectInitialRoleByRights(contactId) {
     var RIGHT_VIEW_INVOICE = "0040040003000001";
-    var RIGHT_VIEW_PAYMENT = "0040040003000001";
-    var RIGHT_CREATE_PAYMENT = "0040040003000002";
-    var RIGHT_ACCOUNTING_INPUT = "0040040003000003";
-
+    var RIGHT_VIEW_EXPENSE = "0040040004000001";
+    var RIGHT_CREATE_EXPENSE = "0040040004000002";
+    var RIGHT_ACCOUNTING_INPUT = "0040040004000003";
+    
     var rights = htktCreateExpense_getRights(contactId);
 
     if (
             htktCreateExpense_hasAllRights(rights, [
                 RIGHT_VIEW_INVOICE,
-                RIGHT_VIEW_PAYMENT,
-                RIGHT_CREATE_PAYMENT,
+                RIGHT_VIEW_EXPENSE,
+                RIGHT_CREATE_EXPENSE,
                 RIGHT_ACCOUNTING_INPUT
             ])
     ) {
@@ -263,8 +263,8 @@ function htktCreateExpense_detectInitialRoleByRights(contactId) {
     if (
             htktCreateExpense_hasAllRights(rights, [
                 RIGHT_VIEW_INVOICE,
-                RIGHT_VIEW_PAYMENT,
-                RIGHT_CREATE_PAYMENT
+                RIGHT_VIEW_EXPENSE,
+                RIGHT_CREATE_EXPENSE
             ])
     ) {
         return "dmms";
