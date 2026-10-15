@@ -23,6 +23,15 @@ function validateDataInPhase(record, type) {
         return ["Bản ghi không phải phiếu Dự chi hợp lệ."];
     }
 
+    var submissionPhase = record.current_phase || record["current.phase"];
+    if (submissionPhase === "initial_dmms" || submissionPhase === "initial_kttc") {
+        try {
+            lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.syncPaymentApprovalFromDatabase(record);
+        } catch (approvalError) {
+            return ["Không tải lại được thông tin phê duyệt trước khi trình: " + String(approvalError.message || approvalError)];
+        }
+    }
+
     var errorMss = [];
 
     // Validate đã chọn nhà cung cấp cho phiếu Dự chi

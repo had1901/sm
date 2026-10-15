@@ -413,6 +413,15 @@ function validateDataInPhase(record, type) {
         return null;
     }
 
+    var submissionPhase = record.current_phase || record["current.phase"];
+    if (submissionPhase === "initial_dmms" || submissionPhase === "initial_kttc") {
+        try {
+            lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.syncPaymentApprovalFromDatabase(record);
+        } catch (approvalError) {
+            return ["Không tải lại được thông tin phê duyệt trước khi trình: " + String(approvalError.message || approvalError)];
+        }
+    }
+
     var errorMss = [];
 
     // Validate chung thông tin NCC + thanh toán
