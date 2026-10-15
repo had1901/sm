@@ -38,6 +38,9 @@ function run() {
             case "deleteExpenseVendor":
                 result = deleteExpenseVendor(input);
                 break;
+            case "syncExpenseVendorsToOgl":
+                result = syncExpenseVendorsToOgl(input);
+                break;
             default:
                 result = {
                     success: false,
@@ -271,6 +274,194 @@ function deleteExpenseVendor(input) {
     }
 }
 
+
+/**
+ * Đồng bộ tuần tự NCC/site OGL cho các món chưa đồng bộ của một phiếu Dự chi.
+ * Kiểm tra phiếu/người thao tác, duyệt từng món, gọi đồng bộ OGL, lưu kết quả và tổng hợp số thành công/thất bại
+ */
+function syncExpenseVendorsToOgl(input) {
+    var params = getExpenseVendorInputDetails(input);
+    var paymentId = normalizeExpenseVendorValue(params.paymentId || params.expenseId);
+    var currentUser = normalizeExpenseVendorValue(params.currentUser);
+    var paymentFile = null;
+    var itemFile = null;
+    var data = { total: 0, synced: 0, skipped: 0, failed: 0, items: [] };
+
+    if (!paymentId || !currentUser) {
+        return { success: false, message: "Thiếu mã phiếu Dự chi hoặc người thực hiện." };
+    }
+
+    try {
+        paymentFile = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        if (paymentFile.doSelect('id="' + escapeExpenseVendorQueryValue(paymentId) + '"') !== RC_SUCCESS ||
+                normalizeExpenseVendorValue(paymentFile["transaction.type"]) !== "Dự chi" ||
+                paymentId.indexOf("DC.") !== 0) {
+            return { success: false, message: "Không tìm thấy phiếu Dự chi hợp lệ." };
+        }
+
+        // Cùng điều kiện showSyncVendorOgl tại màn NCC Thanh toán.
+        var actor = currentUser.toLowerCase();
+        var creator = normalizeExpenseVendorValue(paymentFile["created.by"]).toLowerCase();
+        var checker = normalizeExpenseVendorValue(paymentFile["user.checker.kttc"]).toLowerCase();
+        var phase = normalizeExpenseVendorValue(paymentFile["current.phase"]);
+        var role = normalizeExpenseVendorValue(paymentFile["initial.role"]);
+        var canSync = phase === "initial_kttc" &&
+                (checker === actor || (role === "kttc" && creator === actor));
+        if (!canSync) {
+            return { success: false, message: "Không có quyền đồng bộ OGL tại bước hiện tại của phiếu Dự chi." };
+        }
+
+        var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(paymentFile["unit.lv1"]);
+        if (!entityInfo || !entityInfo.entity || !entityInfo.oglBranchCode) {
+            return { success: false, message: "Không xác định được entity/mã chi nhánh OGL của phiếu Dự chi." };
+        }
+        var branchCode = String(entityInfo.oglBranchCode);
+        if (branchCode.length === 4) branchCode = branchCode.substr(1);
+        var syncUser = normalizeExpenseVendorValue(paymentFile["user.checker.kttc"]) || currentUser;
+
+        itemFile = new SCFile("esdHTKTpaymentVendor");
+        var itemRc = itemFile.doSelect('payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
+        while (itemRc === RC_SUCCESS) {
+            var itemId = normalizeExpenseVendorValue(itemFile["id"]);
+            var wasSynced = isExpenseVendorOglSynced(itemFile["ogl.sync.status"]);
+            data.total++;
+            try {
+                var vendorId = normalizeExpenseVendorValue(itemFile["vendor.id"]);
+                var siteId = normalizeExpenseVendorValue(itemFile["vendor.site.id"]);
+                getExpenseVendorOglStatus(vendorId);
+                // Chỉ ghi nhận đã đồng bộ khi còn đủ dữ liệu; không gọi OGL lại cho cờ true.
+                if (wasSynced) {
+                    if (!siteId) {
+                        throw new Error("Món có cờ đã đồng bộ nhưng thiếu Site NCC (vendor.site.id). Cần mở món và chọn/lưu lại site.");
+                    }
+                    data.skipped++;
+                    data.items.push({ id: itemId, status: "skipped", message: "Món đã đồng bộ OGL." });
+                } else {
+                    // Hàm dùng chung có thể trả success=true dù không tìm thấy NCC.
+                    // Chỉ tin khi nó thực sự xác nhận đồng bộ trên record và master NCC.
+                    itemFile["ogl.sync.status"] = false;
+                    // Gọi tuần tự cùng hàm đồng bộ NCC/site mà Thanh toán đang dùng.
+                    var syncResult = lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(
+                        itemFile, branchCode, entityInfo.entity, syncUser
+                    );
+                    if (!syncResult || syncResult.success !== true) {
+                        throw new Error(syncResult && (syncResult.message || syncResult.error) || "Đồng bộ NCC/site OGL thất bại.");
+                    }
+                    if (!isExpenseVendorOglSynced(itemFile["ogl.sync.status"]) || !getExpenseVendorOglStatus(vendorId)) {
+                        throw new Error("Hàm đồng bộ chưa xác nhận NCC đã đồng bộ OGL.");
+                    }
+                    siteId = getExpenseVendorOglSite(vendorId, siteId, branchCode);
+                    itemFile["vendor.site.id"] = siteId;
+                    itemFile["ogl.sync.status"] = true;
+                    var updateRc = itemFile.doUpdate();
+                    if (updateRc !== RC_SUCCESS) {
+                        throw new Error("OGL đã đồng bộ nhưng không lưu được trạng thái món. Code: " + updateRc);
+                    }
+                    verifyExpenseVendorOglSaved(itemId, paymentId, vendorId, siteId);
+                    data.synced++;
+                    data.items.push({ id: itemId, status: "synced", message: "Đã đồng bộ OGL." });
+                }
+            } catch (itemError) {
+                var itemMessage = String(itemError.message || itemError);
+                // Gỡ cờ nếu lần đồng bộ này chưa lưu được đầy đủ kết quả.
+                if (!wasSynced && isExpenseVendorOglSynced(itemFile["ogl.sync.status"])) {
+                    itemFile["ogl.sync.status"] = false;
+                    try {
+                        var resetRc = itemFile.doUpdate();
+                        if (resetRc !== RC_SUCCESS) itemMessage += " Không gỡ được cờ đồng bộ sai. Code: " + resetRc;
+                    } catch (resetError) {
+                        itemMessage += " Không gỡ được cờ đồng bộ sai: " + String(resetError.message || resetError);
+                    }
+                }
+                data.failed++;
+                data.items.push({ id: itemId, status: "failed", message: itemMessage });
+            }
+            itemRc = itemFile.getNext();
+        }
+        if (itemRc !== RC_NO_MORE) {
+            throw new Error("Không đọc được đầy đủ danh sách món Dự chi. Code: " + itemRc);
+        }
+        return {
+            success: data.failed === 0,
+            message: data.total === 0 ? "Phiếu chưa có món Dự chi để đồng bộ OGL." :
+                "Đồng bộ OGL: thành công " + data.synced + " món, đã đồng bộ " + data.skipped +
+                " món, thất bại " + data.failed + " món.",
+            data: data
+        };
+    } catch (error) {
+        return { success: false, message: "Lỗi đồng bộ OGL Dự chi: " + String(error.message || error), data: data };
+    } finally {
+        closeExpenseVendorFile(itemFile);
+        closeExpenseVendorFile(paymentFile);
+    }
+}
+
+/**
+ * Chuẩn hóa cờ đồng bộ: nhận cả true, "true", 1, "1"
+ */
+function isExpenseVendorOglSynced(value) {
+    var status = normalizeExpenseVendorValue(value).toLowerCase();
+    return status === "true" || status === "1";
+}
+
+/**
+ * Kiểm tra NCC đã tồn tại, có tên/mã số thuế và đọc trạng thái đồng bộ của NCC
+ */
+function getExpenseVendorOglStatus(vendorId) {
+    if (!vendorId) throw new Error("Chưa chọn/lưu Nhà cung cấp cho món Dự chi. Cần mở món và lưu NCC trước khi đồng bộ OGL.");
+    var vendor = new SCFile("esdHTKTvendor", SCFILE_READONLY);
+    try {
+        if (vendor.doSelect('id="' + escapeExpenseVendorQueryValue(vendorId) + '"') !== RC_SUCCESS) {
+            throw new Error("Không tìm thấy NCC " + vendorId + ".");
+        }
+        if (!normalizeExpenseVendorValue(vendor["vendor.name"]) || !normalizeExpenseVendorValue(vendor["vendor.number"])) {
+            throw new Error("NCC " + vendorId + " thiếu tên hoặc mã số thuế để đồng bộ OGL.");
+        }
+        return isExpenseVendorOglSynced(vendor["ogl.sync.status"]);
+    } finally {
+        closeExpenseVendorFile(vendor);
+    }
+}
+
+/**
+ * Tìm/kiểm tra site đúng NCC, đúng chi nhánh, đang hoạt động và đã đồng bộ. Nếu món chưa chọn site thì tìm site mặc định
+ */
+function getExpenseVendorOglSite(vendorId, siteId, branchCode) {
+    if (siteId) return siteId;
+
+    var defaultSite = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+    if (!defaultSite || !defaultSite.siteCode) throw new Error("Chưa cấu hình site OGL mặc định.");
+    var vendorSites = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vendorId, branchCode);
+    for (var i = 0; vendorSites && i < vendorSites.length; i++) {
+        var vendorSite = vendorSites[i];
+        if (normalizeExpenseVendorValue(vendorSite["ogl.site.code"]) === normalizeExpenseVendorValue(defaultSite.siteCode)) {
+            var selectedId = normalizeExpenseVendorValue(vendorSite["id"]);
+            if (selectedId) return selectedId;
+        }
+    }
+    throw new Error("Không tìm thấy site OGL mặc định của NCC " + vendorId + " tại chi nhánh " + branchCode + ".");
+}
+
+/**
+ * Sau khi lưu món, đọc lại để chắc chắn vendor.id, vendor.site.id và cờ đồng bộ đã được lưu đúng
+ */
+function verifyExpenseVendorOglSaved(itemId, paymentId, vendorId, siteId) {
+    var saved = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+    try {
+        var query = 'id="' + escapeExpenseVendorQueryValue(itemId) +
+                '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"';
+        if (saved.doSelect(query) !== RC_SUCCESS ||
+                normalizeExpenseVendorValue(saved["vendor.id"]) !== vendorId ||
+                normalizeExpenseVendorValue(saved["vendor.site.id"]) !== siteId ||
+                !isExpenseVendorOglSynced(saved["ogl.sync.status"])) {
+            throw new Error("Chưa lưu đủ vendor.id/vendor.site.id và trạng thái đồng bộ cho món " + itemId + ".");
+        }
+    } finally {
+        closeExpenseVendorFile(saved);
+    }
+}
+
+
 /**
  * Tạo món Dự chi theo hợp đồng được chọn và trả về đúng ID bản ghi vừa tạo.
  */
@@ -438,6 +629,7 @@ function syncExpenseTotalAmount(paymentId) {
     }
 }
 
+
 /**
  * Lấy danh sách nhà cung cấp theo paymentId/expenseId nhận từ request.
  *
@@ -452,7 +644,7 @@ function getListExpenseVendor(input) {
         var vendorQuery =
                 "SELECT pv.id, pv.payment.id, pv.contract.id," +
                 " v.vendor.number, v.vendor.name, pv.amount, pv.currency," +
-                " pv.total.invoice, pv.ogl.sync.status, v.ogl.vendor.id" +
+                " pv.total.invoice, pv.ogl.sync.status, v.ogl.vendor.id, pv.vendor.id, pv.vendor.site.id" +
                 " FROM esdHTKTpaymentVendor pv" +
                 " LEFT JOIN esdHTKTvendor v ON (pv.vendor.id = v.id)" +
                 ' WHERE pv.payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"';
@@ -484,8 +676,10 @@ function buildExpenseVendorItem(paymentVendorFile) {
         amount: Number(paymentVendorFile[5] || 0),
         currency: String(paymentVendorFile[6] || "VND"),
         count: Number(paymentVendorFile[7] || 0),
-        ogl_sync_status: paymentVendorFile[8],
-        ogl_vendor_id: String(paymentVendorFile[9] || "")
+        ogl_sync_status: isExpenseVendorOglSynced(paymentVendorFile[8]),
+        ogl_vendor_id: String(paymentVendorFile[9] || ""),
+        vendor_id: normalizeExpenseVendorValue(paymentVendorFile[10]),
+        vendor_site_id: normalizeExpenseVendorValue(paymentVendorFile[11])
     };
 }
 

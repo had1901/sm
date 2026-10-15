@@ -216,6 +216,8 @@ function run() {
             case "createPaymentVendor":
                 result = lib.ESD_HTKT_EXPENSE_VENDOR.createPaymentVendor(input);
                 break;
+            case "syncExpenseVendorsToOgl": // Đồng bộ OGL từng món dự chi
+                return safeReturn(lib.ESD_HTKT_EXPENSE_VENDOR.syncExpenseVendorsToOgl(input));
             case "deleteExpenseVendor":
                 result = lib.ESD_HTKT_EXPENSE_VENDOR.deleteExpenseVendor(input);
                 break;

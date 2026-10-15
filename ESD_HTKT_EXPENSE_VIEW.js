@@ -699,6 +699,9 @@ function getTabThongTinMonDuChi(endpoint, input, extraData) {
         (expenseRecord && (expenseRecord["created.by"] || expenseRecord.created_by)) ||
         currentRecord.createdBy || currentRecord["created.by"] || ""
     ).replace(/^\s+|\s+$/g, "");
+    var userCheckerKttc = String(
+        (expenseRecord && expenseRecord["user.checker.kttc"]) || ""
+    ).replace(/^\s+|\s+$/g, "");
     try {
         if (loadedExpenseFile) loadedExpenseFile.doClose();
     } catch (eCloseExpenseFile) {}
@@ -721,6 +724,7 @@ function getTabThongTinMonDuChi(endpoint, input, extraData) {
             initialRole: initialRole,
             currentPhase: currentPhase,
             createdBy: createdBy,
+            userCheckerKttc: userCheckerKttc,
             isVendorEditable: isVendorEditable,
             unit: {
                 lv1: contactInfo.lv1,
