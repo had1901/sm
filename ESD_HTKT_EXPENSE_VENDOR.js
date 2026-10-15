@@ -746,6 +746,31 @@ function closeExpenseVendorFile(file) {
     try { file.doClose(); } catch (e) {}
 }
 
+/**
+ * Số tiền món Dự chi lấy từ hóa đơn thì không cho nhập tay.
+ * Kiểm tra liên kết theo mã món, không theo NCC hoặc tổng tiền/count lưu sẵn.
+ */
+function hasExpenseVendorInvoices(record) {
+    var itemId = normalizeExpenseVendorValue(record && record["id"]);
+    var paymentId = normalizeExpenseVendorValue(record && (record["payment.id"] || record.payment_id));
+    if (!itemId || !paymentId) return false;
+
+    var invoiceFile = new SCFile("esdHTKTpaymentInvoice", SCFILE_READONLY);
+    try {
+        var rc = invoiceFile.doSelect(
+            'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+            '" and ref.id="' + escapeExpenseVendorQueryValue(itemId) + '"'
+        );
+        if (rc === RC_SUCCESS) return true;
+        if (rc === RC_NO_MORE) return false;
+        // Không mở nhập tay nếu chưa xác định được dữ liệu hóa đơn.
+        print("Không kiểm tra được hóa đơn của món Dự chi " + itemId + ". Code: " + rc);
+        return true;
+    } finally {
+        closeExpenseVendorFile(invoiceFile);
+    }
+}
+
 function loadPaymentVendorInfo(record) {
     var itemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
     vars.$arrVendors = [];
