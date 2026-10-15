@@ -324,19 +324,25 @@ function syncExpenseVendorsToOgl(input) {
         while (itemRc === RC_SUCCESS) {
             var itemId = normalizeExpenseVendorValue(itemFile["id"]);
             var wasSynced = isExpenseVendorOglSynced(itemFile["ogl.sync.status"]);
+            var attemptedSync = false;
             data.total++;
             try {
                 var vendorId = normalizeExpenseVendorValue(itemFile["vendor.id"]);
                 var siteId = normalizeExpenseVendorValue(itemFile["vendor.site.id"]);
                 getExpenseVendorOglStatus(vendorId);
-                // Chỉ ghi nhận đã đồng bộ khi còn đủ dữ liệu; không gọi OGL lại cho cờ true.
-                if (wasSynced) {
-                    if (!siteId) {
-                        throw new Error("Món có cờ đã đồng bộ nhưng thiếu Site NCC (vendor.site.id). Cần mở món và chọn/lưu lại site.");
-                    }
+                var hasSelectedSite = siteId && lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vendorId, branchCode)
+                        .some(function(site) { return normalizeExpenseVendorValue(site["id"]) === siteId; });
+                // Chỉ bỏ qua khi đã đồng bộ và site vẫn tồn tại cho NCC/chi nhánh này.
+                if (wasSynced && hasSelectedSite) {
                     data.skipped++;
                     data.items.push({ id: itemId, status: "skipped", message: "Món đã đồng bộ OGL." });
                 } else {
+                    attemptedSync = true;
+                    // Site chưa có hoặc đã bị xóa: đồng bộ lại rồi tự gán site mặc định của NCC.
+                    if (!hasSelectedSite) {
+                        siteId = "";
+                        itemFile["vendor.site.id"] = "";
+                    }
                     // Hàm dùng chung có thể trả success=true dù không tìm thấy NCC.
                     // Chỉ tin khi nó thực sự xác nhận đồng bộ trên record và master NCC.
                     itemFile["ogl.sync.status"] = false;
@@ -364,7 +370,7 @@ function syncExpenseVendorsToOgl(input) {
             } catch (itemError) {
                 var itemMessage = String(itemError.message || itemError);
                 // Gỡ cờ nếu lần đồng bộ này chưa lưu được đầy đủ kết quả.
-                if (!wasSynced && isExpenseVendorOglSynced(itemFile["ogl.sync.status"])) {
+                if (attemptedSync && (wasSynced || isExpenseVendorOglSynced(itemFile["ogl.sync.status"]))) {
                     itemFile["ogl.sync.status"] = false;
                     try {
                         var resetRc = itemFile.doUpdate();
@@ -424,7 +430,7 @@ function getExpenseVendorOglStatus(vendorId) {
 }
 
 /**
- * Tìm/kiểm tra site đúng NCC, đúng chi nhánh, đang hoạt động và đã đồng bộ. Nếu món chưa chọn site thì tìm site mặc định
+ * Giữ site đã kiểm tra tồn tại; nếu chưa có thì tìm site mặc định theo cùng danh sách của Save.
  */
 function getExpenseVendorOglSite(vendorId, siteId, branchCode) {
     if (siteId) return siteId;
