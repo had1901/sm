@@ -573,6 +573,59 @@ function createPaymentVendor(input) {
 }
 
 /**
+ * Tính lại số hóa đơn và số tiền của đúng món sau khi xóa liên kết hóa đơn.
+ */
+function refreshExpenseAmountsAfterInvoiceDelete(paymentId, paymentVendorIds) {
+    for (var itemId in paymentVendorIds) {
+        if (!Object.prototype.hasOwnProperty.call(paymentVendorIds, itemId)) continue;
+
+        var totalInvoiceAmount = "0";
+        var totalInvoiceCount = 0;
+        var invoiceFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
+        try {
+            var invoiceRc = invoiceFile.doSelect(
+                'SELECT i.grand.total FROM esdHTKTinvoice i ' +
+                'JOIN esdHTKTpaymentInvoice pi ON (pi.invoice.id = i.id) ' +
+                'WHERE pi.payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+                '" AND pi.ref.id="' + escapeExpenseVendorQueryValue(itemId) + '"'
+            );
+            while (invoiceRc === RC_SUCCESS) {
+                totalInvoiceAmount = lib.ESD_HTKT_Utils.addStringsManual(
+                    totalInvoiceAmount, String(invoiceFile[0] || "0")
+                );
+                totalInvoiceCount++;
+                invoiceRc = invoiceFile.getNext();
+            }
+            if (invoiceRc !== RC_NO_MORE) {
+                throw new Error("Không đọc được đầy đủ hóa đơn của món " + itemId + ". Code: " + invoiceRc);
+            }
+        } finally {
+            closeExpenseVendorFile(invoiceFile);
+        }
+
+        var itemFile = new SCFile("esdHTKTpaymentVendor");
+        try {
+            var itemRc = itemFile.doSelect(
+                'id="' + escapeExpenseVendorQueryValue(itemId) +
+                '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"'
+            );
+            if (itemRc !== RC_SUCCESS) {
+                throw new Error("Không tìm thấy món Dự chi " + itemId + ". Code: " + itemRc);
+            }
+            itemFile["amount"] = totalInvoiceAmount;
+            itemFile["total.invoice"] = totalInvoiceCount;
+            var updateRc = itemFile.doUpdate();
+            if (updateRc !== RC_SUCCESS) {
+                throw new Error("Không cập nhật được số hóa đơn/số tiền món " + itemId + ". Code: " + updateRc);
+            }
+        } finally {
+            closeExpenseVendorFile(itemFile);
+        }
+    }
+    syncExpenseTotalAmount(paymentId);
+}
+
+/**
  * Tổng giá trị đề nghị Dự chi lấy từ amount của tất cả món đã lưu trên phiếu.
  * Cộng bằng chuỗi tiền để giữ chính xác phần thập phân và số tiền lớn.
  */
