@@ -1185,128 +1185,259 @@ function syncVendorOglFromPrepayment(record) {
         try { if (itemPrepaymentVendor) itemPrepaymentVendor.doClose(); } catch (e) {}
     }
 }
+///**
+// * Đồng bộ từng NCC
+// * @param prepaymentVendor 
+// * @param branchCode 
+// * @param entityCode 
+// */
+//function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username = vars.$lo_operator["contact.name"]) {
+//    var itemVendor = new SCFile("esdHTKTvendor");
+//    var rcItem = itemVendor.doSelect(`id="${prepaymentVendor['vendor.id']}"`);
+//    var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+//    var vendorExist = false;
+//    var vendorNameFromOGL = null;
+//    if (rcItem == RC_SUCCESS) {
+//
+//        // Lấy giá trị supplier.id
+//        var supplierId = itemVendor['supplier.id'];
+//
+//        if (itemVendor['vendor.name'] && itemVendor['vendor.number']) {
+//            var checkVendorReponse = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.getVendorSiteInfo({
+//                "vendorNumber": itemVendor['vendor.number'],
+//                //                "vendorName": itemVendor['vendor.name'],
+//                "entity": branchCode,
+//            });
+//            if (checkVendorReponse && checkVendorReponse['success'] === true &&
+//                checkVendorReponse['data'] &&
+//                checkVendorReponse['data'].length > 0) {
+//                var allSites = [];
+//                if (checkVendorReponse['data'][0].vendorName) {
+//                    vendorNameFromOGL = checkVendorReponse['data'][0].vendorName;
+//                }
+//                checkVendorReponse['data'].forEach(item => {
+//                    if (item.sites && item.sites.length > 0) {
+//                        allSites = allSites.concat(item.sites);
+//                    }
+//                });
+//
+//                // Lấy ra tất cả site đang lưu theo entity - đơn vị
+//                var arrVendorSiteCodeExit = [];
+//                var itemVendorSite = new SCFile('esdHTKTvendorSite');
+//                var vendorSiteRC = itemVendorSite.doSelect(`vendor.id = "${itemVendor.id}" and ogl.entity = "${branchCode}"`);
+//                while (vendorSiteRC == RC_SUCCESS) {
+//                    // trong các site trả về kiểm tra để cập nhật/set inactive cho các site đang có(set inactive cho site khác site mặc định)
+//                    var findVendorSite = allSites.find(x => x.entity == itemVendorSite['ogl.entity'] &&
+//                        x.vendorSiteCode == itemVendorSite['ogl.site.code']);
+//                    if (findVendorSite) {
+//                        if (itemVendorSite['credit.account'] != findVendorSite.debitAccount ||
+//                            itemVendorSite['debit.account'] != findVendorSite.debitAccount) {
+//                            itemVendorSite['credit.account'] = findVendorSite.debitAccount;
+//                            itemVendorSite['debit.account'] = findVendorSite.debitAccount;
+//                            itemVendorSite.doUpdate();
+//                        }
+//                        arrVendorSiteCodeExit.push(findVendorSite.vendorSiteCode);
+//                    } else {
+//                        itemVendorSite.active = false;
+//                        itemVendorSite.doUpdate();
+//                    }
+//                    vendorSiteRC = itemVendorSite.getNext();
+//                }
+//
+//                if (allSites.length > 0) {
+//                    vendorExist = allSites.find(x => x.vendorSiteCode == defaultVendorSiteInfo.siteCode) != null;
+//                    var newSiteArr = [];
+//                    if (arrVendorSiteCodeExit.length != allSites.length) {
+//                        // tìm ra và tạo các site mới
+//                        if (arrVendorSiteCodeExit.length == 0) newSiteArr = allSites;
+//                        else newSiteArr = allSites.filter(x => !arrVendorSiteCodeExit.includes(x.vendorSiteCode)) || [];
+//                    }
+//                    newSiteArr.forEach(item => {
+//                        item['vendor.id'] = itemVendor.id;
+//                        saveVendorSite(item);
+//                    });
+//                }
+//            }
+//            if (!vendorExist) {
+//                var vendorInfo = buildVendorAndSiteInfo(itemVendor, defaultVendorSiteInfo, branchCode, entityCode, username, vendorNameFromOGL);
+//                print(`buildVendorAndSiteInfo: ${JSON.stringify(vendorInfo)}`);
+//                var response = createVendor(vendorInfo, itemVendor.id);
+//                //                print('createVendor 1= ', JSON.stringify(response));
+//                if (response) {
+//                    if (response['success'] === true) {
+//                        vendorExist = true;
+//                    } else {
+//                        return response;
+//                    }
+//                }
+//            }
+//
+//            if (vendorExist) {
+//                if (!itemVendor['ogl.sync.status']) {
+//                    itemVendor['ogl.sync.status'] = true;
+//                    itemVendor.doUpdate();
+//                }
+//                //                if (!prepaymentVendor['ogl.sync.status']) {
+//                //                    prepaymentVendor['ogl.sync.status'] = true;
+//                //                    prepaymentVendor.doUpdate();
+//                //                }
+//
+//                // 2. Chỉ CẬP NHẬT TRẠNG THÁI TRÊN MEMORY cho prepaymentVendor ($L_file)
+//                // KHÔNG gọi prepaymentVendor.doUpdate() ở đây
+//                // Vì nếu là bản ghi mới tạo, doSave/doInsert ở bước sau sẽ tự lưu trạng thái này xuống DB.
+//                prepaymentVendor['ogl.sync.status'] = true;
+//
+//                //cap nhat esdDMSupplier
+//                if (supplierId) {
+//                    var itemSupplier = new SCFile("esdDMSupplier");
+//                    var rcSupplier = itemSupplier.doSelect(`id="${supplierId}"`);
+//
+//                    if (rcSupplier == RC_SUCCESS) {
+//                        if (!itemSupplier['isAccounted']) {
+//                            itemSupplier['isAccounted'] = true;
+//                            itemSupplier.doUpdate();
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//    }
+//    return {
+//        success: true
+//    };
+//}
 /**
- * Đồng bộ từng NCC
+ * Đồng bộ từng NCC (Logic MỚI: Query QLTS -> Sync OGL -> Create OGL)
  * @param prepaymentVendor 
  * @param branchCode 
  * @param entityCode 
+ * @param username
  */
-function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username = vars.$lo_operator["contact.name"]) {
-    var itemVendor = new SCFile("esdHTKTvendor");
-    var rcItem = itemVendor.doSelect(`id="${prepaymentVendor['vendor.id']}"`);
-    var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
-    var vendorExist = false;
-    var vendorNameFromOGL = null;
-    if (rcItem == RC_SUCCESS) {
+function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username) {
+    if (!username) username = vars.$lo_operator["contact.name"];
 
-        // Lấy giá trị supplier.id
+    var itemVendor = new SCFile("esdHTKTvendor");
+    var rcItem = itemVendor.doSelect('id="' + prepaymentVendor['vendor.id'] + '"');
+    var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+    
+    var vendorExistInOGL = false;
+    var vendorNameFromOGL = null;
+
+    if (rcItem == RC_SUCCESS) {
         var supplierId = itemVendor['supplier.id'];
+        var vendorId = itemVendor['id'];
 
         if (itemVendor['vendor.name'] && itemVendor['vendor.number']) {
-            var checkVendorReponse = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.getVendorSiteInfo({
-                "vendorNumber": itemVendor['vendor.number'],
-                //                "vendorName": itemVendor['vendor.name'],
-                "entity": branchCode,
-            });
-            if (checkVendorReponse && checkVendorReponse['success'] === true &&
-                checkVendorReponse['data'] &&
-                checkVendorReponse['data'].length > 0) {
-                var allSites = [];
-                if (checkVendorReponse['data'][0].vendorName) {
-                    vendorNameFromOGL = checkVendorReponse['data'][0].vendorName;
-                }
-                checkVendorReponse['data'].forEach(item => {
-                    if (item.sites && item.sites.length > 0) {
-                        allSites = allSites.concat(item.sites);
-                    }
-                });
 
-                // Lấy ra tất cả site đang lưu theo entity - đơn vị
-                var arrVendorSiteCodeExit = [];
-                var itemVendorSite = new SCFile('esdHTKTvendorSite');
-                var vendorSiteRC = itemVendorSite.doSelect(`vendor.id = "${itemVendor.id}" and ogl.entity = "${branchCode}"`);
-                while (vendorSiteRC == RC_SUCCESS) {
-                    // trong các site trả về kiểm tra để cập nhật/set inactive cho các site đang có(set inactive cho site khác site mặc định)
-                    var findVendorSite = allSites.find(x => x.entity == itemVendorSite['ogl.entity'] &&
-                        x.vendorSiteCode == itemVendorSite['ogl.site.code']);
-                    if (findVendorSite) {
-                        if (itemVendorSite['credit.account'] != findVendorSite.debitAccount ||
-                            itemVendorSite['debit.account'] != findVendorSite.debitAccount) {
-                            itemVendorSite['credit.account'] = findVendorSite.debitAccount;
-                            itemVendorSite['debit.account'] = findVendorSite.debitAccount;
-                            itemVendorSite.doUpdate();
-                        }
-                        arrVendorSiteCodeExit.push(findVendorSite.vendorSiteCode);
-                    } else {
-                        itemVendorSite.active = false;
-                        itemVendorSite.doUpdate();
-                    }
-                    vendorSiteRC = itemVendorSite.getNext();
-                }
-
-                if (allSites.length > 0) {
-                    vendorExist = allSites.find(x => x.vendorSiteCode == defaultVendorSiteInfo.siteCode) != null;
-                    var newSiteArr = [];
-                    if (arrVendorSiteCodeExit.length != allSites.length) {
-                        // tìm ra và tạo các site mới
-                        if (arrVendorSiteCodeExit.length == 0) newSiteArr = allSites;
-                        else newSiteArr = allSites.filter(x => !arrVendorSiteCodeExit.includes(x.vendorSiteCode)) || [];
-                    }
-                    newSiteArr.forEach(item => {
-                        item['vendor.id'] = itemVendor.id;
-                        saveVendorSite(item);
-                    });
-                }
+            // =====================================================================
+            // BƯỚC 1: Query site tại danh mục QLTS (esdHTKTvendorSite)
+            // =====================================================================
+            var hasSiteInQLTS = false;
+            var itemVendorSiteCheck = new SCFile('esdHTKTvendorSite');
+            var queryLocalSite = 'vendor.id = "' + vendorId + '" and ogl.entity = "' + branchCode + '" and active = true';
+            
+            if (itemVendorSiteCheck.doSelect(queryLocalSite) == RC_SUCCESS) {
+                hasSiteInQLTS = true; // Đã tồn tại site hợp lệ trên QLTS
             }
-            if (!vendorExist) {
-                var vendorInfo = buildVendorAndSiteInfo(itemVendor, defaultVendorSiteInfo, branchCode, entityCode, username, vendorNameFromOGL);
-                print(`buildVendorAndSiteInfo: ${JSON.stringify(vendorInfo)}`);
-                var response = createVendor(vendorInfo, itemVendor.id);
-                //                print('createVendor 1= ', JSON.stringify(response));
-                if (response) {
-                    if (response['success'] === true) {
-                        vendorExist = true;
-                    } else {
-                        return response;
-                    }
-                }
-            }
+            try { itemVendorSiteCheck.doClose(); } catch(e) {}
 
-            if (vendorExist) {
+            // Nếu đã có site trên QLTS => Bỏ qua gọi API OGL, chỉ cập nhật memory/trạng thái và return
+            if (hasSiteInQLTS) {
                 if (!itemVendor['ogl.sync.status']) {
                     itemVendor['ogl.sync.status'] = true;
                     itemVendor.doUpdate();
                 }
-                //                if (!prepaymentVendor['ogl.sync.status']) {
-                //                    prepaymentVendor['ogl.sync.status'] = true;
-                //                    prepaymentVendor.doUpdate();
-                //                }
-
-                // 2. Chỉ CẬP NHẬT TRẠNG THÁI TRÊN MEMORY cho prepaymentVendor ($L_file)
-                // KHÔNG gọi prepaymentVendor.doUpdate() ở đây
-                // Vì nếu là bản ghi mới tạo, doSave/doInsert ở bước sau sẽ tự lưu trạng thái này xuống DB.
                 prepaymentVendor['ogl.sync.status'] = true;
 
-                //cap nhat esdDMSupplier
+                // Cập nhật isAccounted cho esdDMSupplier
                 if (supplierId) {
                     var itemSupplier = new SCFile("esdDMSupplier");
-                    var rcSupplier = itemSupplier.doSelect(`id="${supplierId}"`);
-
-                    if (rcSupplier == RC_SUCCESS) {
+                    if (itemSupplier.doSelect('id="' + supplierId + '"') == RC_SUCCESS) {
                         if (!itemSupplier['isAccounted']) {
                             itemSupplier['isAccounted'] = true;
                             itemSupplier.doUpdate();
                         }
                     }
+                    try { itemSupplier.doClose(); } catch(e) {}
+                }
+                return { success: true };
+            }
+
+            // =====================================================================
+            // BƯỚC 2: Đồng bộ OGL NẾU CHƯA CÓ site trên QLTS
+            // =====================================================================
+            var checkVendorReponse = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.getVendorSiteInfo({
+                "vendorNumber": itemVendor['vendor.number'],
+                "entity": branchCode
+            });
+
+            if (checkVendorReponse && checkVendorReponse['success'] === true &&
+                checkVendorReponse['data'] && checkVendorReponse['data'].length > 0) {
+
+                var allSites = [];
+                if (checkVendorReponse['data'][0].vendorName) {
+                    vendorNameFromOGL = checkVendorReponse['data'][0].vendorName;
+                }
+                
+                checkVendorReponse['data'].forEach(function(item) {
+                    if (item.sites && item.sites.length > 0) {
+                        allSites = allSites.concat(item.sites);
+                    }
+                });
+
+                // Xử lý lưu các site trả về từ OGL vào QLTS
+                if (allSites.length > 0) {
+                    vendorExistInOGL = allSites.find(function(x) { return x.vendorSiteCode == defaultVendorSiteInfo.siteCode; }) != null;
+
+                    allSites.forEach(function(item) {
+                        item['vendor.id'] = vendorId;
+                        saveVendorSite(item); // Hàm này tự động add/update vào esdHTKTvendorSite
+                    });
+                }
+            }
+
+            // =====================================================================
+            // BƯỚC 3: Tạo site NẾU CHƯA CÓ trên OGL
+            // =====================================================================
+            if (!vendorExistInOGL) {
+                var vendorInfo = buildVendorAndSiteInfo(itemVendor, defaultVendorSiteInfo, branchCode, entityCode, username, vendorNameFromOGL);
+                var response = createVendor(vendorInfo, vendorId);
+                
+                if (response) {
+                    if (response['success'] === true) {
+                        vendorExistInOGL = true;
+                    } else {
+                        return response; // Trả về lỗi ra ngoài nếu tạo OGL thất bại
+                    }
+                }
+            }
+
+            // =====================================================================
+            // Cập nhật trạng thái sau khi Đồng bộ (B2) hoặc Tạo mới (B3) thành công
+            // =====================================================================
+            if (vendorExistInOGL) {
+                if (!itemVendor['ogl.sync.status']) {
+                    itemVendor['ogl.sync.status'] = true;
+                    itemVendor.doUpdate();
+                }
+                
+                prepaymentVendor['ogl.sync.status'] = true;
+
+                if (supplierId) {
+                    var itemSupplierObj = new SCFile("esdDMSupplier");
+                    if (itemSupplierObj.doSelect('id="' + supplierId + '"') == RC_SUCCESS) {
+                        if (!itemSupplierObj['isAccounted']) {
+                            itemSupplierObj['isAccounted'] = true;
+                            itemSupplierObj.doUpdate();
+                        }
+                    }
+                    try { itemSupplierObj.doClose(); } catch(e) {}
                 }
             }
         }
     }
-    return {
-        success: true
-    };
+    return { success: true };
 }
-
 /**
  * Tạo payload gọi Tạo NCC/site sang OGL
  * @param esdHTKTvendor 
