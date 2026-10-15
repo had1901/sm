@@ -4,7 +4,7 @@
  * Module        : HTKT - Đề nghị thanh toán
  * Version       : 1.0.1
  * Chức năng:
- * - Tải danh sách người duyệt hợp lệ (Reviewer, Approver, Kế toán trưởng, Ban Giám đốc, v.v.).
+ * - Tải danh sách người duyệt hợp lệ (Reviewer, Approver, Kế toán trưởng, Ban Giám đốc, v.v.). 
  * - Áp dụng ma trận phân quyền phê duyệt dựa trên đơn vị người tạo, hạn mức số tiền và quy trình.
  * - Hỗ trợ tải dữ liệu động cho các Combobox chọn người phê duyệt trên giao diện đề nghị thanh toán.
  * -----------------------------------------------------------------------------
@@ -30,7 +30,7 @@ function syncPaymentApprovalFromDatabase(payment) {
             var selected = typeof rc === "boolean" ? rc : rc === RC_SUCCESS;
             if (!selected) {
                 throw new Error("Không tải lại được phiên bản mới nhất của phiếu thanh toán " +
-                    paymentId + ". doSelect=" + String(rc) + " (" + typeof rc + ").");
+                        paymentId + ". doSelect=" + String(rc) + " (" + typeof rc + ").");
             }
         } finally {
             payment.description = description;
@@ -59,11 +59,12 @@ function syncPaymentApprovalFromDatabase(payment) {
 /**
  * Lấy Functional Rights của user dùng riêng cho logic tái phân công (Thanh toán).
  */
-function getPaymentReassignmentRoleAccess(currentUser) {
+function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity) {
     var RIGHT_APPROVE_1 = "0040040003000005";
     var RIGHT_APPROVE_2 = "0040040003000006";
 
     var rightMap = {};
+    var queriedIdentities = [];
     var contactName = String(currentUser == null ? "" : currentUser).trim();
 
     if (!contactName) {
@@ -99,29 +100,32 @@ function getPaymentReassignmentRoleAccess(currentUser) {
         var safeIdentity = String(identity == null ? "" : identity).trim();
 
         if (
-            !safeIdentity ||
-            !lib.ESD_PERMS_RIGHTS ||
-            !lib.ESD_PERMS_RIGHTS.permsRight
+                !safeIdentity ||
+                !lib.ESD_PERMS_RIGHTS ||
+                !lib.ESD_PERMS_RIGHTS.permsRight
         ) {
             return;
         }
 
+        if (queriedIdentities.indexOf(safeIdentity) >= 0) return;
+
         try {
             addRights(lib.ESD_PERMS_RIGHTS.permsRight(safeIdentity) || []);
+            queriedIdentities.push(safeIdentity);
         } catch (ePermRights) {}
     }
 
     try {
         var sessionContact = String(
-            vars["$lo.contact.name"] ||
-            (vars.$lo_operator ? vars.$lo_operator["contact.name"] : "") ||
-            ""
+                vars["$lo.contact.name"] ||
+                (vars.$lo_operator ? vars.$lo_operator["contact.name"] : "") ||
+                ""
         ).trim();
 
         if (
-            sessionContact &&
-            sessionContact.toLowerCase() === contactName.toLowerCase() &&
-            vars["$G.rights"]
+                sessionContact &&
+                sessionContact.toLowerCase() === contactName.toLowerCase() &&
+                vars["$G.rights"]
         ) {
             addRights(vars["$G.rights"]);
         }
@@ -136,22 +140,29 @@ function getPaymentReassignmentRoleAccess(currentUser) {
         contactFile.setFields(["contact.id", "contact.name"]);
 
         var contactRc = contactFile.doSelect(
-            'tolower(contact.name)="' +
-            escapeSmQueryValue(contactName.toLowerCase()) +
-            '"'
+                'contact.name="' +
+                escapeSmQueryValue(contactName) +
+                '"'
         );
+        if (contactRc !== RC_SUCCESS) {
+            contactRc = contactFile.doSelect(
+                    'tolower(contact.name)="' +
+                    escapeSmQueryValue(contactName.toLowerCase()) +
+                    '"'
+            );
+        }
 
         if (contactRc === RC_SUCCESS) {
             var canonicalContactName = String(
-                contactFile["contact.name"] == null ?
-                "" :
-                contactFile["contact.name"]
+                    contactFile["contact.name"] == null ?
+                            "" :
+                            contactFile["contact.name"]
             ).trim();
 
             var resolvedContactId = String(
-                contactFile["contact.id"] == null ?
-                "" :
-                contactFile["contact.id"]
+                    contactFile["contact.id"] == null ?
+                            "" :
+                            contactFile["contact.id"]
             ).trim();
 
             var hasDuplicate = false;
@@ -162,13 +173,16 @@ function getPaymentReassignmentRoleAccess(currentUser) {
             }
 
             if (!hasDuplicate) {
+                if (resolvedIdentity && canonicalContactName) {
+                    resolvedIdentity.contactName = canonicalContactName;
+                }
                 if (canonicalContactName) {
                     addRightsByIdentity(canonicalContactName);
                 }
 
                 if (
-                    resolvedContactId &&
-                    resolvedContactId !== canonicalContactName
+                        resolvedContactId &&
+                        resolvedContactId !== canonicalContactName
                 ) {
                     addRightsByIdentity(resolvedContactId);
                 }
@@ -184,9 +198,9 @@ function getPaymentReassignmentRoleAccess(currentUser) {
     }
 
     print(
-        "[PAY_APR][ROLE] u=" + contactName +
-        " r5=" + String(rightMap[RIGHT_APPROVE_1] === true) +
-        " r6=" + String(rightMap[RIGHT_APPROVE_2] === true)
+            "[PAY_APR][ROLE] u=" + contactName +
+            " r5=" + String(rightMap[RIGHT_APPROVE_1] === true) +
+            " r6=" + String(rightMap[RIGHT_APPROVE_2] === true)
     );
 
     return {
@@ -198,17 +212,17 @@ function readPaymentApprovalValue(payment, field) {
     var value = payment[field];
 
     if (
-        value == null ||
-        String(value).trim() === ""
+            value == null ||
+            String(value).trim() === ""
     ) {
         value = payment[field.replace(/\./g, "_")];
     }
 
     return String(
-        value == null ? "" : value
+            value == null ? "" : value
     ).trim();
 }
-function getPaymentApprovalAccess(payment, currentUser) {
+function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity) {
     var phase = readPaymentApprovalValue(payment, "current.phase").toLowerCase();
     var role = readPaymentApprovalValue(payment, "initial.role").toLowerCase();
     var creator = readPaymentApprovalValue(payment, "created.by").toLowerCase();
@@ -222,24 +236,24 @@ function getPaymentApprovalAccess(payment, currentUser) {
     // Giữ nguyên semantics quyền cũ cho người khởi tạo / KTTC tiếp nhận.
     var legacyClosed = phase === "end" || status === "cancelled";
     var canEditLevel1 =
-        !legacyClosed &&
-        phase === "initial_dmms" &&
-        isDmmsCreator;
+            !legacyClosed &&
+            phase === "initial_dmms" &&
+            isDmmsCreator;
 
     var canEditLevel2 =
-        !legacyClosed &&
-        phase === "initial_kttc" &&
-        !!actor &&
-        ((creator === actor && role === "kttc") || checker === actor);
+            !legacyClosed &&
+            phase === "initial_kttc" &&
+            !!actor &&
+            ((creator === actor && role === "kttc") || checker === actor);
 
     // Quyền tái phân công của lãnh đạo chỉ áp dụng khi hồ sơ còn trong luồng xử lý.
     var reassignmentClosed =
-        phase === "end" ||
-        status === "cancelled" ||
-        status === "approved" ||
-        status === "accounted";
+            phase === "end" ||
+            status === "cancelled" ||
+            status === "approved" ||
+            status === "accounted";
 
-    var leaderAccess = getPaymentReassignmentRoleAccess(currentUser);
+    var leaderAccess = getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity);
 
     /*
      * Xác định quyền lãnh đạo theo 2 nguồn:
@@ -260,8 +274,8 @@ function getPaymentApprovalAccess(payment, currentUser) {
      * contact.name hiện tại với field approver tương ứng trên record.
      */
     var isApprovalDmms =
-        leaderAccess.isApprovalDmms === true ||
-        (!!actor && actor === approverDmms);
+            leaderAccess.isApprovalDmms === true ||
+            (!!actor && actor === approverDmms);
 
     /*
      * approval_kttc bắt buộc phải được xác định bằng Functional Right
@@ -271,7 +285,7 @@ function getPaymentApprovalAccess(payment, currentUser) {
      * user thuộc role approval_kttc phải có RIGHT_APPROVE_2 (0006).
      */
     var isApprovalKttc =
-        leaderAccess.isApprovalKttc === true;
+            leaderAccess.isApprovalKttc === true;
 
     /*
      * Ma trận tái phân công:
@@ -294,9 +308,9 @@ function getPaymentApprovalAccess(payment, currentUser) {
      *    - user.approver.final
      */
     var canDmmsLeaderReassign =
-        !reassignmentClosed &&
-        role === "dmms" &&
-        isApprovalDmms;
+            !reassignmentClosed &&
+            role === "dmms" &&
+            isApprovalDmms;
 
     /*
      * Quyền tái phân công của Lãnh đạo KTTC không phụ thuộc initial.role.
@@ -307,8 +321,8 @@ function getPaymentApprovalAccess(payment, currentUser) {
      * - user.approver.final không được mở thêm.
      */
     var canKttcLeaderReassign =
-        !reassignmentClosed &&
-        isApprovalKttc;
+            !reassignmentClosed &&
+            isApprovalKttc;
 
     var fieldAccess = {};
 
@@ -317,29 +331,29 @@ function getPaymentApprovalAccess(payment, currentUser) {
     fieldAccess["require.check.level2"] = canEditLevel2;
 
     fieldAccess["user.approver.final"] =
-        canEditLevel2 ||
-        canKttcLeaderReassign;
+            canEditLevel2 ||
+            canKttcLeaderReassign;
 
     // Quyền cũ + quyền tái phân công mới.
     fieldAccess["user.checker.kttc"] =
-        canEditLevel1 ||
-        (canKttcLeaderReassign && role === "dmms");
+            canEditLevel1 ||
+            (canKttcLeaderReassign && role === "dmms");
 
     fieldAccess["user.checker.dmms"] =
-        canEditLevel1 ||
-        canDmmsLeaderReassign;
+            canEditLevel1 ||
+            canDmmsLeaderReassign;
 
     fieldAccess["user.approver.dmms"] =
-        canEditLevel1 ||
-        canDmmsLeaderReassign;
+            canEditLevel1 ||
+            canDmmsLeaderReassign;
 
     fieldAccess["user.approver.kttc"] =
-        canEditLevel2 ||
-        canKttcLeaderReassign;
+            canEditLevel2 ||
+            canKttcLeaderReassign;
 
     fieldAccess["user.checker.final"] =
-        canEditLevel2 ||
-        canKttcLeaderReassign;
+            canEditLevel2 ||
+            canKttcLeaderReassign;
 
     return {
         isDmmsCreator: isDmmsCreator,
@@ -348,20 +362,20 @@ function getPaymentApprovalAccess(payment, currentUser) {
         showLevel1: role === "dmms",
 
         showLevel2: role === "kttc" ||
-            isApprovalKttc ||
-            (
-                role === "dmms" &&
-            !isDmmsCreator &&
-                [
-                    "initial_kttc",
-                    "check_dmms",
-                    "approval_dmms",
-                    "approval_kttc",
-                    "check_final",
-                    "approval_final",
-                    "end"
-                ].indexOf(phase) >= 0
-            ),
+                isApprovalKttc ||
+                (
+                        role === "dmms" &&
+                        !isDmmsCreator &&
+                        [
+                            "initial_kttc",
+                            "check_dmms",
+                            "approval_dmms",
+                            "approval_kttc",
+                            "check_final",
+                            "approval_final",
+                            "end"
+                        ].indexOf(phase) >= 0
+                ),
 
         // Quyền cũ.
         canEditLevel1: canEditLevel1,
@@ -373,8 +387,8 @@ function getPaymentApprovalAccess(payment, currentUser) {
 
         // Cho phép lãnh đạo nhìn dữ liệu sớm.
         canViewEarly:
-            (role === "dmms" && (isApprovalDmms || isApprovalKttc)) ||
-            (role === "kttc" && isApprovalKttc),
+                (role === "dmms" && (isApprovalDmms || isApprovalKttc)) ||
+                (role === "kttc" && isApprovalKttc),
 
         // Quyền edit theo từng field.
         fieldAccess: fieldAccess
@@ -382,12 +396,19 @@ function getPaymentApprovalAccess(payment, currentUser) {
 }
 
 function resolvePaymentApprovalContactId(currentUser) {
-    var actor = String(currentUser || "").trim().toLowerCase();
+    var actor = String(currentUser || "").trim();
     var contact = null;
     try {
         contact = new SCFile("contacts", SCFILE_READONLY);
         contact.setFields(["contact.name"]);
-        if (!actor || contact.doSelect('tolower(contact.name)="' + escapeSmQueryValue(actor) + '"') !== RC_SUCCESS) {
+        if (!actor) {
+            throw new Error("Không tìm thấy contact của user đăng nhập để kiểm tra phân quyền dữ liệu.");
+        }
+        var rc = contact.doSelect('contact.name="' + escapeSmQueryValue(actor) + '"');
+        if (rc !== RC_SUCCESS) {
+            rc = contact.doSelect('tolower(contact.name)="' + escapeSmQueryValue(actor.toLowerCase()) + '"');
+        }
+        if (rc !== RC_SUCCESS) {
             throw new Error("Không tìm thấy contact của user đăng nhập để kiểm tra phân quyền dữ liệu.");
         }
         var contactId = String(contact["contact.name"] || "").trim();
@@ -460,14 +481,14 @@ function getPaymentApprovalData(details) {
         }
 
         payment = new SCFile(
-            "esdHTKTpayment",
-            SCFILE_READONLY
+                "esdHTKTpayment",
+                SCFILE_READONLY
         );
 
         if (
-            payment.doSelect(
-                'id="' + escapeSmQueryValue(paymentId) + '"'
-            ) !== RC_SUCCESS
+                payment.doSelect(
+                        'id="' + escapeSmQueryValue(paymentId) + '"'
+                ) !== RC_SUCCESS
         ) {
             throw new Error("Không tìm thấy phiếu thanh toán.");
         }
@@ -475,8 +496,8 @@ function getPaymentApprovalData(details) {
         return {
             success: true,
             data: getPaymentApprovalInitData(
-                payment,
-                currentUser
+                    payment,
+                    currentUser
             )
         };
 
@@ -484,8 +505,8 @@ function getPaymentApprovalData(details) {
         return {
             success: false,
             message: error && error.message ?
-                error.message :
-                String(error)
+                    error.message :
+                    String(error)
         };
 
     } finally {
@@ -507,7 +528,7 @@ function paymentApprovalFieldEditable(payment, currentUser, field) {
     var level1 = ["require.check.level1", "user.checker.kttc", "user.checker.dmms", "user.approver.dmms"];
     var level2 = ["require.check.level2", "user.approver.kttc", "user.checker.final", "user.approver.final"];
     return (access.canEditLevel1 && level1.indexOf(field) >= 0) ||
-        (access.canEditLevel2 && level2.indexOf(field) >= 0);
+            (access.canEditLevel2 && level2.indexOf(field) >= 0);
 }
 
 function getPaymentApprovalOptions(details) {
@@ -544,15 +565,15 @@ function validateDuplicatePaymentApprovalUser(payment, currentField, newValue) {
         var otherValue = readPaymentApprovalValue(payment, otherField);
 
         if (
-            otherValue &&
-            otherValue.toLowerCase() === normalizedValue
+                otherValue &&
+                otherValue.toLowerCase() === normalizedValue
         ) {
             throw new Error(
-                'Cán bộ "' +
-                safeValue +
-                '" đã được phân công tại bước "' +
-                (fieldLabels[otherField] || otherField) +
-                '". Không được phân công cùng một cán bộ cho nhiều bước xử lý.'
+                    'Cán bộ "' +
+                    safeValue +
+                    '" đã được phân công tại bước "' +
+                    (fieldLabels[otherField] || otherField) +
+                    '". Không được phân công cùng một cán bộ cho nhiều bước xử lý.'
             );
         }
     }
@@ -570,12 +591,12 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         var safeCurrentUser = String(currentUser == null ? "" : currentUser).trim();
 
         if (
-            !safePaymentId ||
-            !safeField ||
-            !safeOldValue ||
-            !safeNewValue ||
-            safeOldValue === safeNewValue ||
-            !safeCurrentUser
+                !safePaymentId ||
+                !safeField ||
+                !safeOldValue ||
+                !safeNewValue ||
+                safeOldValue === safeNewValue ||
+                !safeCurrentUser
         ) {
             return;
         }
@@ -596,11 +617,11 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         var leadership = getPaymentReassignmentRoleAccess(safeCurrentUser);
 
         if (
-            !leadership ||
-            (
-                leadership.isApprovalDmms !== true &&
-                leadership.isApprovalKttc !== true
-            )
+                !leadership ||
+                (
+                        leadership.isApprovalDmms !== true &&
+                        leadership.isApprovalKttc !== true
+                )
         ) {
             return;
         }
@@ -609,43 +630,43 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         payment.setFields(["id", "initial.role", "transaction.type"]);
 
         if (
-            payment.doSelect(
-                'id="' + escapeSmQueryValue(safePaymentId) + '"'
-            ) !== RC_SUCCESS
+                payment.doSelect(
+                        'id="' + escapeSmQueryValue(safePaymentId) + '"'
+                ) !== RC_SUCCESS
         ) {
             return;
         }
 
         var initialRole = String(
-            payment["initial.role"] == null ?
-            "" :
-            payment["initial.role"]
+                payment["initial.role"] == null ?
+                        "" :
+                        payment["initial.role"]
         ).trim().toLowerCase();
 
         var canWriteReassignmentHistory = false;
 
         if (
-            leadership.isApprovalDmms === true &&
-            initialRole === "dmms" &&
-            (
-                safeField === "user.checker.dmms" ||
-                safeField === "user.approver.dmms"
-            )
+                leadership.isApprovalDmms === true &&
+                initialRole === "dmms" &&
+                (
+                        safeField === "user.checker.dmms" ||
+                        safeField === "user.approver.dmms"
+                )
         ) {
             canWriteReassignmentHistory = true;
         }
 
         if (
-            leadership.isApprovalKttc === true &&
-            (
-                safeField === "user.approver.kttc" ||
-                safeField === "user.checker.final" ||
-                safeField === "user.approver.final" ||
+                leadership.isApprovalKttc === true &&
                 (
-                    initialRole === "dmms" &&
-                    safeField === "user.checker.kttc"
+                        safeField === "user.approver.kttc" ||
+                        safeField === "user.checker.final" ||
+                        safeField === "user.approver.final" ||
+                        (
+                                initialRole === "dmms" &&
+                                safeField === "user.checker.kttc"
+                        )
                 )
-            )
         ) {
             canWriteReassignmentHistory = true;
         }
@@ -653,30 +674,47 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         if (!canWriteReassignmentHistory) {
             return;
         }
-        
+
         var transactionType = String(payment["transaction.type"] || "").trim().toLowerCase();
         var isExpense = transactionType
-            ? transactionType === "dự chi"
-            : safePaymentId.toUpperCase().indexOf("DC") === 0;
+                ? transactionType === "dự chi"
+                : safePaymentId.toUpperCase().indexOf("DC") === 0;
 
         var activityDescription =
-            'Tái phân công ' + (isExpense ? 'Đề nghị Dự chi' : 'Đề nghị Thanh toán') + ': Mã đề nghị: "' + safePaymentId + '"' +
-            '\nVai trò: "' + fieldLabels[safeField] + '"' +
-            '\nTừ: "' + safeOldValue + '"' +
-            '\nĐến: "' + safeNewValue + '"' +
-            (safeReason ? '\nLý do: "' + safeReason + '"' : "");
+                'Tái phân công ' + (isExpense ? 'Đề nghị Dự chi' : 'Đề nghị Thanh toán') + ': Mã đề nghị: "' + safePaymentId + '"' +
+                '\nVai trò: "' + fieldLabels[safeField] + '"' +
+                '\nTừ: "' + safeOldValue + '"' +
+                '\nĐến: "' + safeNewValue + '"' +
+                (safeReason ? '\nLý do: "' + safeReason + '"' : "");
 
         lib.ESD_Utils.createActivity(
-            "activityHTKTpayment",
-            activityDescription,
-            safePaymentId,
-            "Tái phân công",
-            safeCurrentUser
+                "activityHTKTpayment",
+                activityDescription,
+                safePaymentId,
+                "Tái phân công",
+                safeCurrentUser
         );
+
+        // Gửi email thông báo tái phân công cho cán bộ mới
+        try {
+            if (lib.ESD_HTKT_ACTION_WF_SEND_EMAIL && lib.ESD_HTKT_ACTION_WF_SEND_EMAIL.sendEmailReassignOfficer) {
+                var opUser = safeCurrentUser || (vars.$lo_operator ? (vars.$lo_operator["contact.name"] || vars.$lo_operator["name"]) : "") || vars["$lo.contact.name"] || "";
+                lib.ESD_HTKT_ACTION_WF_SEND_EMAIL.sendEmailReassignOfficer({
+                    id: safePaymentId,
+                    "new.assignee": safeNewValue,
+                    "old.assignee": safeOldValue,
+                    field: safeField,
+                    role: fieldLabels[safeField],
+                    reason: safeReason,
+                    operator: opUser
+                });
+            }
+        } catch (eMail) {
+        }
     } catch (e) {
         print(
-            "[PAY_APR][REASSIGN_HISTORY] Không thể ghi activity: " +
-            String(e && e.message ? e.message : e)
+                "[PAY_APR][REASSIGN_HISTORY] Không thể ghi activity: " +
+                String(e && e.message ? e.message : e)
         );
     } finally {
         try {
@@ -694,6 +732,11 @@ function savePaymentApprovalField(details) {
 function runPaymentApprovalApi(details, save) {
     details = details || {};
     var payment = null;
+    var timingStart = save ? 0 : new Date().getTime();
+    var timingRecord = 0;
+    var timingAccess = 0;
+    var timingIdentity = 0;
+    var timingOptions = 0;
     try {
         var paymentId = String(details.paymentId || "").trim();
         var currentUser = String(details.currentUser || "").trim();
@@ -707,17 +750,20 @@ function runPaymentApprovalApi(details, save) {
         if (payment.doSelect('id="' + escapeSmQueryValue(paymentId) + '"') !== RC_SUCCESS) {
             throw new Error("Không tìm thấy phiếu thanh toán.");
         }
-        var apiAccess = getPaymentApprovalAccess(payment, currentUser);
+        if (timingStart) timingRecord = new Date().getTime();
+        var resolvedIdentity = {};
+        var apiAccess = getPaymentApprovalAccess(payment, currentUser, resolvedIdentity);
+        if (timingStart) timingAccess = new Date().getTime();
         var apiEditable =
-            apiAccess &&
-            apiAccess.fieldAccess &&
-            apiAccess.fieldAccess[field] === true;
+                apiAccess &&
+                apiAccess.fieldAccess &&
+                apiAccess.fieldAccess[field] === true;
 
         print(
-            "[PAY_APR][API] u=" + currentUser +
-            " field=" + field +
-            " kttc=" + String(apiAccess && apiAccess.isApprovalKttc === true) +
-            " editable=" + String(apiEditable)
+                "[PAY_APR][API] u=" + currentUser +
+                " field=" + field +
+                " kttc=" + String(apiAccess && apiAccess.isApprovalKttc === true) +
+                " editable=" + String(apiEditable)
         );
 
         if (!apiEditable) {
@@ -738,7 +784,7 @@ function runPaymentApprovalApi(details, save) {
             };
         }
         if ((field === "user.checker.dmms" && String(payment["require.check.level1"]) !== "true") ||
-            (field === "user.checker.final" && String(payment["require.check.level2"]) !== "true")) {
+                (field === "user.checker.final" && String(payment["require.check.level2"]) !== "true")) {
             throw new Error("Chưa bật yêu cầu rà soát tương ứng.");
         }
         var value = isCheckbox ? details.value : String(details.value == null ? "" : details.value).trim();
@@ -747,19 +793,26 @@ function runPaymentApprovalApi(details, save) {
         var pageSize = Math.max(1, Math.min(100, Math.floor(Number(details.pageSize) || 10)));
         var result;
         if (!save || (!isCheckbox && value)) {
-            var permissionContactId = resolvePaymentApprovalContactId(currentUser);
-            var loaded = loadPaymentApprovalComboBoxesInternal(payment, field, {
+            var permissionContactId = resolvedIdentity.contactName || resolvePaymentApprovalContactId(currentUser);
+            if (timingStart) timingIdentity = new Date().getTime();
+            var loaded = save ? validatePaymentApprovalAssignee(payment, field, value, {
                 currentUser: permissionContactId,
-                page: save ? 1 : page,
-                pageSize: save ? 1 : pageSize,
-                keyword: save ? "" : String(details.keyword || "").trim(),
-                selectedId: save ? value : ""
+                page: 1,
+                pageSize: 1,
+                keyword: ""
+            }) : loadPaymentApprovalComboBoxesInternal(payment, field, {
+                currentUser: permissionContactId,
+                page: page,
+                pageSize: pageSize,
+                keyword: String(details.keyword || "").trim(),
+                selectedId: ""
             });
+            if (timingStart) timingOptions = new Date().getTime();
             if (!loaded.success) {
                 return {
                     success: false,
                     code: loaded.currentUserScope && !loaded.currentUserScope.canAccessTargetLv1 ?
-                        "PAYMENT_APPROVAL_SCOPE_DENIED" : "PAYMENT_APPROVAL_OPTIONS_FAILED",
+                            "PAYMENT_APPROVAL_SCOPE_DENIED" : "PAYMENT_APPROVAL_OPTIONS_FAILED",
                     message: loaded.message || "Không tải được danh sách cán bộ.",
                     scopeContext: {
                         tokenUser: currentUser,
@@ -770,8 +823,12 @@ function runPaymentApprovalApi(details, save) {
                     }
                 };
             }
-            result = loaded[loaded.configs[0].key];
-            if (save && result.ids.indexOf(value) < 0) throw new Error("Cán bộ đã chọn không còn hợp lệ theo quyền và đơn vị.");
+            if (save) {
+                if (!loaded.valid) throw new Error("Cán bộ đã chọn không còn hợp lệ theo quyền và đơn vị.");
+            } else {
+                if (!loaded.configs.length) throw new Error("Không tìm thấy cấu hình trường phê duyệt.");
+                result = loaded[loaded.configs[0].key];
+            }
         }
         if (!save) {
             var items = [];
@@ -781,38 +838,59 @@ function runPaymentApprovalApi(details, save) {
 
         if (!isCheckbox) {
             validateDuplicatePaymentApprovalUser(
-                payment,
-                field,
-                value
+                    payment,
+                    field,
+                    value
             );
         }
 
         var previousApprovalValue = isCheckbox ?
-            "" :
-            readPaymentApprovalValue(payment, field);
+                "" :
+                readPaymentApprovalValue(payment, field);
 
         payment[field] = value;
+        var clearedField = "";
         if (isCheckbox && !value) {
-            payment[field === "require.check.level1" ? "user.checker.dmms" : "user.checker.final"] = "";
+            clearedField = field === "require.check.level1" ? "user.checker.dmms" : "user.checker.final";
+            payment[clearedField] = "";
         }
-        var savedData = getPaymentApprovalInitData(payment, currentUser);
         if (payment.doUpdate() !== RC_SUCCESS) throw new Error("Không lưu được thông tin phê duyệt.");
 
         if (!isCheckbox) {
             createPaymentReassignmentHistory(
-                paymentId,
-                field,
-                previousApprovalValue,
-                value,
-                details.reason,
-                currentUser
+                    paymentId,
+                    field,
+                    previousApprovalValue,
+                    value,
+                    details.reason,
+                    currentUser
             );
         }
 
-        return { success: true, data: savedData };
+        return {
+            success: true,
+            data: {
+                field: field,
+                value: value,
+                clearedField: clearedField
+            }
+        };
     } catch (error) {
         return { success: false, message: String(error.message || error) };
     } finally {
+        try {
+            if (timingStart) {
+                var timingEnd = new Date().getTime();
+                print(
+                        "[PAY_APR][TIMING] field=" + String(details.field || "") +
+                        " record=" + (timingRecord ? timingRecord - timingStart : -1) +
+                        " access=" + (timingRecord && timingAccess ? timingAccess - timingRecord : -1) +
+                        " identity=" + (timingAccess && timingIdentity ? timingIdentity - timingAccess : -1) +
+                        " options=" + (timingIdentity && timingOptions ? timingOptions - timingIdentity : -1) +
+                        " total=" + (timingEnd - timingStart) + "ms"
+                );
+            }
+        } catch (timingError) {}
         if (payment) payment.doClose();
     }
 }
@@ -855,9 +933,9 @@ function getPaymentRoleByRights(contactId) {
     }
 
     var canCreatePayment =
-        rightMap[RIGHT_VIEW_INVOICE] &&
-        rightMap[RIGHT_VIEW_PAYMENT] &&
-        rightMap[RIGHT_CREATE_PAYMENT];
+            rightMap[RIGHT_VIEW_INVOICE] &&
+            rightMap[RIGHT_VIEW_PAYMENT] &&
+            rightMap[RIGHT_CREATE_PAYMENT];
 
     if (!canCreatePayment) {
         return "";
@@ -891,7 +969,7 @@ function getHTKTApprovalActiveEntityCodeByPsCode(psCode) {
         entityFile.setFields(["entity.code", "ps.code", "status"]);
 
         var rc = entityFile.doSelect(
-            'ps.code="' + escapeSmQueryValue(safePsCode) + '" and status="ACTIVE"'
+                'ps.code="' + escapeSmQueryValue(safePsCode) + '" and status="ACTIVE"'
         );
 
         while (rc === RC_SUCCESS) {
@@ -925,16 +1003,16 @@ function getHTKTApprovalActivePsCodesByEntityCode(entityCode, psPrefix) {
         entityFile.setFields(["entity.code", "ps.code", "status"]);
 
         var rc = entityFile.doSelect(
-            'entity.code="' + escapeSmQueryValue(safeEntityCode) + '" and status="ACTIVE"'
+                'entity.code="' + escapeSmQueryValue(safeEntityCode) + '" and status="ACTIVE"'
         );
 
         while (rc === RC_SUCCESS) {
             var psCode = normalizeHTKTApprovalUnitCode(entityFile["ps.code"]);
 
             if (
-                psCode &&
-                (!safePrefix || psCode.indexOf(safePrefix) === 0) &&
-                !seen[psCode]
+                    psCode &&
+                    (!safePrefix || psCode.indexOf(safePrefix) === 0) &&
+                    !seen[psCode]
             ) {
                 seen[psCode] = true;
                 result.push(psCode);
@@ -979,8 +1057,8 @@ function resolveHTKTApprovalDataDomain(targetLv1) {
     }
 
     var headOfficePsCodes = getHTKTApprovalActivePsCodesByEntityCode(
-        HEAD_OFFICE_OGL_SEG1,
-        HEAD_OFFICE_PS_PREFIX
+            HEAD_OFFICE_OGL_SEG1,
+            HEAD_OFFICE_PS_PREFIX
     );
 
     if (!headOfficePsCodes.length) {
@@ -1009,7 +1087,7 @@ function getHTKTApprovalContactLv1(contactId) {
         contactFile.setFields(["contact.name", "lv1.id"]);
 
         var rc = contactFile.doSelect(
-            'contact.name="' + escapeSmQueryValue(safeContactId) + '"'
+                'contact.name="' + escapeSmQueryValue(safeContactId) + '"'
         );
 
         if (rc !== RC_SUCCESS) return "";
@@ -1021,128 +1099,134 @@ function getHTKTApprovalContactLv1(contactId) {
     }
 }
 
-function listContactsByRightsAndLv1(rightIds, targetLv1, subModuleId) {
+function listContactsByRightsAndLv1(rightIds, targetLv1, subModuleId, resolvedDomain, keyword) {
     var normalizedRights = rightIds || [];
-    var domain = resolveHTKTApprovalDataDomain(targetLv1);
+    var domain = resolvedDomain || resolveHTKTApprovalDataDomain(targetLv1);
     var allowedLv1List = domain.allowedLv1List || [];
-    var units = [];
-    var seenUnits = {};
-
     if (!domain.valid || !allowedLv1List.length || !normalizedRights.length) {
         return [];
-    }
-
-    function addUnit(unitId) {
-        var value = normalizeHTKTApprovalUnitCode(unitId);
-        if (value && !seenUnits[value]) {
-            seenUnits[value] = true;
-            units.push(value);
-        }
-    }
-
-    for (var lv1Index = 0; lv1Index < allowedLv1List.length; lv1Index++) {
-        var allowedLv1 = normalizeHTKTApprovalUnitCode(allowedLv1List[lv1Index]);
-        if (!allowedLv1) continue;
-
-        addUnit(allowedLv1);
-
-        var orgFile = null;
-        try {
-            orgFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
-            orgFile.setFields(["unit.id", "lv1.id"]);
-
-            var orgRc = orgFile.doSelect(
-                'unit.id="' + escapeSmQueryValue(allowedLv1) + '" or lv1.id="' +
-                escapeSmQueryValue(allowedLv1) + '"'
-            );
-
-            while (orgRc === RC_SUCCESS) {
-                addUnit(orgFile["unit.id"]);
-                orgRc = orgFile.getNext();
-            }
-        } finally {
-            try { if (orgFile) orgFile.doClose(); } catch (closeError) {}
-        }
     }
 
     if (!lib.ESD_PERMS_RIGHTS || !lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter) {
         return [];
     }
 
+    // Functional Right + vị trí tổ chức phải nằm trong miền của hồ sơ.
     var contacts = lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter(
-        normalizedRights, { "lv1.id": allowedLv1List }
+            normalizedRights, { "lv1.id": allowedLv1List }
     ) || [];
 
     if (contacts.toArray) contacts = contacts.toArray();
     if (!contacts.length) return [];
 
-    var contactConditions = [];
-    var unitConditions = [];
+    var normalizedKeyword = String(keyword == null ? "" : keyword).trim().toLowerCase();
+    if (normalizedKeyword) {
+        var keywordMatches = [];
+        for (var keywordOffset = 0; keywordOffset < contacts.length; keywordOffset += 100) {
+            var keywordConditions = [];
+            var keywordBatch = contacts.slice(keywordOffset, keywordOffset + 100);
+            for (var keywordIndex = 0; keywordIndex < keywordBatch.length; keywordIndex++) {
+                keywordConditions.push(
+                        'contact.name="' + escapeSmQueryValue(keywordBatch[keywordIndex]) + '"'
+                );
+            }
+
+            var keywordFile = null;
+            try {
+                keywordFile = new SCFile("contacts", SCFILE_READONLY);
+                keywordFile.setFields(["contact.name", "full.name", "position", "status"]);
+                var keywordRc = keywordFile.doSelect("(" + keywordConditions.join(" or ") + ")");
+                while (keywordRc === RC_SUCCESS) {
+                    var keywordContactId = String(keywordFile["contact.name"] || "").trim();
+                    var keywordStatus = String(keywordFile["status"] || "").trim();
+                    var keywordText = (
+                            keywordContactId + " " +
+                            String(keywordFile["full.name"] || "") + " " +
+                            String(keywordFile["position"] || "")
+                    ).toLowerCase();
+                    if (
+                            keywordContactId &&
+                            (!keywordStatus || keywordStatus === "Dang hoat dong") &&
+                            keywordText.indexOf(normalizedKeyword) >= 0
+                    ) {
+                        keywordMatches.push(keywordContactId);
+                    }
+                    keywordRc = keywordFile.getNext();
+                }
+            } finally {
+                try { if (keywordFile) keywordFile.doClose(); } catch (keywordCloseError) {}
+            }
+        }
+        contacts = uniqueStrings(keywordMatches);
+        if (!contacts.length) return [];
+    }
+
     var permissionIds = [];
     var contactByPermissionId = {};
     var acceptedContacts = {};
 
-    for (var contactIndex = 0; contactIndex < contacts.length; contactIndex++) {
-        contactConditions.push(
-            'contact.id="' + escapeSmQueryValue(contacts[contactIndex]) + '"'
-        );
-    }
-
-    for (var unitIndex = 0; unitIndex < units.length; unitIndex++) {
-        unitConditions.push(
-            'unit.id="' + escapeSmQueryValue(units[unitIndex]) + '"'
-        );
-    }
-
-    if (!contactConditions.length || !unitConditions.length) {
-        return [];
-    }
-
-    var permissionFile = null;
-    try {
-        permissionFile = new SCFile("esdQTdataPermissions", SCFILE_READONLY);
-        permissionFile.setFields(["id", "contact.id", "permission.scope"]);
-
-        var permissionRc = permissionFile.doSelect(
-            "(" + contactConditions.join(" or ") + ")" +
-            ' and sub.module="' + escapeSmQueryValue(subModuleId || "00401") + '"' +
-            ' and permission.scope~="QT_PQDL_01"'
-        );
-
-        while (permissionRc === RC_SUCCESS) {
-            var permissionId = String(permissionFile["id"] == null ? "" : permissionFile["id"]).trim();
-            var contactId = String(permissionFile["contact.id"] == null ? "" : permissionFile["contact.id"]).trim();
-            var scope = String(permissionFile["permission.scope"] == null ? "" : permissionFile["permission.scope"]).trim();
-
-            if (permissionId && contactId && scope !== "QT_PQDL_01") {
-                if (scope === "QT_PQDL_06") {
-                    if (domain.type === "HEAD_OFFICE") {
-                        acceptedContacts[contactId] = true;
-                    }
-                } else {
-                    permissionIds.push(permissionId);
-                    contactByPermissionId[permissionId] = contactId;
-                }
-            }
-
-            permissionRc = permissionFile.getNext();
+    var BATCH_SIZE = 100;
+    for (var contactOffset = 0; contactOffset < contacts.length; contactOffset += BATCH_SIZE) {
+        var contactConditions = [];
+        var contactBatch = contacts.slice(contactOffset, contactOffset + BATCH_SIZE);
+        for (var contactIndex = 0; contactIndex < contactBatch.length; contactIndex++) {
+            contactConditions.push(
+                    'contact.id="' + escapeSmQueryValue(contactBatch[contactIndex]) + '"'
+            );
         }
-    } finally {
-        try { if (permissionFile) permissionFile.doClose(); } catch (permissionCloseError) {}
+
+        var permissionFile = null;
+        try {
+            permissionFile = new SCFile("esdQTdataPermissions", SCFILE_READONLY);
+            permissionFile.setFields(["id", "contact.id", "permission.scope"]);
+            var permissionRc = permissionFile.doSelect(
+                    "(" + contactConditions.join(" or ") + ")" +
+                    ' and sub.module="' + escapeSmQueryValue(subModuleId || "00401") + '"' +
+                    ' and permission.scope~="QT_PQDL_01"'
+            );
+
+            while (permissionRc === RC_SUCCESS) {
+                var permissionId = String(permissionFile["id"] == null ? "" : permissionFile["id"]).trim();
+                var contactId = String(permissionFile["contact.id"] == null ? "" : permissionFile["contact.id"]).trim();
+                var scope = String(permissionFile["permission.scope"] == null ? "" : permissionFile["permission.scope"]).trim();
+
+                if (permissionId && contactId && scope !== "QT_PQDL_01") {
+                    if (scope === "QT_PQDL_06") {
+                        if (domain.type === "HEAD_OFFICE") acceptedContacts[contactId] = true;
+                    } else {
+                        permissionIds.push(permissionId);
+                        contactByPermissionId[permissionId] = contactId;
+                    }
+                }
+                permissionRc = permissionFile.getNext();
+            }
+        } finally {
+            try { if (permissionFile) permissionFile.doClose(); } catch (permissionCloseError) {}
+        }
     }
 
     permissionIds = uniqueStrings(permissionIds);
 
+    // Chỉ đọc các unit thực sự được gán cho permission của candidate. Cách cũ
+    // quét toàn bộ cây đơn vị của LV1 rồi tạo một câu OR rất dài ở mỗi lần mở list.
     if (permissionIds.length) {
-        var BATCH_SIZE = 100;
+        var allowedLv1Map = {};
+        var permissionUnitRows = [];
+        var unresolvedUnitIds = [];
+        var seenUnitIds = {};
+        var unitLv1Map = {};
+
+        for (var allowedIndex = 0; allowedIndex < allowedLv1List.length; allowedIndex++) {
+            var normalizedAllowedLv1 = normalizeHTKTApprovalUnitCode(allowedLv1List[allowedIndex]);
+            if (normalizedAllowedLv1) allowedLv1Map[normalizedAllowedLv1] = true;
+        }
 
         for (var offset = 0; offset < permissionIds.length; offset += BATCH_SIZE) {
             var permissionConditions = [];
             var permissionBatch = permissionIds.slice(offset, offset + BATCH_SIZE);
-
             for (var permissionIndex = 0; permissionIndex < permissionBatch.length; permissionIndex++) {
                 permissionConditions.push(
-                    'data.permission.id="' + escapeSmQueryValue(permissionBatch[permissionIndex]) + '"'
+                        'data.permission.id="' + escapeSmQueryValue(permissionBatch[permissionIndex]) + '"'
                 );
             }
 
@@ -1150,24 +1234,60 @@ function listContactsByRightsAndLv1(rightIds, targetLv1, subModuleId) {
             try {
                 unitFile = new SCFile("esdjoinDatapermissionUnits", SCFILE_READONLY);
                 unitFile.setFields(["data.permission.id", "unit.id", "status"]);
-
                 var unitRc = unitFile.doSelect(
-                    "(" + permissionConditions.join(" or ") + ') and status="Dang hoat dong" and (' +
-                    unitConditions.join(" or ") + ")"
+                        "(" + permissionConditions.join(" or ") + ') and status="Dang hoat dong"'
                 );
 
                 while (unitRc === RC_SUCCESS) {
                     var mappedPermissionId = String(
-                        unitFile["data.permission.id"] || unitFile.data_permission_id || ""
+                            unitFile["data.permission.id"] || unitFile.data_permission_id || ""
                     ).trim();
-
-                    var mappedContactId = contactByPermissionId[mappedPermissionId];
-                    if (mappedContactId) acceptedContacts[mappedContactId] = true;
-
+                    var mappedUnitId = normalizeHTKTApprovalUnitCode(unitFile["unit.id"]);
+                    if (mappedPermissionId && mappedUnitId) {
+                        permissionUnitRows.push({ permissionId: mappedPermissionId, unitId: mappedUnitId });
+                        if (allowedLv1Map[mappedUnitId]) {
+                            unitLv1Map[mappedUnitId] = mappedUnitId;
+                        } else if (!seenUnitIds[mappedUnitId]) {
+                            seenUnitIds[mappedUnitId] = true;
+                            unresolvedUnitIds.push(mappedUnitId);
+                        }
+                    }
                     unitRc = unitFile.getNext();
                 }
             } finally {
                 try { if (unitFile) unitFile.doClose(); } catch (unitCloseError) {}
+            }
+        }
+
+        for (var unitOffset = 0; unitOffset < unresolvedUnitIds.length; unitOffset += BATCH_SIZE) {
+            var orgConditions = [];
+            var unitBatch = unresolvedUnitIds.slice(unitOffset, unitOffset + BATCH_SIZE);
+            for (var unitIndex = 0; unitIndex < unitBatch.length; unitIndex++) {
+                orgConditions.push('unit.id="' + escapeSmQueryValue(unitBatch[unitIndex]) + '"');
+            }
+
+            var orgFile = null;
+            try {
+                orgFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
+                orgFile.setFields(["unit.id", "lv1.id"]);
+                var orgRc = orgFile.doSelect("(" + orgConditions.join(" or ") + ")");
+                while (orgRc === RC_SUCCESS) {
+                    var orgUnitId = normalizeHTKTApprovalUnitCode(orgFile["unit.id"]);
+                    var orgLv1Id = normalizeHTKTApprovalUnitCode(orgFile["lv1.id"]);
+                    if (orgUnitId && orgLv1Id) unitLv1Map[orgUnitId] = orgLv1Id;
+                    orgRc = orgFile.getNext();
+                }
+            } finally {
+                try { if (orgFile) orgFile.doClose(); } catch (orgCloseError) {}
+            }
+        }
+
+        for (var rowIndex = 0; rowIndex < permissionUnitRows.length; rowIndex++) {
+            var permissionUnit = permissionUnitRows[rowIndex];
+            var mappedLv1 = unitLv1Map[permissionUnit.unitId];
+            if (mappedLv1 && allowedLv1Map[mappedLv1]) {
+                var mappedContactId = contactByPermissionId[permissionUnit.permissionId];
+                if (mappedContactId) acceptedContacts[mappedContactId] = true;
             }
         }
     }
@@ -1198,12 +1318,20 @@ function uniqueStrings(source) {
 
 function escapeSmQueryValue(value) {
     return String(value == null ? "" : value)
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, '\\"');
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"');
 }
 
 function loadPaymentApprovalComboBoxes(paymentFile) {
     return loadPaymentApprovalComboBoxesInternal(paymentFile, "");
+}
+
+// Save chỉ xác thực đúng một người, không dựng toàn bộ dữ liệu combobox.
+function validatePaymentApprovalAssignee(paymentFile, requestedField, selectedId, apiOptions) {
+    apiOptions = apiOptions || {};
+    apiOptions.validationOnly = true;
+    apiOptions.selectedId = String(selectedId == null ? "" : selectedId).trim();
+    return loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiOptions);
 }
 
 function loadPaymentDmmsCheckerComboBox(paymentFile) {
@@ -1226,13 +1354,13 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
     var RIGHT_APPROVE_3 = "0040040003000008";
 
     var configs = [{
-            key: "kttc",
-            label: "KTTC tiếp nhận",
-            saveField: "user.checker.kttc",
-            seedRights: [RIGHT_ACCOUNTING_INPUT],
-            valueList: "$L.kttc.ids",
-            displayList: "$L.kttc.names"
-        },
+        key: "kttc",
+        label: "KTTC tiếp nhận",
+        saveField: "user.checker.kttc",
+        seedRights: [RIGHT_ACCOUNTING_INPUT],
+        valueList: "$L.kttc.ids",
+        displayList: "$L.kttc.names"
+    },
         {
             key: "dmmsRs1",
             label: "DMMS rà soát 1",
@@ -1288,6 +1416,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
     var userScopeCache = {};
     var contactDataCache = {};
     var orgUnitCache = {};
+    var resolvedTargetDomain = null;
 
     if (requestedField) {
         var requestedConfigs = [];
@@ -1308,13 +1437,13 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
     for (var configIndex = 0; configIndex < configs.length; configIndex++) {
         var phaseConfig = configs[configIndex];
         var dmmsGroup = phaseConfig.saveField === "user.checker.kttc" ||
-            (phaseConfig.saveField === "user.checker.dmms" &&
-                safeFileGet(file, ["require.check.level1"]) === "true") ||
-            phaseConfig.saveField === "user.approver.dmms";
+                (phaseConfig.saveField === "user.checker.dmms" &&
+                        safeFileGet(file, ["require.check.level1"]) === "true") ||
+                phaseConfig.saveField === "user.approver.dmms";
         var kttcGroup = phaseConfig.saveField === "user.approver.kttc" ||
-            (phaseConfig.saveField === "user.checker.final" &&
-                safeFileGet(file, ["require.check.level2"]) === "true") ||
-            phaseConfig.saveField === "user.approver.final";
+                (phaseConfig.saveField === "user.checker.final" &&
+                        safeFileGet(file, ["require.check.level2"]) === "true") ||
+                phaseConfig.saveField === "user.approver.final";
         phaseConfig.mode = ((dmmsGroup && loadDmmsGroup) || (kttcGroup && loadKttcGroup)) ? "candidates" : "selected";
         if (phase === "approval_kttc" && phaseConfig.saveField === "user.checker.kttc") {
             phaseConfig.mode = "candidates";
@@ -1335,8 +1464,16 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         return output;
     }
 
+    resolvedTargetDomain = resolveHTKTApprovalDataDomain(output.targetLv1);
+    if (!resolvedTargetDomain.valid) {
+        clearAllComboBoxes(configs);
+        output.success = false;
+        output.message = "Không xác định được miền dữ liệu của hồ sơ thanh toán.";
+        return output;
+    }
+
     var currentUser = normalizeValue(
-        apiOptions ? apiOptions.currentUser : safeVarGet("$lo.contact.name", "")
+            apiOptions ? apiOptions.currentUser : safeVarGet("$lo.contact.name", "")
     );
 
     output.currentUser = currentUser;
@@ -1348,7 +1485,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         return output;
     }
 
-    var currentUserScope = getUserScopeContext(currentUser, output.targetLv1);
+    var currentUserScope = getUserScopeContext(currentUser, output.targetLv1, resolvedTargetDomain);
 
     output.currentUserScope = currentUserScope;
 
@@ -1356,11 +1493,22 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         clearAllComboBoxes(configs);
         output.success = false;
         output.message =
-            "User đăng nhập không có phân quyền dữ liệu " +
-            HTKT_SUB_MODULE +
-            " trong lv1 của hồ sơ: " +
-            output.targetLv1 + (apiOptions ? ". " + currentUserScope.message : "");
+                "User đăng nhập không có phân quyền dữ liệu " +
+                HTKT_SUB_MODULE +
+                " trong lv1 của hồ sơ: " +
+                output.targetLv1 + (apiOptions ? ". " + currentUserScope.message : "");
         return output;
+    }
+
+    // Nhánh save chỉ kiểm tra cán bộ được chọn, không tải toàn bộ candidate/label/phân trang.
+    if (apiOptions && apiOptions.validationOnly) {
+        if (configs.length !== 1) {
+            output.success = false;
+            output.valid = false;
+            output.message = "Không tìm thấy cấu hình trường phê duyệt.";
+            return output;
+        }
+        return validateSelectedAssignee(configs[0], output.targetLv1, apiOptions.selectedId);
     }
 
     for (var i = 0; i < configs.length; i++) {
@@ -1384,10 +1532,130 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
     }
 
     output.message = output.success ?
-        "Load danh sách combobox thành công." :
-        "Có combobox load không thành công.";
+            "Load danh sách combobox thành công." :
+            "Có combobox load không thành công.";
 
     return output;
+
+    function validateSelectedAssignee(config, targetLv1, selectedId) {
+        var validation = {
+            success: true,
+            valid: false,
+            message: "",
+            currentUserScope: currentUserScope,
+            targetLv1: output.targetLv1,
+            targetLv1Source: output.targetLv1Source
+        };
+        var normalizedSelectedId = normalizeValue(selectedId);
+        if (!normalizedSelectedId) {
+            validation.message = "Thiếu cán bộ cần kiểm tra.";
+            return validation;
+        }
+
+        try {
+            var domain = resolvedTargetDomain || resolveHTKTApprovalDataDomain(targetLv1);
+            var allowedLv1List = domain.allowedLv1List || [];
+            if (!domain.valid || !allowedLv1List.length) {
+                validation.message = "Không xác định được miền dữ liệu hợp lệ của hồ sơ.";
+                return validation;
+            }
+            if (!lib.ESD_PERMS_RIGHTS || !lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter) {
+                validation.message = "Không tải được thư viện phân quyền.";
+                return validation;
+            }
+
+            var matchedContacts = lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter(
+                    config.seedRights,
+                    {
+                        "lv1.id": allowedLv1List,
+                        "contact.name": [normalizedSelectedId]
+                    }
+            ) || [];
+            if (matchedContacts.toArray) matchedContacts = matchedContacts.toArray();
+            if (normalizeArray(matchedContacts).indexOf(normalizedSelectedId) < 0) {
+                validation.message = "Cán bộ không có đúng quyền hoặc không thuộc miền của hồ sơ.";
+                return validation;
+            }
+
+            var permissionIds = [];
+            var permissionFile = null;
+            try {
+                permissionFile = new SCFile("esdQTdataPermissions", SCFILE_READONLY);
+                permissionFile.setFields(["id", "permission.scope"]);
+                var permissionRc = permissionFile.doSelect(
+                        'contact.id="' + escapeQueryValue(normalizedSelectedId) + '"' +
+                        ' and sub.module="' + escapeQueryValue(HTKT_SUB_MODULE) + '"' +
+                        ' and permission.scope~="QT_PQDL_01"'
+                );
+                while (permissionRc === RC_SUCCESS) {
+                    var permissionId = normalizeValue(permissionFile["id"]);
+                    var scope = normalizeValue(permissionFile["permission.scope"]);
+                    if (scope === "QT_PQDL_06" && domain.type === "HEAD_OFFICE") {
+                        validation.valid = true;
+                        validation.message = "Cán bộ hợp lệ.";
+                        return validation;
+                    }
+                    if (permissionId && scope !== "QT_PQDL_01" && scope !== "QT_PQDL_06") {
+                        permissionIds.push(permissionId);
+                    }
+                    permissionRc = permissionFile.getNext();
+                }
+            } finally {
+                try { if (permissionFile) permissionFile.doClose(); } catch (permissionCloseError) {}
+            }
+
+            permissionIds = normalizeArray(permissionIds);
+            if (!permissionIds.length) {
+                validation.message = "Cán bộ không có phân quyền dữ liệu phù hợp.";
+                return validation;
+            }
+
+            var allowedLv1Map = {};
+            for (var allowedIndex = 0; allowedIndex < allowedLv1List.length; allowedIndex++) {
+                var allowedLv1 = normalizeUnitCode(allowedLv1List[allowedIndex]);
+                if (allowedLv1) allowedLv1Map[allowedLv1] = true;
+            }
+
+            var BATCH_SIZE = 100;
+            for (var offset = 0; offset < permissionIds.length; offset += BATCH_SIZE) {
+                var permissionConditions = [];
+                var permissionBatch = permissionIds.slice(offset, offset + BATCH_SIZE);
+                for (var permissionIndex = 0; permissionIndex < permissionBatch.length; permissionIndex++) {
+                    permissionConditions.push(
+                            'data.permission.id="' + escapeQueryValue(permissionBatch[permissionIndex]) + '"'
+                    );
+                }
+
+                var unitFile = null;
+                try {
+                    unitFile = new SCFile("esdjoinDatapermissionUnits", SCFILE_READONLY);
+                    unitFile.setFields(["unit.id", "status"]);
+                    var unitRc = unitFile.doSelect(
+                            "(" + permissionConditions.join(" or ") + ') and status="Dang hoat dong"'
+                    );
+                    while (unitRc === RC_SUCCESS) {
+                        var unitId = normalizeUnitCode(unitFile["unit.id"]);
+                        var unitLv1 = allowedLv1Map[unitId] ? unitId : resolveLv1FromUnit(unitId);
+                        if (unitLv1 && allowedLv1Map[unitLv1]) {
+                            validation.valid = true;
+                            validation.message = "Cán bộ hợp lệ.";
+                            return validation;
+                        }
+                        unitRc = unitFile.getNext();
+                    }
+                } finally {
+                    try { if (unitFile) unitFile.doClose(); } catch (unitCloseError) {}
+                }
+            }
+
+            validation.message = "Cán bộ không có unit phân quyền trong miền của hồ sơ.";
+            return validation;
+        } catch (e) {
+            validation.success = false;
+            validation.message = String(e.message || e);
+            return validation;
+        }
+    }
 
     function clearAllComboBoxes(configs) {
         if (apiOptions) return;
@@ -1424,29 +1692,41 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             var selectedOnly = config.mode === "selected";
             var selectedId = "";
             var contactIds;
+            var candidateStartedAt = apiOptions && !apiOptions.selectedId ? new Date().getTime() : 0;
             if (selectedOnly) {
                 selectedId = normalizeValue(safeFileGet(file, [config.saveField]));
                 contactIds = { ids: selectedId ? [selectedId] : [], poolCount: 0, rejectedCount: 0 };
             } else {
                 contactIds = getContactsForRoleInLv1(config, targetLv1);
             }
+            var candidateFinishedAt = candidateStartedAt ? new Date().getTime() : 0;
 
             result.debug.poolCount = contactIds.poolCount;
             result.debug.rejectedCount = contactIds.rejectedCount;
 
             var comboData = apiOptions ?
-                readContactPage(contactIds.ids, apiOptions) :
-                readContactData(contactIds.ids, selectedOnly);
+                    readContactPage(contactIds.ids, apiOptions) :
+                    readContactData(contactIds.ids, selectedOnly);
+            if (candidateStartedAt) {
+                try {
+                    print(
+                            "[PAY_APR][LIST_TIMING] field=" + config.saveField +
+                            " candidates=" + (candidateFinishedAt - candidateStartedAt) + "ms" +
+                            " labels=" + (new Date().getTime() - candidateFinishedAt) + "ms" +
+                            " pool=" + contactIds.ids.length
+                    );
+                } catch (timingError) {}
+            }
             if (selectedOnly && selectedId && !comboData.ids.length) {
                 comboData = { ids: [selectedId], names: [selectedId] };
             }
 
             if (comboData.ids.length !== comboData.names.length) {
                 throw new Error(
-                    config.valueList +
-                    " và " +
-                    config.displayList +
-                    " không cùng số phần tử."
+                        config.valueList +
+                        " và " +
+                        config.displayList +
+                        " không cùng số phần tử."
                 );
             }
 
@@ -1463,8 +1743,8 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             result.debug.passedCount = comboData.ids.length;
 
             result.message = result.count > 0 ?
-                "Load danh sách thành công." :
-                "Không tìm thấy cán bộ phù hợp.";
+                    "Load danh sách thành công." :
+                    "Không tìm thấy cán bộ phù hợp.";
 
         } catch (e) {
             if (!apiOptions) {
@@ -1480,7 +1760,13 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
     }
 
     function getContactsForRoleInLv1(config, targetLv1) {
-        var ids = normalizeArray(listContactsByRightsAndLv1(config.seedRights, targetLv1, HTKT_SUB_MODULE));
+        var ids = normalizeArray(listContactsByRightsAndLv1(
+                config.seedRights,
+                targetLv1,
+                HTKT_SUB_MODULE,
+                resolvedTargetDomain,
+                apiOptions ? apiOptions.keyword : ""
+        ));
         return { ids: ids, poolCount: ids.length, rejectedCount: 0 };
     }
 
@@ -1512,7 +1798,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
                     var position = normalizeValue(contactFile["position"]);
                     var display = name + (position ? " - " + position : "");
                     if (id && (!status || status === "Dang hoat dong") &&
-                        (!keyword || (id + " " + display).toLowerCase().indexOf(keyword) >= 0)) {
+                            (!keyword || (id + " " + display).toLowerCase().indexOf(keyword) >= 0)) {
                         if (matched++ >= skip) {
                             if (result.ids.length === options.pageSize) {
                                 result.hasMore = true;
@@ -1531,22 +1817,23 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         return result;
     }
 
-    function getUserScopeContext(contactId, targetLv1) {
+    function getUserScopeContext(contactId, targetLv1, resolvedDomain) {
         var normalizedContactId = normalizeValue(contactId);
         var normalizedTargetLv1 = normalizeUnitCode(targetLv1);
         var cacheKey = normalizedContactId + "|" + normalizedTargetLv1;
 
         if (!userScopeCache.hasOwnProperty(cacheKey)) {
             userScopeCache[cacheKey] = buildUserScopeContext(
-                normalizedContactId,
-                normalizedTargetLv1
+                    normalizedContactId,
+                    normalizedTargetLv1,
+                    resolvedDomain
             );
         }
 
         return userScopeCache[cacheKey];
     }
 
-    function buildUserScopeContext(contactId, targetLv1) {
+    function buildUserScopeContext(contactId, targetLv1, resolvedDomain) {
         targetLv1 = normalizeUnitCode(targetLv1);
 
         var result = {
@@ -1564,7 +1851,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             return result;
         }
 
-        var targetDomain = resolveHTKTApprovalDataDomain(targetLv1);
+        var targetDomain = resolvedDomain || resolveHTKTApprovalDataDomain(targetLv1);
         if (!targetDomain.valid) {
             result.message = "Không xác định được miền dữ liệu hợp lệ của lv1 hồ sơ.";
             return result;
@@ -1574,8 +1861,8 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
 
         try {
             dp = lib.ESD_PERMS_RIGHTS.getUnitByDataPermissions(
-                contactId,
-                HTKT_SUB_MODULE
+                    contactId,
+                    HTKT_SUB_MODULE
             ) || {};
         } catch (e) {
             result.message = String(e.message || e);
@@ -1583,10 +1870,10 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         }
 
         result.scope = normalizeValue(
-            dp.scope ||
-            dp.dataScopeList ||
-            dp["permission.scope"] ||
-            ""
+                dp.scope ||
+                dp.dataScopeList ||
+                dp["permission.scope"] ||
+                ""
         );
 
         if (!result.scope) {
@@ -1594,9 +1881,9 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         }
 
         result.rawUnits = normalizeArray(
-            dp.unit ||
-            dp.arrUnitRights ||
-            dp.units || []
+                dp.unit ||
+                dp.arrUnitRights ||
+                dp.units || []
         );
 
         if (result.scope === "QT_PQDL_06") {
@@ -1618,9 +1905,9 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
 
             result.canAccessTargetLv1 = ALLOW_GLOBAL_SCOPE_IN_COMBO === true;
             result.message =
-                result.canAccessTargetLv1 ?
-                "User có scope toàn hàng và hệ thống cho phép dùng toàn hàng." :
-                "User có scope toàn hàng nhưng nghiệp vụ đang chặn mở dữ liệu khác lv1.";
+                    result.canAccessTargetLv1 ?
+                            "User có scope toàn hàng và hệ thống cho phép dùng toàn hàng." :
+                            "User có scope toàn hàng nhưng nghiệp vụ đang chặn mở dữ liệu khác lv1.";
             return result;
         }
 
@@ -1656,16 +1943,16 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             if (currentLv1 && allowedLv1Map[currentLv1]) {
                 result.canAccessTargetLv1 = true;
                 result.message = targetDomain.type === "HEAD_OFFICE" ?
-                    "User có data permission 00401 trong miền Trụ sở chính của hồ sơ." :
-                    "User có data permission 00401 trong lv1 của hồ sơ.";
+                        "User có data permission 00401 trong miền Trụ sở chính của hồ sơ." :
+                        "User có data permission 00401 trong lv1 của hồ sơ.";
                 return result;
             }
         }
 
         result.canAccessTargetLv1 = false;
         result.message = targetDomain.type === "HEAD_OFFICE" ?
-            "User không có data permission 00401 trong miền Trụ sở chính của hồ sơ." :
-            "User không có data permission 00401 trùng lv1 của hồ sơ.";
+                "User không có data permission 00401 trong miền Trụ sở chính của hồ sơ." :
+                "User không có data permission 00401 trùng lv1 của hồ sơ.";
 
         return result;
     }
@@ -1677,12 +1964,12 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         };
 
         var lv1 = normalizeUnitCode(
-            safeFileGet(file, [
-                "unit.lv1",
-                "unit_lv1",
-                "lv1.id",
-                "lv1_id"
-            ])
+                safeFileGet(file, [
+                    "unit.lv1",
+                    "unit_lv1",
+                    "lv1.id",
+                    "lv1_id"
+                ])
         );
 
         if (lv1) {
@@ -1692,11 +1979,11 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         }
 
         var unitId = normalizeUnitCode(
-            safeFileGet(file, [
-                "unit.id",
-                "unit_id",
-                "unit"
-            ])
+                safeFileGet(file, [
+                    "unit.id",
+                    "unit_id",
+                    "unit"
+                ])
         );
 
         if (unitId) {
@@ -1706,7 +1993,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         }
 
         var currentContactLv1 = normalizeUnitCode(
-            safeVarGet("$G.contacts.lv1", "")
+                safeVarGet("$G.contacts.lv1", "")
         );
 
         if (currentContactLv1) {
@@ -1716,7 +2003,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         }
 
         var currentUnit = normalizeUnitCode(
-            safeVarGet("$unit", "")
+                safeVarGet("$unit", "")
         );
 
         if (currentUnit) {
@@ -1802,7 +2089,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         try {
             f = new SCFile("esdQTorgUnit", SCFILE_READONLY);
             var rc = f.doSelect(
-                'unit.id="' + escapeQueryValue(unitCode) + '"'
+                    'unit.id="' + escapeQueryValue(unitCode) + '"'
             );
 
             if (rc === RC_SUCCESS) {
@@ -1860,9 +2147,9 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
 
         for (var i = 0; i < ids.length; i++) {
             conditions.push(
-                'contact.name="' +
-                escapeQueryValue(ids[i]) +
-                '"'
+                    'contact.name="' +
+                    escapeQueryValue(ids[i]) +
+                    '"'
             );
         }
 
@@ -1881,31 +2168,31 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             ]);
 
             var rc = contactFile.doSelect(
-                "(" + conditions.join(" or ") + ")"
+                    "(" + conditions.join(" or ") + ")"
             );
 
             while (rc === RC_SUCCESS) {
                 var contactId = normalizeValue(
-                    contactFile["contact.name"]
+                        contactFile["contact.name"]
                 );
 
                 var status = normalizeValue(
-                    contactFile["status"]
+                        contactFile["status"]
                 );
 
                 if (
-                    contactId &&
-                    !seen[contactId] &&
-                    (includeInactive || !status || status === "Dang hoat dong")
+                        contactId &&
+                        !seen[contactId] &&
+                        (includeInactive || !status || status === "Dang hoat dong")
                 ) {
                     seen[contactId] = true;
 
                     var fullName = normalizeValue(
-                        contactFile["full.name"]
+                            contactFile["full.name"]
                     );
 
                     var position = normalizeValue(
-                        contactFile["position"]
+                            contactFile["position"]
                     );
 
                     var display = "";
@@ -2007,8 +2294,8 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
 
     function escapeQueryValue(value) {
         return normalizeValue(value)
-            .replace(/\\/g, "\\\\")
-            .replace(/"/g, '\\"');
+                .replace(/\\/g, "\\\\")
+                .replace(/"/g, '\\"');
     }
 
     function safeFileGet(file, fields) {

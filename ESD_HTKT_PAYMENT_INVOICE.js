@@ -271,3 +271,99 @@ function syncPaymentEntryAfterInvoiceDelete(paymentId) {
         // console.error("Khong the sinh lai but toan cho " + paymentId + ": " + syncError.toString());
     }
 }
+
+/**
+ * Gỡ liên kết hóa đơn chỉ khi hủy toàn bộ Đề nghị thanh toán trên Workflow.
+ * Không thay đổi logic xóa từng hóa đơn, xóa NCC, amount hoặc bút toán.
+ * Không xóa bản ghi esdHTKTinvoice, chỉ clear request.id của đúng phiếu.
+ * Lưu ý: Cần transaction/rollback của SM để đảm bảo nguyên tử khi lỗi giữa chừng.
+ */
+function unlinkAllInvoicesOnPaymentCancel(paymentId) {
+    var id = String(paymentId || "").trim();
+    var invoiceIds = [];
+    var file = null;
+    var invoiceFile = null;
+    var deletedCount = 0;
+
+    function esc(v) {
+        return String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    }
+    function close(f) {
+        try { if (f) f.doClose(); } catch (e) {}
+    }
+    if (!id) {
+        return { success: false, message: "Thiếu mã đề nghị thanh toán." };
+    }
+
+    try {
+        var query = 'payment.id="' + esc(id) + '"';
+        file = new SCFile("esdHTKTpaymentInvoice", SCFILE_READONLY);
+        var rc = file.doSelect(query);
+        while (rc == RC_SUCCESS) {
+            var invoiceId = String(file["invoice.id"] || "").trim();
+            if (!invoiceId) {
+                throw new Error("Có liên kết hóa đơn thiếu invoice.id.");
+            }
+            if (invoiceIds.indexOf(invoiceId) < 0) {
+                invoiceIds.push(invoiceId);
+            }
+            rc = file.getNext();
+        }
+        close(file);
+        file = null;
+
+        // Kiểm tra toàn bộ hóa đơn trước khi thay đổi dữ liệu.
+        invoiceFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
+        for (var i = 0; i < invoiceIds.length; i++) {
+            if (invoiceFile.doSelect('id="' + esc(invoiceIds[i]) + '"') != RC_SUCCESS) {
+                throw new Error("Không tìm thấy hóa đơn " + invoiceIds[i]);
+            }
+            var owner = String(invoiceFile["request.id"] || "").trim();
+            if (owner && owner !== id) {
+                throw new Error("Hóa đơn " + invoiceIds[i] + " đang thuộc đề nghị khác: " + owner);
+            }
+        }
+        close(invoiceFile);
+        invoiceFile = null;
+
+        // Xóa bản ghi liên kết; đặt request.id=null nếu còn thuộc phiếu đang hủy.
+        for (var j = 0; j < invoiceIds.length; j++) {
+            var currentInvoiceId = invoiceIds[j];
+            file = new SCFile("esdHTKTpaymentInvoice");
+            var linkQuery = 'payment.id="' + esc(id) + '" and invoice.id="' + esc(currentInvoiceId) + '"';
+            while (file.doSelect(linkQuery) == RC_SUCCESS) {
+                var deleteRc = file.doDelete();
+                if (deleteRc != RC_SUCCESS && deleteRc !== true) {
+                    throw new Error("Không gỡ được liên kết hóa đơn " + currentInvoiceId);
+                }
+                deletedCount++;
+            }
+            close(file);
+            file = null;
+
+            invoiceFile = new SCFile("esdHTKTinvoice");
+            if (invoiceFile.doSelect('id="' + esc(currentInvoiceId) + '"') != RC_SUCCESS) {
+                throw new Error("Không tìm thấy hóa đơn khi cập nhật " + currentInvoiceId);
+            }
+            var currentOwner = String(invoiceFile["request.id"] || "").trim();
+            if (currentOwner && currentOwner !== id) {
+                throw new Error("Hóa đơn đã được gắn sang phiếu khác: " + currentInvoiceId);
+            }
+            if (currentOwner === id) {
+                invoiceFile["request.id"] = null;
+                var updateRc = invoiceFile.doUpdate();
+                if (updateRc != RC_SUCCESS && updateRc !== true) {
+                    throw new Error("Không thể xóa request.id của hóa đơn " + currentInvoiceId);
+                }
+            }
+            close(invoiceFile);
+            invoiceFile = null;
+        }
+        return { success: true, deletedCount: deletedCount };
+    } catch (error) {
+        return { success: false, deletedCount: deletedCount, message: String(error) };
+    } finally {
+        close(file);
+        close(invoiceFile);
+    }
+}

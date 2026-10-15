@@ -306,6 +306,16 @@ function createApprovalHistory(record) {
 }
 
 function cancelRequest(record) {
+    // Chỉ bổ sung vào action Xóa lớn của Workflow; không đụng nút xóa NCC/hóa đơn.
+    var paymentIdForUnlink = String(record["id"] || record.id || "").trim();
+    if (!paymentIdForUnlink) {
+        throw new Error("Không tìm thấy mã đề nghị thanh toán để gỡ hóa đơn.");
+    }
+    var unlinkResult = lib.ESD_HTKT_PAYMENT_INVOICE.unlinkAllInvoicesOnPaymentCancel(paymentIdForUnlink);
+    if (!unlinkResult || unlinkResult.success !== true) {
+        throw new Error("Không thể xóa đề nghị thanh toán do lỗi gỡ liên kết hóa đơn: " +
+            (unlinkResult && unlinkResult.message ? unlinkResult.message : "Không xác định"));
+    }
     record.status = "cancelled";
 
     try {
@@ -738,7 +748,7 @@ function validateVendorAndPaymentDetails(record) {
                 throw new Error("Thiếu thông tin phiếu thanh toán.");
             }
             var totalPayableRemaining = parseAmount(
-                lib.ESD_HTKT_PAYMENT_SUPPLIER_LEDGER_LIST.getTotalAccountsPayableRemainingAmount(paymentId, vendorId)
+                    lib.ESD_HTKT_PAYMENT_SUPPLIER_LEDGER_LIST.getTotalAccountsPayableRemainingAmount(paymentId, vendorId)
             );
             if (isNaN(totalPayableRemaining)) {
                 throw new Error("Tổng số tiền phải trả còn lại không hợp lệ.");
@@ -761,15 +771,15 @@ function validateVendorAndPaymentDetails(record) {
 
             paymentInvoiceFile = new SCFile("esdHTKTpaymentInvoice", SCFILE_READONLY);
             var paymentInvoiceQuery = 'payment.id="' + escapeSmQueryValue(paymentId) +
-                '" and vendor.id="' + escapeSmQueryValue(vendorId) + '"';
+                    '" and vendor.id="' + escapeSmQueryValue(vendorId) + '"';
             if (paymentInvoiceFile.doSelect(paymentInvoiceQuery) == RC_SUCCESS) {
                 // Cùng phạm vi và cách cộng grand.total với createListInvoinVendor.
                 var totalAttachedInvoiceAmount = "0";
                 attachedInvoiceFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
                 var attachedInvoiceQuery = "SELECT i.id, i.grand.total " +
-                    "FROM esdHTKTinvoice i JOIN esdHTKTvendor v ON (i.seller.tax.code = v.vendor.number) " +
-                    'WHERE i.request.id = "' + escapeSmQueryValue(paymentId) +
-                    '" AND v.id = "' + escapeSmQueryValue(vendorId) + '"';
+                        "FROM esdHTKTinvoice i JOIN esdHTKTvendor v ON (i.seller.tax.code = v.vendor.number) " +
+                        'WHERE i.request.id = "' + escapeSmQueryValue(paymentId) +
+                        '" AND v.id = "' + escapeSmQueryValue(vendorId) + '"';
                 var rcAttachedInvoice = attachedInvoiceFile.doSelect(attachedInvoiceQuery);
                 while (rcAttachedInvoice == RC_SUCCESS) {
                     var attachedInvoiceAmount = String(attachedInvoiceFile["grand.total"] || attachedInvoiceFile["grandTotal"] || "0");
@@ -1204,44 +1214,44 @@ function validateLatestWorkflowActor(record) {
     try {
         // Đã đổi từ PREPAYMENT sang PAYMENT tương ứng với module Thanh Toán
         if (
-            !lib ||
-            !lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX ||
-            typeof lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.syncPaymentApprovalFromDatabase !== "function"
+                !lib ||
+                !lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX ||
+                typeof lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.syncPaymentApprovalFromDatabase !== "function"
         ) {
             return htktWfFail(
-                "WORKFLOW_ACTOR_REFRESH_DEPENDENCY_MISSING",
-                "Không kiểm tra được người xử lý mới nhất của hồ sơ. Vui lòng tải lại hồ sơ.",
-                "Thiếu ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.syncPaymentApprovalFromDatabase()."
+                    "WORKFLOW_ACTOR_REFRESH_DEPENDENCY_MISSING",
+                    "Không kiểm tra được người xử lý mới nhất của hồ sơ. Vui lòng tải lại hồ sơ.",
+                    "Thiếu ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.syncPaymentApprovalFromDatabase()."
             );
         }
 
         lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX
-            .syncPaymentApprovalFromDatabase(record);
+                .syncPaymentApprovalFromDatabase(record);
 
         var actorResult = validateCurrentActor(record);
 
         if (!actorResult || actorResult.success !== true) {
             if (actorResult && actorResult.code === "INVALID_CURRENT_ACTOR") {
                 return htktWfFail(
-                    "PAYMENT_REASSIGNED", // Đổi từ PREPAYMENT_REASSIGNED
-                    "Hồ sơ đã được tái phân công cho cán bộ khác. Vui lòng tải lại hồ sơ.",
-                    actorResult.detail || "",
-                    actorResult.data || null
+                        "PAYMENT_REASSIGNED", // Đổi từ PREPAYMENT_REASSIGNED
+                        "Hồ sơ đã được tái phân công cho cán bộ khác. Vui lòng tải lại hồ sơ.",
+                        actorResult.detail || "",
+                        actorResult.data || null
                 );
             }
 
             return actorResult || htktWfFail(
-                "WORKFLOW_ACTOR_VALIDATION_FAILED",
-                "Không kiểm tra được người xử lý hiện tại của hồ sơ. Vui lòng tải lại hồ sơ."
+                    "WORKFLOW_ACTOR_VALIDATION_FAILED",
+                    "Không kiểm tra được người xử lý hiện tại của hồ sơ. Vui lòng tải lại hồ sơ."
             );
         }
 
         return actorResult;
     } catch (error) {
         return htktWfFailException(
-            "WORKFLOW_ACTOR_REFRESH_EXCEPTION",
-            "Không kiểm tra được người xử lý mới nhất của hồ sơ. Vui lòng tải lại hồ sơ.",
-            error
+                "WORKFLOW_ACTOR_REFRESH_EXCEPTION",
+                "Không kiểm tra được người xử lý mới nhất của hồ sơ. Vui lòng tải lại hồ sơ.",
+                error
         );
     }
 }

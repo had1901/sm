@@ -475,7 +475,8 @@ function listPurchaseContracts(input) {
     // 2. Xây dựng điều kiện lọc WHERE
     var conditions = [];
 
-    conditions.push("((category=\"HD_GT\" and contract.value.after.tax > 0) or (category=\"HD_KMS\" and total.budget > 0))");
+    conditions.push("(((category=\"HD_GT\" or category=\"HD_GT_TTMS\") and contract.value.after.tax > 0) or ((category=\"HD_KMS\" or category=\"HD_KMS_TTMS\") and total.budget > 0))");
+    
 
     var role = params.initialRole || (input ? input.initialRole : null);
     if (role) {
@@ -526,8 +527,19 @@ function listPurchaseContracts(input) {
 
     // FILTER: bổ sung 3 điều kiện trên popup
     var categoryFilter = String(params.category || "").trim();
-    if (categoryFilter === "HD_GT" || categoryFilter === "HD_KMS") {
-        conditions.push('category="' + escapeSmQueryValue(categoryFilter) + '"');
+    if (categoryFilter) {
+        var categoryArray = categoryFilter.split(",");
+        var categoryConditions = [];
+
+        for (var i = 0; i < categoryArray.length; i++) {
+            var cat = categoryArray[i].trim();
+            if (cat) {
+                categoryConditions.push('category="' + escapeQueryValue(cat) + '"');
+            }
+        }
+        if (categoryConditions.length > 0) {
+            conditions.push("(" + categoryConditions.join(" OR ") + ")");
+        }
     }
 
     var keywordFilter = String(params.keyword || "").trim().toLowerCase();
@@ -608,10 +620,10 @@ function listPurchaseContracts(input) {
             var itemData = mapRowToObject(f, fieldMappings);
 
             // --- XỬ LÝ ĐỔI GIÁ TRỊ CỦA NAME VÀ TOTAL VALUE THEO CATEGORY ---
-            if (itemData.category === "HD_KMS") {
+            if (itemData.category === "HD_KMS" || itemData.category === "HD_KMS_TTMS") {
                 itemData.name = itemData["item.name"] || itemData.name;
                 itemData.totalValue = itemData["total.budget"] || "0";
-            } else if (itemData.category === "HD_GT") {
+            } else if (itemData.category === "HD_GT" || itemData.category === "HD_GT_TTMS") {
                 itemData.name = itemData.name;
                 itemData.totalValue = itemData["contract.value.after.tax"] || itemData.totalValue || "0";
             }

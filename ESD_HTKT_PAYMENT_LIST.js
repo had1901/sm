@@ -305,6 +305,94 @@ function buildHTKTPaymentCreatedByFilter(currentUser, hasView) {
     return result;
 }
 
+// truong them
+/**
+ * Quyen lanh dao danh sach Thanh toan:
+ * - 0040040003000005: approval_dmms.
+ * - 0040040003000006: approval_kttc.
+ */
+function getHTKTPaymentLeadershipAccess(rightsArray) {
+    var rights = uniqueHTKTArray(rightsArray);
+    var RIGHT_APPROVE_DMMS = "0040040003000005";
+    var RIGHT_APPROVE_KTTC = "0040040003000006";
+
+    return {
+        isApprovalDmms: rights.indexOf(RIGHT_APPROVE_DMMS) >= 0,
+        isApprovalKttc: rights.indexOf(RIGHT_APPROVE_KTTC) >= 0
+    };
+}
+
+// truong them
+/**
+ * Phan mien danh sach Thanh toan cho lanh dao DMMS/KTTC.
+ *
+ * - User TSC: toan bo PS ACTIVE thuoc entity.code=1010098.
+ * - User Chi nhanh: dung LV1 hien tai cua user.
+ *
+ * PAYMENT duoc scope tai NextJS theo created.by -> contacts.lv1.id, vi vay
+ * defaultFilter de true va truyen tap LV1 tin cay qua metadata rieng.
+ */
+function buildHTKTPaymentLeadershipLv1Filter(currentUser, hasView, rightsArray, contactInfo) {
+    var result = {
+        defaultFilter: "(1=0)",
+        dataScope: "Khong co quyen xem",
+        dataScopeCode: "",
+        dataScopeField: "",
+        dataScopeUnits: []
+    };
+    var safeCurrentUser = String(currentUser == null ? "" : currentUser).trim();
+    var leadership = getHTKTPaymentLeadershipAccess(rightsArray);
+    var hasLeadership =
+        leadership.isApprovalDmms ||
+        leadership.isApprovalKttc;
+
+    if (!hasView || !safeCurrentUser || !hasLeadership) {
+        return result;
+    }
+
+    var safeLv1 = String(
+        contactInfo && contactInfo.lv1 != null ? contactInfo.lv1 : ""
+    ).trim();
+
+    result.dataScope =
+        "Lanh dao DMMS hoac KTTC xem danh sach Thanh toan theo mien to chuc";
+    result.dataScopeCode = "HTKT_PAYMENT_LEADERSHIP_LV1";
+    result.dataScopeField = "unit.lv1";
+
+    if (!safeLv1) {
+        return result;
+    }
+
+    var HEAD_OFFICE_ENTITY_CODE = "1010098";
+    var currentEntityCode =
+        getHTKTPaymentActiveEntityCodeByPsCode(
+            safeLv1
+        );
+
+    if (currentEntityCode === HEAD_OFFICE_ENTITY_CODE) {
+        var headOfficePsCodes =
+            getHTKTPaymentActivePsCodesByEntityCode(
+                HEAD_OFFICE_ENTITY_CODE,
+                ""
+            );
+
+        if (!headOfficePsCodes || headOfficePsCodes.length === 0) {
+            return result;
+        }
+
+        result.defaultFilter = "true";
+        result.dataScope = "Tru so chinh - Lanh dao DMMS/KTTC";
+        result.dataScopeUnits = uniqueHTKTArray(headOfficePsCodes);
+        return result;
+    }
+
+    result.defaultFilter = "true";
+    result.dataScope = "Chi nhanh - Lanh dao DMMS/KTTC";
+    result.dataScopeUnits = [safeLv1];
+
+    return result;
+}
+
 
 /**
  * HẬU KIỂM - nhận diện bằng RIGHT chức năng riêng của module Thanh toán.
@@ -612,6 +700,486 @@ function getHTKTDataPermission(currentUser, subModule) {
     return normalizeHTKTDataPermission(dataPermission);
 }
 
+// truong them
+function parseHTKTPaymentApiInput(input) {
+    var raw = input && input.queryString ? String(input.queryString) : "";
+    if (!raw) return {};
+
+    try {
+        return JSON.parse(raw) || {};
+    } catch (eParsePaymentInput) {
+        return {};
+    }
+}
+
+// truong them
+function sortHTKTPaymentOptions(options) {
+    options.sort(function(left, right) {
+        var leftText = String(left.label || "").toLowerCase();
+        var rightText = String(right.label || "").toLowerCase();
+        if (leftText < rightText) return -1;
+        if (leftText > rightText) return 1;
+        return 0;
+    });
+    return options;
+}
+
+// truong them
+function readHTKTPaymentApiContactInfo(currentUser) {
+    var result = {
+        contactName: "",
+        contactId: "",
+        lv1: ""
+    };
+    var safeCurrentUser = String(currentUser == null ? "" : currentUser).trim();
+    var contactFile = null;
+
+    if (!safeCurrentUser) return result;
+
+    try {
+        contactFile = new SCFile("contacts", SCFILE_READONLY);
+        contactFile.setFields(["contact.name", "contact.id", "lv1.id"]);
+        var rcContact = contactFile.doSelect(
+            'contact.name="' + qHTKT(safeCurrentUser) + '"'
+        );
+
+        if (rcContact != RC_SUCCESS) {
+            rcContact = contactFile.doSelect(
+                'tolower(contact.name)="' +
+                qHTKT(safeCurrentUser.toLowerCase()) +
+                '"'
+            );
+        }
+
+        if (rcContact == RC_SUCCESS) {
+            result.contactName = String(contactFile["contact.name"] || "").trim();
+            result.contactId = String(contactFile["contact.id"] || "").trim();
+            result.lv1 = String(contactFile["lv1.id"] || "").trim();
+        }
+    } catch (ePaymentApiContact) {
+        return result;
+    } finally {
+        if (contactFile) {
+            try { contactFile.doClose(); } catch (eClosePaymentApiContact) {}
+        }
+    }
+
+    return result;
+}
+
+// truong them
+function getHTKTPaymentApiIdentities(currentUser, contactInfo) {
+    return uniqueHTKTArray([
+        String(currentUser == null ? "" : currentUser).trim(),
+        String(contactInfo && contactInfo.contactName || "").trim(),
+        String(contactInfo && contactInfo.contactId || "").trim()
+    ]);
+}
+
+// truong them
+function getHTKTPaymentApiRights(currentUser, contactInfo) {
+    var identities = getHTKTPaymentApiIdentities(currentUser, contactInfo);
+    var rights = [];
+
+    for (var i = 0; i < identities.length; i++) {
+        try {
+            rights = rights.concat(
+                lib.ESD_PERMS_RIGHTS.permsRight(identities[i]) || []
+            );
+        } catch (ePaymentApiRights) {}
+    }
+
+    return uniqueHTKTArray(rights);
+}
+
+// truong them
+function getHTKTPaymentApiDataPermission(currentUser, subModule, contactInfo) {
+    var identities = getHTKTPaymentApiIdentities(currentUser, contactInfo);
+    var resolved = null;
+    var resolvedRank = -1;
+    var resolvedUnitCount = -1;
+
+    function getScopeRank(scope) {
+        if (scope === "QT_PQDL_06") return 6;
+        if (scope === "QT_PQDL_04") return 4;
+        if (scope === "QT_PQDL_03") return 3;
+        if (scope === "QT_PQDL_02") return 2;
+        if (scope === "QT_PQDL_01") return 1;
+        return 0;
+    }
+
+    for (var i = 0; i < identities.length; i++) {
+        try {
+            var candidate =
+                lib.ESD_PERMS_RIGHTS.getUnitByDataPermissions(
+                    identities[i],
+                    subModule
+                ) || null;
+            var normalizedCandidate = normalizeHTKTDataPermission(candidate);
+            var candidateRank = getScopeRank(normalizedCandidate.scope);
+            var candidateUnitCount = normalizedCandidate.unit.length;
+
+            if (
+                candidate &&
+                (
+                    candidateRank > resolvedRank ||
+                    (
+                        candidateRank === resolvedRank &&
+                        candidateUnitCount > resolvedUnitCount
+                    )
+                )
+            ) {
+                resolved = normalizedCandidate;
+                resolvedRank = candidateRank;
+                resolvedUnitCount = candidateUnitCount;
+            }
+        } catch (ePaymentApiPermission) {}
+    }
+
+    return resolved || { scope: "QT_PQDL_01", unit: [] };
+}
+
+// truong them
+function buildHTKTPaymentCompactScope(currentUser, contactInfo, rightsArray, dataPermission, forcePostAuditRole) {
+    var hasInvoiceView =
+        rightsArray.indexOf("0040040001000001") >= 0 ||
+        rightsArray.indexOf("0040040001000004") >= 0;
+    var hasPaymentView =
+        rightsArray.indexOf("0040040003000001") >= 0 ||
+        rightsArray.indexOf("0040040003000009") >= 0;
+    var hasView = hasInvoiceView && hasPaymentView;
+
+    if (
+        isHTKTPaymentPostAuditRole(rightsArray) ||
+        forcePostAuditRole === true
+    ) {
+        return buildHTKTPaymentPostAuditLv1Filter(
+            currentUser,
+            true,
+            contactInfo,
+            dataPermission
+        );
+    }
+
+    var leadership = getHTKTPaymentLeadershipAccess(rightsArray);
+    if (leadership.isApprovalDmms || leadership.isApprovalKttc) {
+        return buildHTKTPaymentLeadershipLv1Filter(
+            currentUser,
+            hasView,
+            rightsArray,
+            contactInfo
+        );
+    }
+
+    /*
+     * External API khong luon co day du Functional Rights nhu renderList().
+     * ESS server action da xac thuc currentUser; gioi han compact scan vao
+     * cac phieu do user tao hoac duoc giao trong workflow.
+     */
+    return buildHTKTPaymentCreatedByFilter(currentUser, !!currentUser);
+}
+
+// truong them
+function buildHTKTPaymentCompactQuery(scopeInfo) {
+    var baseConditions = [
+        'transaction.type="Thanh toán"',
+        'status~="cancelled"'
+    ];
+    var scopeCode = String(scopeInfo && scopeInfo.dataScopeCode || "").trim();
+    var scopeField = String(scopeInfo && scopeInfo.dataScopeField || "").trim();
+    var scopeUnits = uniqueHTKTArray(
+        scopeInfo && scopeInfo.dataScopeUnits || []
+    );
+
+    if (scopeCode === "QT_PQDL_06" && scopeField === "ALL") {
+        return "(" + baseConditions.join(" AND ") + ")";
+    }
+
+    if (
+        (scopeCode === "QT_PQDL_04" ||
+            scopeCode === "HTKT_PAYMENT_LEADERSHIP_LV1") &&
+        scopeField === "unit.lv1"
+    ) {
+        if (scopeUnits.length === 0) return "(1=0)";
+
+        var unitConditions = [];
+        for (var i = 0; i < scopeUnits.length; i++) {
+            unitConditions.push(
+                'unit.lv1="' + qHTKT(scopeUnits[i]) + '"'
+            );
+        }
+
+        baseConditions.push("(" + unitConditions.join(" OR ") + ")");
+        return "(" + baseConditions.join(" AND ") + ")";
+    }
+
+    var defaultFilter = String(
+        scopeInfo && scopeInfo.defaultFilter || "(1=0)"
+    ).trim();
+
+    baseConditions.push("(" + defaultFilter + ")");
+    return "(" + baseConditions.join(" AND ") + ")";
+}
+
+// truong them
+/**
+ * Suy ra nguoi dang xu ly cua payment theo cung rule dang hien thi tren list.
+ */
+function getHTKTPaymentCurrentExecutor(record) {
+    var status = String(record.status || "").trim().toLowerCase();
+    var phase = String(record["current.phase"] || "").trim();
+    var initialRole = String(record["initial.role"] || "").trim().toLowerCase();
+    var createdBy = String(record["created.by"] || "").trim();
+    var checkerKttc = String(record["user.checker.kttc"] || "").trim();
+    var checkerDmms = String(record["user.checker.dmms"] || "").trim();
+    var approverDmms = String(record["user.approver.dmms"] || "").trim();
+    var approverKttc = String(record["user.approver.kttc"] || "").trim();
+    var checkerFinal = String(record["user.checker.final"] || "").trim();
+    var approverFinal = String(record["user.approver.final"] || "").trim();
+
+    if (
+        status === "dmms_created" ||
+        status === "kttc_created" ||
+        status === "initialized" ||
+        status === "request_edit"
+    ) return createdBy;
+
+    if (status === "approved") {
+        return approverFinal || approverKttc || approverDmms || createdBy;
+    }
+    if (status === "accounted" || status === "cancelled") return "";
+    if (phase === "start" || phase === "initial_dmms") return createdBy;
+    if (phase === "initial_kttc") {
+        return initialRole === "kttc" ? createdBy : checkerKttc;
+    }
+    if (phase === "check_dmms") return checkerDmms;
+    if (phase === "approval_dmms") return approverDmms;
+    if (phase === "approval_kttc") return approverKttc;
+    if (phase === "check_final") return checkerFinal;
+    if (phase === "approval_final") return approverFinal;
+    return "";
+}
+
+/**
+ * Action compact cho dropdown man Danh sach Thanh toan.
+ * Chi doc field can thiet, distinct ngay trong SM va khong serialize 8k+ row.
+ */
+// truong them
+function getPaymentListFilterOptions(input) {
+    var startedAt = new Date().getTime();
+    var payload = parseHTKTPaymentApiInput(input);
+    var currentUser = String(payload.currentUser || "").trim();
+
+    if (!currentUser) {
+        return {
+            success: false,
+            error: "Khong xac dinh duoc business user hien tai."
+        };
+    }
+
+    var contactInfo = readHTKTPaymentApiContactInfo(currentUser);
+    var rightsArray = getHTKTPaymentApiRights(currentUser, contactInfo);
+    // truong them: External action co the khong mang $G.rights cua HTML Viewer.
+    var isPostAuditRole =
+        isHTKTPaymentPostAuditRole(rightsArray) ||
+        payload.isPostAuditRole === true;
+    var dataPermission = getHTKTPaymentApiDataPermission(
+        currentUser,
+        "00401",
+        contactInfo
+    );
+    var scopeInfo = buildHTKTPaymentCompactScope(
+        currentUser,
+        contactInfo,
+        rightsArray,
+        dataPermission,
+        isPostAuditRole
+    );
+    var scopeQuery = buildHTKTPaymentCompactQuery(scopeInfo);
+    var scopeResolvedAt = new Date().getTime();
+    var paymentFile = null;
+    var departmentSeen = {};
+    var lv1Seen = {};
+    var lv1Codes = [];
+    var includeLv1Options = isPostAuditRole && scopeInfo.dataScopeCode === "QT_PQDL_06";
+    var executorSeen = {};
+    var executorOptions = [];
+    var departmentCodes = [];
+    var scannedRows = 0;
+
+    try {
+        paymentFile = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        // truong them: moi role deu nhan day du current executor trong workflow.
+        var projectionFields = [
+            "department",
+            "status",
+            "current.phase",
+            "initial.role",
+            "created.by",
+            "user.checker.kttc",
+            "user.checker.dmms",
+            "user.approver.dmms",
+            "user.approver.kttc",
+            "user.checker.final",
+            "user.approver.final"
+        ];
+        if (includeLv1Options) projectionFields.push("unit.lv1");
+
+        paymentFile.setFields(projectionFields);
+
+        var rcPayment = paymentFile.doSelect(scopeQuery);
+
+        if (rcPayment != RC_SUCCESS) {
+            return {
+                success: false,
+                error: "Compact payment query khong tra ve ban ghi. ReturnCode=" +
+                    String(rcPayment),
+                diagnostics: {
+                    dataScopeCode: String(scopeInfo.dataScopeCode || ""),
+                    rightsCount: rightsArray.length
+                }
+            };
+        }
+
+        while (rcPayment == RC_SUCCESS) {
+            scannedRows++;
+
+            var department = String(
+                paymentFile["department"] || ""
+            ).trim();
+
+            if (department && !departmentSeen[department]) {
+                departmentSeen[department] = true;
+                departmentCodes.push(department);
+            }
+            if (includeLv1Options) {
+                var lv1 = String(paymentFile["unit.lv1"] || "").trim();
+                if (lv1 && !lv1Seen[lv1]) {
+                    lv1Seen[lv1] = true;
+                    lv1Codes.push(lv1);
+                }
+            }
+
+            var currentExecutor = getHTKTPaymentCurrentExecutor(
+                paymentFile
+            );
+
+            var executorKey = currentExecutor.toLowerCase();
+
+            if (currentExecutor && !executorSeen[executorKey]) {
+                executorSeen[executorKey] = true;
+                executorOptions.push({
+                    label: currentExecutor,
+                    value: currentExecutor
+                });
+            }
+
+            rcPayment = paymentFile.getNext();
+        }
+    } catch (ePaymentCompact) {
+        return {
+            success: false,
+            error: "Khong doc duoc filter options Thanh toan: " +
+                ePaymentCompact.toString()
+        };
+    } finally {
+        if (paymentFile) {
+            try { paymentFile.doClose(); } catch (eClosePaymentCompact) {}
+        }
+    }
+    var paymentScanCompletedAt = new Date().getTime();
+
+    var departmentNameByCode = {};
+    var unitFile = null;
+
+    var lookupCodes = uniqueHTKTArray(departmentCodes.concat(lv1Codes));
+    if (lookupCodes.length > 0) {
+        var unitConditions = [];
+        for (var i = 0; i < lookupCodes.length; i++) {
+            unitConditions.push(
+                'unit.id="' + qHTKT(lookupCodes[i]) + '"'
+            );
+        }
+
+        try {
+            unitFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
+            unitFile.setFields(["unit.id", "unit.name"]);
+            var rcUnit = unitFile.doSelect(
+                "(" + unitConditions.join(" OR ") + ")"
+            );
+
+            while (rcUnit == RC_SUCCESS) {
+                var unitId = String(unitFile["unit.id"] || "").trim();
+                var unitName = String(unitFile["unit.name"] || "").trim();
+
+                if (unitId && unitName) {
+                    departmentNameByCode[unitId] = unitName;
+                }
+
+                rcUnit = unitFile.getNext();
+            }
+        } catch (ePaymentCompactUnit) {
+            departmentNameByCode = {};
+        } finally {
+            if (unitFile) {
+                try { unitFile.doClose(); } catch (eClosePaymentCompactUnit) {}
+            }
+        }
+    }
+    var departmentLookupCompletedAt = new Date().getTime();
+
+    var departmentOptions = [];
+    for (var k = 0; k < departmentCodes.length; k++) {
+        var departmentCode = departmentCodes[k];
+        departmentOptions.push({
+            label: departmentNameByCode[departmentCode] || departmentCode,
+            value: departmentCode
+        });
+    }
+    var unitLv1Options = [];
+    for (var lv1Index = 0; lv1Index < lv1Codes.length; lv1Index++) {
+        var lv1Code = lv1Codes[lv1Index];
+        unitLv1Options.push({
+            label: departmentNameByCode[lv1Code] || lv1Code,
+            value: lv1Code
+        });
+    }
+
+    sortHTKTPaymentOptions(executorOptions);
+    sortHTKTPaymentOptions(departmentOptions);
+    sortHTKTPaymentOptions(unitLv1Options);
+    departmentOptions.unshift({
+        label: "Tất cả Phòng ban/TT",
+        value: "ALL"
+    });
+
+    return {
+        success: true,
+        data: {
+            executorOptions: executorOptions,
+            departmentOptions: departmentOptions,
+            unitLv1Options: unitLv1Options
+        },
+        diagnostics: {
+            queryMode: "sm-compact-projection",
+            scannedRows: scannedRows,
+            executorCount: executorOptions.length,
+            departmentCount: departmentCodes.length,
+            dataScopeCode: String(scopeInfo.dataScopeCode || ""),
+            dataScopeUnitCount: scopeInfo.dataScopeUnits ?
+                scopeInfo.dataScopeUnits.length : 0,
+            rightsCount: rightsArray.length,
+            allWorkflowExecutors: true,
+            isPostAuditRole: isPostAuditRole,
+            scopeResolveMs: scopeResolvedAt - startedAt,
+            paymentScanMs: paymentScanCompletedAt - scopeResolvedAt,
+            departmentLookupMs:
+                departmentLookupCompletedAt - paymentScanCompletedAt,
+            totalMs: new Date().getTime() - startedAt
+        }
+    };
+}
+
 function renderList() {
     var currentUser = vars['$lo.contact.name'];
 
@@ -687,6 +1255,11 @@ function renderList() {
      */
     var isPostAuditRole = isHTKTPaymentPostAuditRole(rightsArray);
     var hasPostAuditView = isPostAuditRole;
+    // truong them
+    var leadershipAccess = getHTKTPaymentLeadershipAccess(rightsArray);
+    var isLeadershipRole =
+        leadershipAccess.isApprovalDmms ||
+        leadershipAccess.isApprovalKttc;
     var dataFilterInfo;
 
     if (isPostAuditRole) {
@@ -698,6 +1271,30 @@ function renderList() {
         );
 
         // Trả đúng metadata scope Hậu kiểm đã resolve ở SM xuống addon.
+        dataPermission = {
+            scope: dataFilterInfo.dataScopeCode,
+            unit: dataFilterInfo.dataScopeUnits
+        };
+    /*
+     * Code cu:
+     * } else {
+     *     dataFilterInfo = buildHTKTPaymentCreatedByFilter(currentUser, hasView);
+     * }
+     */
+    // truong them
+    } else if (isLeadershipRole) {
+        dataFilterInfo = buildHTKTPaymentLeadershipLv1Filter(
+            currentUser,
+            hasView,
+            rightsArray,
+            contactInfo
+        );
+
+        /*
+         * Gui xuong dung tap LV1 da resolve:
+         * - TSC: toan bo PS ACTIVE cua entity 1010098.
+         * - Chi nhanh: dung LV1 hien tai.
+         */
         dataPermission = {
             scope: dataFilterInfo.dataScopeCode,
             unit: dataFilterInfo.dataScopeUnits
@@ -746,6 +1343,12 @@ function renderList() {
 
             // Phân quyền chức năng hóa đơn
             rights: rightsArray,
+
+            // truong them
+            // FE dùng cờ này để bỏ giới hạn actor/phase cho lãnh đạo DMMS/KTTC.
+            leadershipAccess: leadershipAccess,
+            // truong them: chi Hau kiem Thanh toan khong mac dinh executor=currentUser.
+            isPostAuditRole: isPostAuditRole,
             permission: {
                 view: isPostAuditRole ? hasPostAuditView : hasView,
                 invoiceView: hasInvoiceView,

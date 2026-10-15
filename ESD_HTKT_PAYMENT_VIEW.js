@@ -483,19 +483,14 @@ function getTabChiTietThongTinHT(endpoint, input, extraData) {
         currentRecord = formRecord;
     }
 
-    var paymentId = String(
-        (formRecord ? formRecord['payment.id'] : '') ||
-        currentRecord['paymentId'] || currentRecord['payment.id'] ||
-        vars.$G_payment_id || ''
-    ).replace(/^\s+|\s+$/g, '');
+    var paymentId = vars.$G_payment_id;
     if (paymentId) {
         var paymentRec = new SCFile("esdHTKTpayment");
-        var sql = 'id="' + qHTKT(paymentId) + '"';
+        var sql = "id=\"" + paymentId + "\"";
 
         if (paymentRec.doSelect(sql) === RC_SUCCESS) {
             currentRecord = {
                 "paymentId": paymentId,
-                "transaction.type": String(paymentRec["transaction.type"] || '').replace(/^\s+|\s+$/g, ''),
                 "currentPhase": paymentRec["current.phase"],
                 "initialRole": paymentRec["initial.role"],
                 "createdBy": paymentRec["created.by"],
