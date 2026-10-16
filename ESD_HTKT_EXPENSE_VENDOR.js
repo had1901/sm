@@ -281,6 +281,34 @@ function deleteExpenseVendor(input) {
  */
 function syncExpenseVendorsToOgl(input) {
     var params = getExpenseVendorInputDetails(input);
+    return runExpenseVendorOglSync(params, null);
+}
+
+/** Chỉ ĐMMS tự động đồng bộ khi trình; KTTC dùng nút đồng bộ thủ công. */
+function syncExpenseVendorsToOglOnSubmit(record) {
+    var phase = normalizeExpenseVendorValue(record && (record.current_phase || record["current.phase"]));
+    if (phase !== "initial_dmms") {
+        return { success: false, message: "Chỉ tự động đồng bộ khi ĐMMS trình phiếu Dự chi." };
+    }
+    return runExpenseVendorOglSync({
+        paymentId: record["id"],
+        currentUser: vars.$lo_operator && vars.$lo_operator["contact.name"]
+    }, record);
+}
+
+/** KTTC trình phiếu chỉ kiểm tra site đã lưu, không gọi OGL hoặc cập nhật món. */
+function checkExpenseVendorsOglOnSubmit(record) {
+    var phase = normalizeExpenseVendorValue(record && (record.current_phase || record["current.phase"]));
+    if (phase !== "initial_kttc") {
+        return { success: false, message: "Chỉ kiểm tra site trước khi KTTC trình phiếu Dự chi." };
+    }
+    return runExpenseVendorOglSync({
+        paymentId: record["id"],
+        currentUser: vars.$lo_operator && vars.$lo_operator["contact.name"]
+    }, record, true);
+}
+
+function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
     var paymentId = normalizeExpenseVendorValue(params.paymentId || params.expenseId);
     var currentUser = normalizeExpenseVendorValue(params.currentUser);
     var paymentFile = null;
@@ -299,14 +327,19 @@ function syncExpenseVendorsToOgl(input) {
             return { success: false, message: "Không tìm thấy phiếu Dự chi hợp lệ." };
         }
 
-        // Cùng điều kiện showSyncVendorOgl tại màn NCC Thanh toán.
+        // Đồng bộ thủ công chỉ dành cho KTTC; ĐMMS tự đồng bộ qua workflow trình phiếu.
         var actor = currentUser.toLowerCase();
         var creator = normalizeExpenseVendorValue(paymentFile["created.by"]).toLowerCase();
         var checker = normalizeExpenseVendorValue(paymentFile["user.checker.kttc"]).toLowerCase();
-        var phase = normalizeExpenseVendorValue(paymentFile["current.phase"]);
+        var phase = normalizeExpenseVendorValue(submissionRecord
+                ? submissionRecord.current_phase || submissionRecord["current.phase"]
+                : paymentFile["current.phase"]);
         var role = normalizeExpenseVendorValue(paymentFile["initial.role"]);
         var canSync = phase === "initial_kttc" &&
                 (checker === actor || (role === "kttc" && creator === actor));
+        if (submissionRecord && phase === "initial_dmms" && role === "dmms" && creator === actor) {
+            canSync = true;
+        }
         if (!canSync) {
             return { success: false, message: "Không có quyền đồng bộ OGL tại bước hiện tại của phiếu Dự chi." };
         }
@@ -319,7 +352,9 @@ function syncExpenseVendorsToOgl(input) {
         if (branchCode.length === 4) branchCode = branchCode.substr(1);
         var syncUser = normalizeExpenseVendorValue(paymentFile["user.checker.kttc"]) || currentUser;
 
-        itemFile = new SCFile("esdHTKTpaymentVendor");
+        itemFile = checkOnly
+                ? new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY)
+                : new SCFile("esdHTKTpaymentVendor");
         var itemRc = itemFile.doSelect('payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
         while (itemRc === RC_SUCCESS) {
             var itemId = normalizeExpenseVendorValue(itemFile["id"]);
@@ -337,6 +372,9 @@ function syncExpenseVendorsToOgl(input) {
                     data.skipped++;
                     data.items.push({ id: itemId, status: "skipped", message: "Món đã đồng bộ OGL." });
                 } else {
+                    if (checkOnly) {
+                        throw new Error("Chưa đồng bộ OGL cho Nhà cung cấp. Vui lòng bấm Đồng bộ OGL trước khi trình phiếu.");
+                    }
                     attemptedSync = true;
                     // Site chưa có hoặc đã bị xóa: đồng bộ lại rồi tự gán site mặc định của NCC.
                     if (!hasSelectedSite) {

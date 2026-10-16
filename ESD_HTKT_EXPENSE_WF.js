@@ -49,6 +49,10 @@ function validateDataInPhase(record, type) {
         if (invoiceBrErrors && invoiceBrErrors.length > 0) {
             errorMss = errorMss.concat(invoiceBrErrors);
         }
+        if (errorMss.length === 0) {
+            var oglErrors = validateExpenseOglBeforeSubmission(record);
+            if (oglErrors) return oglErrors;
+        }
     }
 
     // Validate theo từng phase
@@ -83,6 +87,29 @@ function validateDataInPhase(record, type) {
     }
 
     return errorMss.length > 0 ? errorMss : null;
+}
+
+/** ĐMMS được trình khi lỗi OGL; KTTC phải đồng bộ đủ site trước khi trình. */
+function validateExpenseOglBeforeSubmission(record) {
+    var phase = record.current_phase || record["current.phase"];
+    if (phase !== "initial_dmms" && phase !== "initial_kttc") return null;
+    try {
+        var result = phase === "initial_dmms"
+                ? lib.ESD_HTKT_EXPENSE_VENDOR.syncExpenseVendorsToOglOnSubmit(record)
+                : lib.ESD_HTKT_EXPENSE_VENDOR.checkExpenseVendorsOglOnSubmit(record);
+        if (result && result.success === true) return null;
+        var message = result && result.message || "Không xác định được kết quả đồng bộ NCC/site OGL.";
+        if (phase === "initial_kttc") {
+            return ["Chưa đồng bộ đầy đủ Site Nhà cung cấp. Vui lòng bấm Đồng bộ OGL trước khi trình phiếu."];
+        }
+        print("Đồng bộ OGL khi ĐMMS trình phiếu chưa hoàn tất: " + message);
+    } catch (error) {
+        if (phase === "initial_kttc") {
+            return ["Không kiểm tra được Site Nhà cung cấp trước khi trình phiếu. " + String(error.message || error)];
+        }
+        print("Đồng bộ OGL khi ĐMMS trình phiếu chưa hoàn tất: " + String(error.message || error));
+    }
+    return null;
 }
 
 function validateFieldExample() {
