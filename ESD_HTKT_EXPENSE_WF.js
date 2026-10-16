@@ -14,8 +14,8 @@
  * ============================================================================= */
 
 function validateDataInPhase(record, type) {
-    // "wf": kiểm tra dữ liệu; "submit": kiểm tra khi trình, kèm xử lý OGL.
-    if (type !== "wf" && type !== "submit") {
+    // Nếu không phải gọi từ Workflow (Trình duyệt / Chuyển bước) -> Bỏ qua kiểm tra chuyển phase
+    if (type !== "wf") {
         return null;
     }
 
@@ -50,10 +50,6 @@ function validateDataInPhase(record, type) {
         if (invoiceBrErrors && invoiceBrErrors.length > 0) {
             errorMss = errorMss.concat(invoiceBrErrors);
         }
-       if (type === "submit" && errorMss.length === 0) {
-            var oglErrors = validateExpenseOglBeforeSubmission(record);
-            if (oglErrors) return oglErrors;
-        }
     }
 
     // Validate theo từng phase
@@ -87,7 +83,10 @@ function validateDataInPhase(record, type) {
         errorMss = errorMss.concat(phaseErrors);
     }
 
-    return errorMss.length > 0 ? errorMss : null;
+    if (errorMss.length > 0) return errorMss;
+
+    // Chỉ xử lý OGL khi toàn bộ dữ liệu và validation theo phase đã hợp lệ.
+    return validateExpenseOglBeforeSubmission(record);
 }
 
 /** ĐMMS được trình khi lỗi OGL; KTTC phải đồng bộ đủ site trước khi trình. */
@@ -611,7 +610,7 @@ function ensurePresentationForSubmission(record) {
         return htktWfFail("INVALID_CURRENT_ACTOR", "Người dùng hiện tại không được trình phiếu Dự chi này.");
     }
 
-    var validationErrors = validateDataInPhase(record, "submit");
+    var validationErrors = validateDataInPhase(record, "wf");
     if (validationErrors && validationErrors.length) {
         return htktWfFail("WORKFLOW_VALIDATION_FAILED", validationErrors.join("\n"));
     }
@@ -816,8 +815,7 @@ function updateNextStatus(record, previousRecord) {
         if (!allowed) {
             return htktWfFail("INVALID_CURRENT_ACTOR", "Người dùng hiện tại không được xử lý phiếu Dự chi này.");
         }
-        var validationErrors = validateDataInPhase(record,
-                phase === HTKT_WF_PHASE.INITIAL_DMMS ? "submit" : "wf");
+        var validationErrors = validateDataInPhase(record, "wf");
         if (validationErrors && validationErrors.length) {
             return htktWfFail("WORKFLOW_VALIDATION_FAILED", validationErrors.join("\n"));
         }
