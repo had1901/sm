@@ -327,7 +327,7 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
             return { success: false, message: "Không tìm thấy phiếu Dự chi hợp lệ." };
         }
 
-        // Đồng bộ thủ công chỉ dành cho KTTC; ĐMMS tự đồng bộ qua workflow trình phiếu.
+        // Cùng điều kiện showSyncVendorOgl tại màn NCC Thanh toán.
         var actor = currentUser.toLowerCase();
         var creator = normalizeExpenseVendorValue(paymentFile["created.by"]).toLowerCase();
         var checker = normalizeExpenseVendorValue(paymentFile["user.checker.kttc"]).toLowerCase();
@@ -343,7 +343,7 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
         if (!canSync) {
             return { success: false, message: "Không có quyền đồng bộ OGL tại bước hiện tại của phiếu Dự chi." };
         }
-
+        
         var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(paymentFile["unit.lv1"]);
         if (!entityInfo || !entityInfo.entity || !entityInfo.oglBranchCode) {
             return { success: false, message: "Không xác định được entity/mã chi nhánh OGL của phiếu Dự chi." };
@@ -373,7 +373,7 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
                     data.items.push({ id: itemId, status: "skipped", message: "Món đã đồng bộ OGL." });
                 } else {
                     if (checkOnly) {
-                        throw new Error("Chưa đồng bộ OGL cho Nhà cung cấp. Vui lòng bấm Đồng bộ OGL trước khi trình phiếu.");
+                        throw new Error("Chưa đồng bộ Site Nhà cung cấp. Vui lòng bấm Đồng bộ OGL trước khi trình phiếu.");
                     }
                     attemptedSync = true;
                     // Site chưa có hoặc đã bị xóa: đồng bộ lại rồi tự gán site mặc định của NCC.
@@ -836,6 +836,7 @@ function closeExpenseVendorFile(file) {
     if (!file) return;
     try { file.doClose(); } catch (e) {}
 }
+
 
 /**
  * Số tiền món Dự chi lấy từ hóa đơn thì không cho nhập tay.

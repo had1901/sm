@@ -22,7 +22,7 @@ function validateDataInPhase(record, type) {
     if (!htktWfExpenseId(record)) {
         return ["Bản ghi không phải phiếu Dự chi hợp lệ."];
     }
-
+    
     var submissionPhase = record.current_phase || record["current.phase"];
     if (submissionPhase === "initial_dmms" || submissionPhase === "initial_kttc") {
         try {
@@ -37,7 +37,8 @@ function validateDataInPhase(record, type) {
     // Validate đã chọn nhà cung cấp cho phiếu Dự chi
     var vendorErrors = validateVendorAndPaymentDetailsOnWorkflow(record);
     if (vendorErrors && vendorErrors.length > 0) {
-        return vendorErrors;
+         errorMss = errorMss.concat(vendorErrors);
+//        return vendorErrors;
     }
 
     var currentPhase = record.current_phase || record["current.phase"];
@@ -49,7 +50,7 @@ function validateDataInPhase(record, type) {
         if (invoiceBrErrors && invoiceBrErrors.length > 0) {
             errorMss = errorMss.concat(invoiceBrErrors);
         }
-        if (errorMss.length === 0) {
+       if (errorMss.length === 0) {
             var oglErrors = validateExpenseOglBeforeSubmission(record);
             if (oglErrors) return oglErrors;
         }
@@ -309,6 +310,18 @@ function validateRequiredEsdHTKTpaymentInvoice(paymentId) {
     }
 }
 
+//function validateVendorAndPaymentDetailsOnWorkflow(record) {
+//    var paymentId = String(record.id || "");
+//    var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+//    var rc = vendor.doSelect('payment.id="' + paymentId + '"');
+//
+//    try {
+//        vendor.doClose();
+//    } catch (e) {}
+//
+//    return rc == RC_SUCCESS ? null : ["Vui lòng chọn ít nhất một món dự chi."];
+//}
+
 function validateVendorAndPaymentDetailsOnWorkflow(record) {
     var paymentId = String(record.id || "").trim();
     if (!paymentId) return ["Thiếu mã phiếu Dự chi để kiểm tra các món."];
@@ -322,7 +335,7 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
 
         while (rc === RC_SUCCESS) {
             if (!String(vendor["vendor.id"] || "").trim()) {
-                return ["Vui lòng chọn Nhà cung cấp."];
+                return ["Chưa chọn Nhà cung cấp cho món dự chi."];
             }
 
             var amountText = vendor["amount"] == null ? "" : String(vendor["amount"]).replace(/,/g, "").trim();
@@ -760,14 +773,6 @@ function updateNextStatus(record, previousRecord) {
     var nextStatus = HTKT_EXPENSE_NEXT_STATUS[phase];
     if (!expenseId || !nextStatus) {
         return htktWfFail("INVALID_WORKFLOW_PHASE", "Phiếu Dự chi không ở bước xử lý được hỗ trợ.");
-    }
-
-    // Process có thể bỏ qua object lỗi trả về; chặn ngay khi rời bước ĐMMS.
-    if (oldPhase === HTKT_WF_PHASE.INITIAL_DMMS) {
-        var submissionItemErrors = validateVendorAndPaymentDetailsOnWorkflow(record);
-        if (submissionItemErrors && submissionItemErrors.length) {
-            throw new Error(submissionItemErrors.join("\n"));
-        }
     }
 
     if (oldPhase === HTKT_WF_PHASE.INITIAL_KTTC) {
