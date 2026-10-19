@@ -10,6 +10,7 @@ var ACCOUNTING_SUB_TYPE = {
     TAM_UNG: "TAM_UNG",
     THUE: "THUE",
     THANH_TOAN: "THANH_TOAN",
+    DU_CHI: "DU_CHI",
     TAT_TOAN: "TAT_TOAN",
     INHOUSE: "INHOUSE", // CORE chuyển tiền trong hệ thống
     CITAD: "CITAD" // CORE chuyển tiền ngoài hệ thống di CITAD
@@ -235,7 +236,7 @@ function processAccounting(esdHTKTprepayment) {
     try { if (itemEsdHTKTaccountingInfo) itemEsdHTKTaccountingInfo.doClose(); } catch (e) {}
 }
 
-//processAccounting({ id: 'TU.106.26.0000060' });
+//processAccounting({ id: 'DC.100.26.0000069' });
 //processAccounting({ id: 'TU.106.26.0000193' });
 
 function callApiAp(esdHTKTacountingInfo) {
@@ -254,6 +255,7 @@ function callApiAp(esdHTKTacountingInfo) {
     if (payload) {
         var apiResult = null;
         if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.THANH_TOAN ||
+            esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.DU_CHI ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.TAM_UNG ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.THUE) {
             apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApInvoice(payload);
@@ -283,7 +285,7 @@ function callApiAp(esdHTKTacountingInfo) {
                 // Chỉ lưu đúng raw body do API trả về, không chèn metadata HTTP vào JSON.
                 itemAccounting.response = rawResponseBody;
                 itemAccounting['response.http.status'] = httpStatus == null ? null : String(httpStatus);
-                
+
                 if (response.data && response.data.transactionId) {
                     itemAccounting['transaction.id'] = response.data.transactionId;
                 }
@@ -337,7 +339,7 @@ function callApiGl(esdHTKTacountingInfo) {
 
 
 // Goi API chuyen tien
-//checkCompleteAccounting('TU.106.26.0000013')
+//checkCompleteAccounting('DC.100.26.0000069')
 function callApiCore(esdHTKTacountingInfo) {
     // Đặt false để tắt giả lập và gọi lại CORE thật.
     var USE_FAKE_CORE_RESPONSE = false;
@@ -405,8 +407,7 @@ function callApiCore(esdHTKTacountingInfo) {
 
         if (response) {
             var responseData = response.data && typeof response.data === "object" ?
-                response.data :
-                {};
+                response.data : {};
             var hostRefNum = String(responseData.hostRefNum || "").trim();
 
             if (response.status) {
@@ -559,6 +560,7 @@ function checkCompleteAccounting(prepaymentId) {
         }
 
         if (accountingInfoItem["sub.type"] == ACCOUNTING_SUB_TYPE.THANH_TOAN ||
+            accountingInfoItem["sub.type"] == ACCOUNTING_SUB_TYPE.DU_CHI ||
             accountingInfoItem["sub.type"] == ACCOUNTING_SUB_TYPE.TAT_TOAN) {
             isPayment = true;
         }
@@ -801,7 +803,7 @@ function checkAccount(accountId, napasCode) {
             var custInfo = response.data.custInfo;
             if (custInfo && custInfo.length > 0 && response.data.custInfo[0].depAcctIdTo &&
                 response.data.custInfo[0].depAcctIdTo.refVal) {
-                return {acctName: response.data.custInfo[0].depAcctIdTo.refVal};
+                return { acctName: response.data.custInfo[0].depAcctIdTo.refVal };
             }
         }
     }

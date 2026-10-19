@@ -210,8 +210,16 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
     paymentRec['user.checker.final'] = "";
     paymentRec['user.approver.final'] = "";
     paymentRec['return.reason'] = "";
-    paymentRec['unit.lv1'] = contractData['unitLv1'] || "";
-    paymentRec['unit.lv2'] = contractData['unitLv2'] || "";
+    paymentRec['unit.lv1'] = contractData['unitLv1'] || contractData['unit.lv1'] || "";
+    paymentRec['unit.lv2'] = contractData['unitLv2'] || contractData['unit.lv2'] || "";
+    // Phiếu thuộc Trụ sở chính dùng entity chung để lọc danh sách.
+    if (String(paymentRec['unit.lv1'] || "").trim().indexOf("0999") === 0) {
+        paymentRec['entity.code'] = "1010098";
+    }
+    paymentRec['unit.lv1.name'] = contractData['unitLv1Name'] || contractData['unit.lv1.name'] ||
+            htktCreatePayment_getUnitName(paymentRec['unit.lv1']);
+    paymentRec['unit.lv2.name'] = contractData['unitLv2Name'] || contractData['unit.lv2.name'] ||
+            htktCreatePayment_getUnitName(paymentRec['unit.lv2']);
 
     paymentRec['created.at'] = new Date();
     paymentRec['created.by'] = contractData['createdBy'];
@@ -247,6 +255,31 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
         );
     }
 
+}
+
+/**
+ * Lấy tên đơn vị theo mã và lưu snapshot trên phiếu thanh toán.
+ */
+function htktCreatePayment_getUnitName(unitId) {
+    var normalizedUnitId = String(unitId || "").replace(/^\s+|\s+$/g, "");
+    if (!normalizedUnitId) return "";
+
+    var unitFile;
+    try {
+        unitFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
+        unitFile.setFields(["unit.id", "unit.name"]);
+        var rc = unitFile.doSelect(
+            'unit.id="' + escapeSmQueryValue(normalizedUnitId) + '"'
+        );
+
+        return rc === RC_SUCCESS
+            ? String(unitFile["unit.name"] || "").replace(/^\s+|\s+$/g, "")
+            : "";
+    } catch (error) {
+        return "";
+    } finally {
+        try { if (unitFile) unitFile.doClose(); } catch (closeError) {}
+    }
 }
 
 

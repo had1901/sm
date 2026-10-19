@@ -370,19 +370,10 @@ function buildHTKTPaymentLeadershipLv1Filter(currentUser, hasView, rightsArray, 
         );
 
     if (currentEntityCode === HEAD_OFFICE_ENTITY_CODE) {
-        var headOfficePsCodes =
-            getHTKTPaymentActivePsCodesByEntityCode(
-                HEAD_OFFICE_ENTITY_CODE,
-                ""
-            );
-
-        if (!headOfficePsCodes || headOfficePsCodes.length === 0) {
-            return result;
-        }
-
-        result.defaultFilter = "true";
+        result.defaultFilter = 'entity.code="1010098"';
         result.dataScope = "Tru so chinh - Lanh dao DMMS/KTTC";
-        result.dataScopeUnits = uniqueHTKTArray(headOfficePsCodes);
+        result.dataScopeField = "entity.code";
+        result.dataScopeUnits = [HEAD_OFFICE_ENTITY_CODE];
         return result;
     }
 
@@ -603,16 +594,9 @@ function buildHTKTPaymentPostAuditLv1Filter(currentUser, hasView, contactInfo, d
         return result;
     }
 
-    var headOfficePsCodes = getHTKTPaymentActivePsCodesByEntityCode(
-        HEAD_OFFICE_OGL_SEG1,
-        HEAD_OFFICE_PS_PREFIX
-    );
-
-    if (headOfficePsCodes.length === 0) {
-        return result;
-    }
-
-    result.dataScopeUnits = headOfficePsCodes;
+    result.defaultFilter = 'entity.code="1010098"';
+    result.dataScopeField = "entity.code";
+    result.dataScopeUnits = [HEAD_OFFICE_OGL_SEG1];
 
     return result;
 }

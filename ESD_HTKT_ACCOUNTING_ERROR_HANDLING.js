@@ -215,6 +215,117 @@ function getAccountingErrorHandlingApproverKttc(input) {
 }
 
 /**
+ * Đếm trạng thái bút toán cho các phiếu đang hiển thị trên trang danh sách.
+ * Chỉ đọc các field cần thiết và chỉ trả dữ liệu trong phạm vi quyền của user.
+ */
+function getAccountingErrorStatusCounts(input) {
+    var handlingRec = null;
+    var accountingRec = null;
+    try {
+        var details = JSON.parse(input && input.queryString || "{}");
+        var currentUser = String(details.currentUser || "").trim();
+        var requestIds = details.requestIds;
+        if (!currentUser || !Array.isArray(requestIds) ||
+                requestIds.length > 200) {
+            return { success: false, message: "Dữ liệu kiểm tra trạng thái không hợp lệ." };
+        }
+
+        var uniqueIds = [];
+        var seen = {};
+        for (var i = 0; i < requestIds.length; i++) {
+            var id = String(requestIds[i] || "").trim();
+            var key = id.toLowerCase();
+            if (id && !seen[key]) {
+                seen[key] = true;
+                uniqueIds.push(id);
+            }
+        }
+        if (!uniqueIds.length) return { success: true, data: { items: [] } };
+
+        var idConditions = [];
+        for (var j = 0; j < uniqueIds.length; j++) {
+            idConditions.push('request.id="' +
+                    escapeQueryValue(uniqueIds[j]) + '"');
+        }
+        var contactInfo = readHTKTContactInfo(currentUser);
+        var permission = getHTKTDataPermission(currentUser, "00401");
+        var scopeFilter = buildHTKTUnitFilter(
+                permission, true, contactInfo.lv1
+        ).defaultFilter;
+
+        var allowedIds = [];
+        var itemsById = {};
+        handlingRec = new SCFile(
+                "esdHTKTaccountingErrorHandling", SCFILE_READONLY
+        );
+        handlingRec.setFields(["request.id"]);
+        var handlingRc = handlingRec.doSelect(
+                "(" + scopeFilter + ") AND (" +
+                idConditions.join(" OR ") + ")"
+        );
+        while (handlingRc === RC_SUCCESS) {
+            var allowedId = String(handlingRec["request.id"] || "").trim();
+            if (allowedId && !itemsById[allowedId.toLowerCase()]) {
+                allowedIds.push(allowedId);
+                itemsById[allowedId.toLowerCase()] = {
+                    requestId: allowedId,
+                    totalTrans: 0,
+                    totalErrorTrans: 0,
+                    errorChannel: ""
+                };
+            }
+            handlingRc = handlingRec.getNext();
+        }
+        if (!allowedIds.length) {
+            return { success: true, data: { items: [] } };
+        }
+
+        var accountingConditions = [];
+        for (var k = 0; k < allowedIds.length; k++) {
+            accountingConditions.push('prepayment.id="' +
+                    escapeQueryValue(allowedIds[k]) + '"');
+        }
+        accountingRec = new SCFile(
+                "esdHTKTaccountingInformation", SCFILE_READONLY
+        );
+        accountingRec.setFields(["prepayment.id", "status", "type"]);
+        var accountingRc = accountingRec.doSelect(
+                "(" + accountingConditions.join(" OR ") + ")"
+        );
+        while (accountingRc === RC_SUCCESS) {
+            var accountingId = String(
+                    accountingRec["prepayment.id"] || ""
+            ).trim().toLowerCase();
+            var item = itemsById[accountingId];
+            if (item) {
+                item.totalTrans++;
+                if (String(accountingRec["status"] || "")
+                        .trim().toUpperCase() === ACCOUNTING_STATUS.ERROR) {
+                    item.totalErrorTrans++;
+                    if (!item.errorChannel) {
+                        item.errorChannel = String(
+                                accountingRec["type"] || ""
+                        ).trim().toUpperCase();
+                    }
+                }
+            }
+            accountingRc = accountingRec.getNext();
+        }
+
+        var items = [];
+        for (var m = 0; m < allowedIds.length; m++) {
+            items.push(itemsById[allowedIds[m].toLowerCase()]);
+        }
+        return { success: true, data: { items: items } };
+    } catch (e) {
+        return { success: false, message: String(e && e.message || e) };
+    } finally {
+        try { if (accountingRec) accountingRec.doClose(); } catch (e1) {}
+        try { if (handlingRec) handlingRec.doClose(); } catch (e2) {}
+    }
+}
+
+/**
  * Lay danh sach distinct Nguoi dang xu ly trong dung scope cua user.
  * Khong dung REST EXPAND/@totalcount vi UI chi can mot field duy nhat.
  */
@@ -772,6 +883,10 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
                 targetRec['payment.created.at'] = paymentCreatedAt;
                 targetRec['department'] = department;
                 targetRec['request.unit.lv1'] = unitLv1;
+                // truong them: Gan entity cho phieu Tru so chinh.
+                if (String(unitLv1 || "").trim().indexOf("0999") === 0) {
+                    targetRec["entity.code"] = "1010098";
+                }
                 targetRec['request.unit.lv2'] = unitLv2;
                 targetRec['user.approver.kttc'] = currentExecutorKttc;
                 var updateRc = targetRec.doUpdate();
@@ -828,6 +943,10 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
                 targetRec['payment.created.at'] = paymentCreatedAt;
                 targetRec['department'] = department;
                 targetRec['request.unit.lv1'] = unitLv1;
+                // truong them: Gan entity cho phieu Tru so chinh.
+                if (String(unitLv1 || "").trim().indexOf("0999") === 0) {
+                    targetRec["entity.code"] = "1010098";
+                }
                 targetRec['request.unit.lv2'] = unitLv2;
                 targetRec['user.approver.kttc'] = currentExecutorKttc;
                 var insertRc = targetRec.doInsert();
@@ -1370,6 +1489,23 @@ function retryAccountingErrorsResult(input) {
                     message: "Field data của giao dịch không phải JSON object hợp lệ"
                 });
                 continue;
+            }
+
+            // Bo hau to test aa cua amount AP truoc khi serialize va gui lai.
+            if (accountingType === "AP" && typeof currentPayload.amount === "string" &&
+                    /aa$/.test(currentPayload.amount)) {
+                var retryAmountText = currentPayload.amount.replace(/aa$/, "");
+                var retryAmount = Number(retryAmountText);
+                if (retryAmountText.trim() && isFinite(retryAmount) && retryAmount > 0) {
+                    currentPayload.amount = retryAmount;
+                } else {
+                    result.failed++;
+                    result.errors.push({
+                        requestId: targetRequestId,
+                        message: "Amount AP sau khi bo hau to aa khong hop le"
+                    });
+                    continue;
+                }
             }
 
             var newRequestId = accountingType === "CORE"
@@ -1932,12 +2068,6 @@ function saveAccountingErrorsResult(input) {
             return { success: false, message: "Người dùng khai báo không đồng nhất", updated: 0, failed: 1, errors: [{ message: "Người dùng khai báo không đồng nhất" }] };
         }
     }
-    var approverValidationStartedAt = new Date().getTime();
-    var approverValidation = validateAccountingErrorApproverKttc(handlingRequestIdFromPayload, authenticatedUser, approverKttc);
-    var approverValidationMs = new Date().getTime() - approverValidationStartedAt;
-    if (!approverValidation.success) {
-        return { success: false, message: approverValidation.message, updated: 0, failed: 1, errors: [{ message: approverValidation.message }] };
-    }
     var userContact = authenticatedUser;
 
     // Nếu Client gửi kèm clientTime thì ưu tiên dùng, nếu không mới lấy tod() của Server
@@ -1949,8 +2079,8 @@ function saveAccountingErrorsResult(input) {
         failed: 0,
         errors: [],
         performance: {
-            approverValidationMode: approverValidation.mode,
-            approverValidationMs: approverValidationMs,
+            approverValidationMode: "skipped",
+            approverValidationMs: 0,
             selectAndPrepareMs: 0,
             updateAndTriggerMs: 0,
             activityMs: 0,
@@ -3640,7 +3770,8 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
             var isAllAccountingCompleted =
                     totalTrans > 0 &&
                     totalCompletedTrans === totalTrans &&
-                    totalCoreTrans > 0 &&
+                    // Dự chi có thể chỉ phát sinh AP/GL, không có giao dịch CORE.
+                    (totalCoreTrans > 0 || upperPrepaymentId.indexOf('DC') === 0) &&
                     totalCoreCompletedTrans === totalCoreTrans;
 
             if (isAllAccountingCompleted) {
@@ -3764,6 +3895,10 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['updated.at'] = extraInfo.updatedAt;
         targetRec['payment.created.at'] = extraInfo.paymentCreatedAt;
         targetRec['request.unit.lv1'] = extraInfo.requestUnitLv1;
+        // truong them: Gan entity cho phieu Tru so chinh.
+        if (String(extraInfo.requestUnitLv1 || "").trim().indexOf("0999") === 0) {
+            targetRec["entity.code"] = "1010098";
+        }
         targetRec['request.unit.lv2'] = extraInfo.requestUnitLv2;
         targetRec['department'] = extraInfo.department;
         targetRec['user.approver.kttc'] = currentExecutorKttc;
@@ -3795,6 +3930,10 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['updated.at'] = extraInfo.updatedAt;
         targetRec['payment.created.at'] = extraInfo.paymentCreatedAt;
         targetRec['request.unit.lv1'] = extraInfo.requestUnitLv1;
+        // truong them: Gan entity cho phieu Tru so chinh.
+        if (String(extraInfo.requestUnitLv1 || "").trim().indexOf("0999") === 0) {
+            targetRec["entity.code"] = "1010098";
+        }
         targetRec['request.unit.lv2'] = extraInfo.requestUnitLv2;
         targetRec['department'] = extraInfo.department;
         targetRec['user.approver.kttc'] = currentExecutorKttc;
@@ -4110,15 +4249,12 @@ function buildHTKTUnitFilter(dataPermission, hasView, currentUnitLv1) {
         return result;
     }
 
-    // KTTC Trụ sở chính: mở rộng từ đúng đơn vị 099917000 sang toàn bộ
-    // hồ sơ có đơn vị cấp 1 bắt đầu bằng 0999.
+    // KTTC Trụ sở chính: lọc theo mã entity của hồ sơ xử lý lỗi.
     var normalizedCurrentUnitLv1 = String(currentUnitLv1 || "").trim();
     if (normalizedCurrentUnitLv1 === "099917000") {
-        // Prefix 0999* duoc viet thanh khoang khoa de DB co the su dung index
-        // tren request.unit.lv1 thay vi quet wildcard.
-        result.defaultFilter = '(request.unit.lv1 >= "0999" AND request.unit.lv1 < "1000")';
-        result.dataScope = "Toàn bộ đơn vị Trụ sở chính 0999*";
-        result.dataScopeUnits = ["0999*"];
+        result.defaultFilter = 'entity.code="1010098"';
+        result.dataScope = "Toàn bộ đơn vị Trụ sở chính";
+        result.dataScopeUnits = ["1010098"];
         return result;
     }
 

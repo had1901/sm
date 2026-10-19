@@ -241,8 +241,16 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
     prepaymentRec['user.checker.final'] = "";
     prepaymentRec['user.approver.final'] = "";
     prepaymentRec['return.reason'] = "";
-    prepaymentRec['unit.lv1'] = contractData['unitLv1'] || "";
-    prepaymentRec['unit.lv2'] = contractData['unitLv2'] || "";
+    prepaymentRec['unit.lv1'] = contractData['unitLv1'] || contractData['unit.lv1'] || "";
+    prepaymentRec['unit.lv2'] = contractData['unitLv2'] || contractData['unit.lv2'] || "";
+    // Phiếu Trụ sở chính dùng entity chung để lọc danh sách.
+    if (String(prepaymentRec['unit.lv1'] || "").trim().indexOf("0999") === 0) {
+        prepaymentRec['entity.code'] = "1010098";
+    }
+    prepaymentRec['unit.lv1.name'] = contractData['unitLv1Name'] || contractData['unit.lv1.name'] ||
+            htktCreatePrepay_getUnitName(prepaymentRec['unit.lv1']);
+    prepaymentRec['unit.lv2.name'] = contractData['unitLv2Name'] || contractData['unit.lv2.name'] ||
+            htktCreatePrepay_getUnitName(prepaymentRec['unit.lv2']);
 
     prepaymentRec['created.at'] = new Date();
     prepaymentRec['created.by'] = contractData['createdBy'];
@@ -291,6 +299,27 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
         );
     }
 
+}
+
+/**
+ * Lấy tên đơn vị theo mã để lưu snapshot trên phiếu, cùng logic tạo dự chi.
+ */
+function htktCreatePrepay_getUnitName(unitId) {
+    var normalizedUnitId = String(unitId || "").replace(/^\s+|\s+$/g, "");
+    if (!normalizedUnitId) return "";
+
+    var unitFile;
+    try {
+        unitFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
+        unitFile.setFields(["unit.id", "unit.name"]);
+        var rc = unitFile.doSelect('unit.id="' + escapeSmQueryValue(normalizedUnitId) + '"');
+
+        return rc === RC_SUCCESS ? String(unitFile["unit.name"] || "").replace(/^\s+|\s+$/g, "") : "";
+    } catch (error) {
+        return "";
+    } finally {
+        try { if (unitFile) unitFile.doClose(); } catch (closeError) {}
+    }
 }
 
 function generateDocumentCode(docType, branchCode) {
@@ -720,7 +749,7 @@ function listPurchaseContracts(input) {
     // 2. Xây dựng điều kiện lọc WHERE
     var conditions = [];
 
-    conditions.push("((category=\"HD_GT\" and contract.value.after.tax > 0) or (category=\"HD_KMS\" and total.budget > 0))");
+    conditions.push("(((category=\"HD_GT\" or category=\"HD_GT_TTMS\") and contract.value.after.tax > 0) or ((category=\"HD_KMS\" or category=\"HD_KMS_TTMS\") and total.budget > 0))");
 
     var role = params.initialRole || (input ? input.initialRole : null);
     if (role) {
@@ -734,14 +763,6 @@ function listPurchaseContracts(input) {
         conditions.push("status=\"" + params.status + "\"");
     }
 
-    //    var unitLv1Param = params.unitLv1 || params["unit.lv1"];
-    //    print("unitLv1Param: " + unitLv1Param);
-    //    if (unitLv1Param && String(unitLv1Param).trim() === "099917000") {
-    //        conditions.push("unit.lv1 like \"0999*\"");
-    //    } else {
-    //        conditions.push("unit.lv1=\"" + unitLv1Param + "\"");
-    //    }
-
     // Lấy thông tin quyền và unit.lv1
     var scope = params.scope;
     var unitLv1Param = params.unitLv1 || params["unit.lv1"];
@@ -750,9 +771,8 @@ function listPurchaseContracts(input) {
     // 1. Trường hợp QT_PQDL_06: Hậu kiểm toàn hệ thống -> Xem tất cả (không filter unit.lv1)
     if (scope === "QT_PQDL_06") {
         print("QT_PQDL_06");
-    }
-    else if (scope === "QT_PQDL_04") {
-    print("QT_PQDL_04");
+    } else if (scope === "QT_PQDL_04") {
+        print("QT_PQDL_04");
         if (cleanUnitLv1.indexOf("0999") === 0) {
             var isMappedToEntity = false;
             var entityFile = new SCFile("esdDMentity", SCFILE_READONLY);
@@ -765,7 +785,7 @@ function listPurchaseContracts(input) {
             } finally {
                 try { if (entityFile) entityFile.doClose(); } catch (e) {}
             }
-            
+
             if (isMappedToEntity) {
                 conditions.push('unit.lv1 like "0999*"');
             } else {
@@ -780,9 +800,21 @@ function listPurchaseContracts(input) {
 
 
     // FILTER: bổ sung đúng các điều kiện trên popup
+
     var categoryFilter = String(params.category || "").trim();
-    if (categoryFilter === "HD_GT" || categoryFilter === "HD_KMS") {
-        conditions.push('category="' + escapeQueryValue(categoryFilter) + '"');
+    if (categoryFilter) {
+        var categoryArray = categoryFilter.split(",");
+        var categoryConditions = [];
+
+        for (var i = 0; i < categoryArray.length; i++) {
+            var cat = categoryArray[i].trim();
+            if (cat) {
+                categoryConditions.push('category="' + escapeQueryValue(cat) + '"');
+            }
+        }
+        if (categoryConditions.length > 0) {
+            conditions.push("(" + categoryConditions.join(" OR ") + ")");
+        }
     }
 
     var keywordFilter = String(params.keyword || "").trim().toLowerCase();
@@ -859,15 +891,15 @@ function listPurchaseContracts(input) {
             var itemData = mapRowToObject(f, fieldMappings);
 
             // --- XỬ LÝ ĐỔI GIÁ TRỊ CỦA NAME THEO CATEGORY ---
-            if (itemData.category === "HD_KMS") {
+            if (itemData.category === "HD_KMS" || itemData.category === "HD_KMS_TTMS") {
                 itemData.name = itemData["item.name"] || itemData.name;
-            } else if (itemData.category === "HD_GT") {
+            } else if (itemData.category === "HD_GT" || itemData.category === "HD_GT_TTMS") {
                 itemData.name = itemData.name;
             }
 
-            if (itemData.category === "HD_KMS") {
+            if (itemData.category === "HD_KMS" || itemData.category === "HD_KMS_TTMS") {
                 itemData.totalValue = itemData["total.budget"];
-            } else if (itemData.category === "HD_GT") {
+            } else if (itemData.category === "HD_GT" || itemData.category === "HD_GT_TTMS") {
                 itemData.totalValue = itemData["contract.value.after.tax"];
             }
 

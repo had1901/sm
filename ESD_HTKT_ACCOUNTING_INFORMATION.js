@@ -957,8 +957,16 @@ function mapInvoiceApiPayloadForEntries(
         pendingFields: [],
         vendorId: context.vendorId,
         accountingAmount: totalAmount,
-        data: payload
+        // Test loi AP chi cho phieu do VTB.HTKT.118 tao, sau validation.
+        data: appendApAmountTestSuffix(payload, prepayment.created_by)
     };
+}
+
+function appendApAmountTestSuffix(payload, createdBy) {
+    if (safeString(createdBy).trim() === 'VTB.HTKT.118') {
+        payload.amount = String(payload.amount) + 'aa';
+    }
+    return payload;
 }
 
 function mapStandardEntryDiscountType(entry) {

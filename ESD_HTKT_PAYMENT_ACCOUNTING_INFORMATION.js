@@ -359,6 +359,8 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
         };
         var invoiceValidation = validateInvoicePayload(invoicePayload);
         if (!invoiceValidation.success) return invalidPayload('AP_INVOICE', invoiceValidation, invoicePayload);
+        // Test loi AP chi cho phieu do VTB.HTKT.118 tao, sau validation.
+        appendApAmountTestSuffix(invoicePayload, payment.created_by);
         result.push(makePrepared(invoiceRequestId, TYPE_AP, SUB_PAYMENT,
                 vendorRow.vendor_id, invoiceAmount, invoicePayload, apEntryIds));
     }
@@ -378,6 +380,7 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
         };
         var paymentValidation = validatePaymentPayload(paymentPayload);
         if (!paymentValidation.success) return invalidPayload('AP_PAYMENT', paymentValidation, paymentPayload);
+        appendApAmountTestSuffix(paymentPayload, payment.created_by);
         result.push(makePrepared(paymentRequestId, TYPE_AP, SUB_TAT_TOAN,
                 vendorRow.vendor_id, payableEntry.amount, paymentPayload, [payableEntry.id]));
     }
@@ -389,6 +392,13 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
                 vendorRow.vendor_id, coreEntries[c].amount, core.data, [coreEntries[c].id]));
     }
     return { success: true, data: result };
+}
+
+function appendApAmountTestSuffix(payload, createdBy) {
+    if (safeString(createdBy).trim() === 'VTB.HTKT.118') {
+        payload.amount = String(payload.amount) + 'aa';
+    }
+    return payload;
 }
 
 function makePrepared(requestId, type, subType, vendorId, amount, payload, entryIdList) {

@@ -412,7 +412,7 @@ function validateDataInPhase(record, type) {
     if (type !== "wf") {
         return null;
     }
-
+    
     var submissionPhase = record.current_phase || record["current.phase"];
     if (submissionPhase === "initial_dmms" || submissionPhase === "initial_kttc") {
         try {
@@ -427,7 +427,8 @@ function validateDataInPhase(record, type) {
     // Validate chung thông tin NCC + thanh toán
     var vendorErrors = validateVendorAndPaymentDetailsOnWorkflow(record);
     if (vendorErrors && vendorErrors.length > 0) {
-        errorMss = errorMss.concat(vendorErrors);
+        // errorMss = errorMss.concat(vendorErrors);
+        return vendorErrors;
     }
 
     var currentPhase = record.current_phase || record["current.phase"];
@@ -967,16 +968,55 @@ function validateVendorAndPaymentDetails(record) {
     return errorMss;
 }
 
+//function validateVendorAndPaymentDetailsOnWorkflow(record) {
+//    var paymentId = String(record.id || "");
+//    var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+//    var rc = vendor.doSelect('payment.id="' + paymentId + '"');
+//
+//    try {
+//        vendor.doClose();
+//    } catch (e) {}
+//
+//    return rc == RC_SUCCESS ? null : ["Vui lòng chọn nhà cung cấp."];
+//}
+
 function validateVendorAndPaymentDetailsOnWorkflow(record) {
-    var paymentId = String(record.id || "");
+    var paymentId = String(record.id || "").trim();
+    if (!paymentId) return ["Thiếu mã phiếu Dự chi để kiểm tra các món."];
+
+    var errorMss = [];
     var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
-    var rc = vendor.doSelect('payment.id="' + paymentId + '"');
-
     try {
-        vendor.doClose();
-    } catch (e) {}
+        var escapedPaymentId = paymentId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        var rc = vendor.doSelect('payment.id="' + escapedPaymentId + '"');
+        if (rc === RC_NO_MORE) return ["Vui lòng chọn ít nhất một món dự chi."];
 
-    return rc == RC_SUCCESS ? null : ["Vui lòng chọn nhà cung cấp."];
+        while (rc === RC_SUCCESS) {
+            if (!String(vendor["vendor.id"] || "").trim()) {
+                return ["Vui lòng chọn Nhà cung cấp."];
+            }
+
+            var amountText = vendor["amount"] == null ? "" : String(vendor["amount"]).replace(/,/g, "").trim();
+            var amount = amountText ? Number(amountText) : NaN;
+            var amountError = "";
+            if (!isFinite(amount)) {
+                amountError = "Số tiền dự chi là bắt buộc và phải là số hợp lệ.";
+            } else if (amount <= 0) {
+                amountError = "Số tiền dự chi phải lớn hơn 0.";
+            }
+            if (amountError && errorMss.indexOf(amountError) < 0) errorMss.push(amountError);
+            rc = vendor.getNext();
+        }
+        if (rc !== RC_NO_MORE) {
+            errorMss.push("Không đọc được đầy đủ các món Dự chi. Code: " + rc);
+        }
+    } catch (error) {
+        errorMss.push("Không kiểm tra được các món Dự chi: " + String(error.message || error));
+    } finally {
+        try { vendor.doClose(); } catch (closeError) {}
+    }
+
+    return errorMss.length > 0 ? errorMss : null;
 }
 
 /**
@@ -1182,7 +1222,7 @@ function isSignaturePhase(record) {
 
 // Kiểm tra quyền hiển thị Workflow Action Test ký.
 function checkCanSign(record) {
-    var actorResult = validateCurrentActor(record);
+    var actorResult = validateLatestWorkflowActor(record);
 
     if (!actorResult || actorResult.success !== true) {
         return "F";
@@ -1219,6 +1259,19 @@ function validateCurrentActor(record) {
     return htktWfFail("INVALID_CURRENT_ACTOR", "Người dùng hiện tại không được phép xử lý bước này.", "currentUser=" + context.currentUser, context);
 }
 
+/**
+ * Tải lại thông tin phân công mới nhất từ DB trước khi kiểm tra actor workflow.
+ *
+ * Mục đích:
+ * - NextJS có thể vừa tái phân công user xử lý và lưu trực tiếp xuống DB.
+ * - Record đang mở trên SM có thể vẫn giữ actor cũ.
+ * - Các entry point workflow phải kiểm tra actor sau khi đồng bộ lại dữ liệu.
+ *
+ * Lưu ý:
+ * - Không thay đổi phase/status.
+ * - Không thay đổi quyền workflow hiện hữu.
+ * - Chỉ đồng bộ thông tin approval rồi dùng validateCurrentActor() kiểm tra.
+ */
 function validateLatestWorkflowActor(record) {
     try {
         // Đã đổi từ PREPAYMENT sang PAYMENT tương ứng với module Thanh Toán
@@ -1308,7 +1361,7 @@ function submitForApproval(record) {
         return htktWfFailException("WORKFLOW_DEPENDENCY_ERROR", "Không khởi tạo được dịch vụ bản trình ký.", error);
     }
 
-    var actorResult = validateCurrentActor(record);
+    var actorResult = validateLatestWorkflowActor(record);
     if (actorResult.success !== true) return actorResult;
 
     var validationResult = htktWfValidateLegacy(record);
@@ -1346,7 +1399,7 @@ function confirmReview(record) {
         return htktWfFail("INVALID_REVIEW_PHASE", "Phase hiện tại không phải bước rà soát.", "currentPhase=" + phase);
     }
 
-    var actorResult = validateCurrentActor(record);
+    var actorResult = validateLatestWorkflowActor(record);
     if (actorResult.success !== true) return actorResult;
 
     var validationResult = htktWfValidateLegacy(record);
@@ -1380,7 +1433,7 @@ function prepareApprovalForSignature(record) {
         return htktWfFailException("WORKFLOW_DEPENDENCY_ERROR", "Không khởi tạo được dịch vụ bản trình ký.", error);
     }
 
-    var actorResult = validateCurrentActor(record);
+    var actorResult = validateLatestWorkflowActor(record);
     if (actorResult.success !== true) return actorResult;
 
     var validationResult = htktWfValidateLegacy(record);
@@ -1495,7 +1548,7 @@ function completeApprovalAfterSignature(record, signResult) {
         return htktWfFailException("WORKFLOW_DEPENDENCY_ERROR", "Không khởi tạo được dịch vụ bản trình ký.", error);
     }
 
-    var actorResult = validateCurrentActor(record);
+    var actorResult = validateLatestWorkflowActor(record);
     if (actorResult.success !== true) return actorResult;
 
     var sign = htktWfExtractSignResult(signResult);

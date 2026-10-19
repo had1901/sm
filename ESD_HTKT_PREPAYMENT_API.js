@@ -11,6 +11,13 @@ function run() {
 
         var result;
         switch (name) {
+        //truong them
+            case 'getPaymentListFilterOptions':
+                result = lib.ESD_HTKT_PAYMENT_LIST.getPaymentListFilterOptions(input);
+                break;
+            case 'getPrepaymentListFilterOptions':
+                result = lib.ESD_HTKT_PREPAYMENT.getPrepaymentListFilterOptions(input);
+                break;
             //Danh sách Đề nghị theo nhà cung cấp
             case 'getListPrepaymentVendor':
                 var data = lib.ESD_HTKT_PREPAYMENT_VENDOR.getListPrepaymentVendor(input);
@@ -115,53 +122,71 @@ function run() {
             case 'getListGlAccount':
                 result = lib.ESD_HTKT_PREPAYMENT_ENTRY.getListGlAccount();
                 break;
-                
-             //tao phieu tam ung
-             case 'createAdvanceRequest':
+
+                //tao phieu tam ung
+            case 'createAdvanceRequest':
                 result = lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.createAdvanceRequest(input);
                 break;
-                
-            // Danh sách hợp đồng
-            case 'listPurchaseContracts': 
-			    result = lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.listPurchaseContracts(input);
-			    break;  
+
+                // Danh sách hợp đồng
+            case 'listPurchaseContracts':
+                result = lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.listPurchaseContracts(input);
+                break;
 
             case 'listFileAttachment':
                 lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.listFileAttachment(input);
                 break;
-             //bao cao
-             case 'getListReportPayment':
+                //bao cao
+            case 'getListReportPayment':
                 var data = lib.ESD_HTKT_REPORT.getListReportPayment(input);
                 result = { success: true, data: data };
                 break;
-             case 'getListLiabilities':
+            case 'getListLiabilities':
                 var data = lib.ESD_HTKT_REPORT.getListLiabilities(input);
                 result = { success: true, data: data };
                 break;
-             case 'getListVendor':
+            case 'getListVendor':
                 lib.ESD_HTKT_REPORT.getListVendor(input);
                 break;
-             case 'saveReportHistory':
+                // danh sach nha khoan mua sam
+            case 'getListContract':
+                lib.ESD_HTKT_REPORT.getListContract(input);
+                break;
+
+            case 'saveReportHistory':
                 var data = lib.ESD_HTKT_REPORT.saveReportHistoryAndSchedule(input);
                 result = { success: true, data: data };
                 break;
-             case 'getListReportHistory':
+            case 'getListReportHistory':
                 lib.ESD_HTKT_REPORT.getListReportHistory(input);
                 break;
-             // 
-             
-             case 'getPrepaymentApprovalOptions':
+            case 'getListBranchTH':
+                result = lib.ESD_HTKT_REPORT.getListBranchTH(input);
+                break;
+            case 'getReportHistoryDetail':
+                lib.ESD_HTKT_REPORT.getReportHistoryDetail(input);
+                break;
+                //             -----------------------------------------------------
+            case 'createReportHistory':
+                result = lib.ESD_HTKT_REPORT.createReportHistory(input);
+                break;
+            case 'uploadReportBase64':
+                lib.ESD_HTKT_REPORT.uploadReportBase64(input);
+                break;
+                // 
+
+            case 'getPrepaymentApprovalOptions':
                 var optionsDetails = {};
-                try { optionsDetails = JSON.parse(input.queryString || "{}"); } catch(e) {}
+                try { optionsDetails = JSON.parse(input.queryString || "{}"); } catch (e) {}
                 result = lib.ESD_HTKT_PREPAYMENT_LOAD_APRROVAL_COMBOBOX.getPrepaymentApprovalOptions(optionsDetails);
                 break;
 
             case 'savePrepaymentApprovalField':
                 var saveDetails = {};
-                try { saveDetails = JSON.parse(input.queryString || "{}"); } catch(e) {}
+                try { saveDetails = JSON.parse(input.queryString || "{}"); } catch (e) {}
                 result = lib.ESD_HTKT_PREPAYMENT_LOAD_APRROVAL_COMBOBOX.savePrepaymentApprovalField(saveDetails);
                 break;
-            // =================================
+                // =================================
 
             default:
                 result = { success: false, error: 'Hanh dong (name) khong hop le: ' + name };

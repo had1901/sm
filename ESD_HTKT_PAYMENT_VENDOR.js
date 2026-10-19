@@ -315,8 +315,11 @@ function getListInvoinVendor(input) {
     while (rc == RC_SUCCESS) {
 
         var currentRequestId = f["request.id"];
-
-        if (currentRequestId == null || currentRequestId == "") {
+        
+//        var isValidStatus = (checkStatusDetail != "E01" && checkStatusDetail != "E03" && checkStatusDetail != "E03B");
+        var isRequestEmpty = (currentRequestId == null || currentRequestId == "");
+//        if (isRequestEmpty && isValidStatus) {
+        if (isRequestEmpty) {
             var item = mapRowToObject(f, fieldMappings);
 
             var parentInvNumber = f["parent.invoice.number"];
@@ -343,7 +346,7 @@ function getInvoicesBySupplier(input) {
     var paymentId = "";
     var vendorId = "";
     var paymentVendorId = "";
-
+    
     var tempObj = {};
 
     try {
@@ -356,7 +359,7 @@ function getInvoicesBySupplier(input) {
         paymentId = tempObj.paymentId || "";
         vendorId = tempObj.vendorId || "";
         paymentVendorId = String(tempObj.paymentVendorId || "").trim();
-
+        
     } catch (ex) {
         // print("[DEBUG run] Error parsing JSON: " + ex);
         return invoiceList;
@@ -365,7 +368,7 @@ function getInvoicesBySupplier(input) {
     if (!paymentId) return invoiceList;
     var isExpense = String(paymentId).split(".")[0].toUpperCase() === "DC";
     if (isExpense && !paymentVendorId) return invoiceList;
-
+    
     var fieldMappings = [
         ['i.id', 'id', 'S'], // Số hoá đơn
         ['i.invoice.number', 'invoiceNumber', 'S'], // Số hoá đơn
@@ -1453,6 +1456,7 @@ function deletePaymentInvoiceRelations(invoiceId, paymentId) {
         while (rcSelect === RC_SUCCESS) {
             var vendorId = String(paymentInvFile["vendor.id"] || "").trim();
             var paymentVendorId = String(paymentInvFile["ref.id"] || "").trim();
+            
             if (vendorId) {
                 affectedVendorIds[vendorId] = true;
             }
@@ -1461,6 +1465,7 @@ function deletePaymentInvoiceRelations(invoiceId, paymentId) {
             if (rcDelete === RC_SUCCESS) {
                 deletedCount++;
                 if (paymentVendorId) affectedPaymentVendorIds[paymentVendorId] = true;
+                
             }
             rcSelect = paymentInvFile.getNext();
         }

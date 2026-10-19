@@ -139,6 +139,130 @@ function htktExpenseView_buildRelatedUserFilter(currentUser, hasView) {
     return "(" + conditions.join(" OR ") + ")";
 }
 
+
+/** Lãnh đạo xem sớm theo cùng Data Permission và initial.role như Thanh toán. */
+function htktExpenseView_buildLeadershipFilter(currentUser, isApprovalDmms, isApprovalKttc, dataPermission) {
+    if (!currentUser || (!isApprovalDmms && !isApprovalKttc)) return "";
+
+    var permissionQuery = "";
+    try {
+        permissionQuery = lib.ESD_HTKT_PAYMENT_VIEW.buildHTKTCommonPermissionQuery(
+                dataPermission.scope, dataPermission.unit,
+                ["unit.lv1", "unit.lv2", "unit.lv3"], "created.by", currentUser
+        );
+    } catch (ePermissionQuery) {
+        return "";
+    }
+    permissionQuery = String(permissionQuery || "").trim();
+    if (!permissionQuery || permissionQuery === "false" || permissionQuery === "(1=0)") return "";
+
+    var initialRoleClause = isApprovalKttc
+            ? '(initial.role="dmms" OR initial.role="kttc")'
+            : 'initial.role="dmms"';
+    return permissionQuery === "true" ? "(" + initialRoleClause + ")"
+            : "((" + permissionQuery + ") AND (" + initialRoleClause + "))";
+}
+
+
+function htktExpenseView_buildLeadershipFilter(currentUser, isApprovalDmms, isApprovalKttc, dataPermission) {
+    if (!currentUser || (!isApprovalDmms && !isApprovalKttc)) {
+        return "";
+    }
+
+    // Reuse the common HTKT data-permission query; leadership does not require assignment.
+    var permissionQuery = "";
+    try {
+        permissionQuery = lib.ESD_HTKT_PAYMENT_VIEW.buildHTKTCommonPermissionQuery(
+            dataPermission.scope,
+            dataPermission.unit,
+            ["unit.lv1", "unit.lv2", "unit.lv3"],
+            "created.by",
+            currentUser
+        );
+    } catch (eLeadershipPermission) {}
+
+    permissionQuery = String(permissionQuery || "").replace(/^\s+|\s+$/g, "");
+    if (!permissionQuery || permissionQuery === "false" || permissionQuery === "(1=0)") {
+        return "";
+    }
+
+    var initialRoleClause = isApprovalKttc
+        ? '(initial.role="dmms" OR initial.role="kttc")'
+        : 'initial.role="dmms"';
+
+    return permissionQuery === "true"
+        ? "(" + initialRoleClause + ")"
+        : "((" + permissionQuery + ") AND (" + initialRoleClause + "))";
+}
+
+
+//function htktExpenseView_buildLeadershipScope(currentUser, isApprovalDmms, isApprovalKttc, contactInfo) {
+//    var result = {
+//        defaultFilter: "(1=0)",
+//        dataScope: "Khong co quyen xem",
+//        dataScopeCode: "HTKT_EXPENSE_LEADERSHIP_LV1",
+//        dataScopeField: "unit.lv1",
+//        dataScopeUnits: []
+//    };
+//    var lv1 = String(contactInfo && contactInfo.lv1 || "").replace(/^\s+|\s+$/g, "");
+//    if (!currentUser || (!isApprovalDmms && !isApprovalKttc) || !lv1) {
+//        return result;
+//    }
+//
+//    // Same organization domain as ESD_HTKT_PAYMENT_LIST: TSC entity or the current branch LV1.
+//    if (htktExpenseView_getActiveEntityCodeByPsCode(lv1) === "1010098") {
+//        result.dataScopeUnits = htktExpenseView_getActivePsCodesByEntityCode("1010098", "");
+//        result.dataScope = "Tru so chinh - Lanh dao DMMS/KTTC";
+//    } else {
+//        result.dataScopeUnits = [lv1];
+//        result.dataScope = "Chi nhanh - Lanh dao DMMS/KTTC";
+//    }
+//
+//    if (result.dataScopeUnits.length > 0) {
+//        // NextJS applies the LV1 scope in short REST queries, as in the Payment list.
+//        result.leadershipFilter = isApprovalKttc
+//            ? '(initial.role="dmms" OR initial.role="kttc")'
+//            : 'initial.role="dmms"';
+//        var unitConditions = [];
+//        for (var i = 0; i < result.dataScopeUnits.length; i++) {
+//            unitConditions.push('unit.lv1="' + htktExpenseView_escapeQueryValue(result.dataScopeUnits[i]) + '"');
+//        }
+//        // Keep the full scope for older addon builds that only understand defaultFilter.
+//        result.defaultFilter = "((" + unitConditions.join(" OR ") + ") AND (" + result.leadershipFilter + "))";
+//    }
+//    return result;
+//}
+
+/** Phạm vi danh sách cho lãnh đạo ĐMMS/KTTC, không yêu cầu phân giao trên phiếu. */
+function htktExpenseView_buildLeadershipScope(currentUser, isApprovalDmms, isApprovalKttc, contactInfo) {
+    var result = {
+        defaultFilter: "(1=0)",
+        dataScope: "Khong co quyen xem",
+        dataScopeCode: "HTKT_EXPENSE_LEADERSHIP_LV1",
+        dataScopeField: "unit.lv1",
+        dataScopeUnits: []
+    };
+    var lv1 = String(contactInfo && contactInfo.lv1 || "").replace(/^\s+|\s+$/g, "");
+    if (!currentUser || (!isApprovalDmms && !isApprovalKttc) || !lv1) {
+        return result;
+    }
+
+    if (lv1.indexOf("0999") === 0) {
+        if (htktExpenseView_getActiveEntityCodeByPsCode(lv1) !== "1010098") {
+            return result;
+        }
+        result.defaultFilter = 'entity.code="1010098"';
+        result.dataScope = "Tru so chinh - Lanh dao DMMS/KTTC";
+        result.dataScopeField = "entity.code";
+        result.dataScopeUnits = ["1010098"];
+    } else {
+        result.defaultFilter = 'unit.lv1="' + htktExpenseView_escapeQueryValue(lv1) + '"';
+        result.dataScope = "Chi nhanh - Lanh dao DMMS/KTTC";
+        result.dataScopeUnits = [lv1];
+    }
+    return result;
+}
+
 function htktExpenseView_getActiveEntityCodeByPsCode(psCode) {
     var safePsCode = String(psCode || "").replace(/^\s+|\s+$/g, "");
     var entityFile = null;
@@ -247,11 +371,12 @@ function htktExpenseView_buildPostAuditFilter(contactInfo, dataPermission) {
     if (lv1.indexOf(HEAD_OFFICE_PS_PREFIX) !== 0) {
         allowedLv1 = [lv1];
     } else if (htktExpenseView_getActiveEntityCodeByPsCode(lv1) === HEAD_OFFICE_OGL_SEG1) {
-        allowedLv1 = htktExpenseView_getActivePsCodesByEntityCode(
-            HEAD_OFFICE_OGL_SEG1,
-            HEAD_OFFICE_PS_PREFIX
-        );
+        // Trụ sở chính lọc trực tiếp entity của phiếu, không liệt kê từng LV1.
+        result.defaultFilter = 'entity.code="1010098"';
         result.dataScope = "Tru so chinh - Hau kiem";
+        result.dataScopeField = "entity.code";
+        result.dataScopeUnits = [HEAD_OFFICE_OGL_SEG1];
+        return result;
     }
 
     if (allowedLv1.length === 0) {
@@ -286,10 +411,18 @@ function renderExpenseList() {
     var RIGHT_EXPENSE_VIEW_APPROVAL = "0040040004000009";
     var RIGHT_EXPENSE_CREATE = "0040040004000002";
     var RIGHT_EXPENSE_ACCOUNTING = "0040040004000003";
+    var RIGHT_EXPENSE_APPROVE_DMMS = "0040040004000005";
+    var RIGHT_EXPENSE_APPROVE_KTTC = "0040040004000006";
     var RIGHT_EXPENSE_POST_AUDIT = "0040040004000010";
+    
+    var isApprovalDmms = rights.indexOf(RIGHT_EXPENSE_APPROVE_DMMS) >= 0;
+    var isApprovalKttc = rights.indexOf(RIGHT_EXPENSE_APPROVE_KTTC) >= 0;
 
     var hasView = rights.indexOf(RIGHT_EXPENSE_VIEW) >= 0 ||
                   rights.indexOf(RIGHT_EXPENSE_VIEW_APPROVAL) >= 0;
+//    var hasView = rights.indexOf(RIGHT_EXPENSE_VIEW) >= 0 ||
+//                  rights.indexOf(RIGHT_EXPENSE_VIEW_APPROVAL) >= 0 ||
+//                  isApprovalDmms || isApprovalKttc;             
     var hasCreate = rights.indexOf(RIGHT_EXPENSE_CREATE) >= 0;
     var hasAccounting = rights.indexOf(RIGHT_EXPENSE_ACCOUNTING) >= 0;
     var isPostAuditRole = rights.indexOf(RIGHT_EXPENSE_POST_AUDIT) >= 0;
@@ -309,6 +442,10 @@ function renderExpenseList() {
             scope: dataFilterInfo.dataScopeCode,
             unit: dataFilterInfo.dataScopeUnits
         };
+    } else if (isApprovalDmms || isApprovalKttc) {
+        dataFilterInfo = htktExpenseView_buildLeadershipScope(
+            hasView ? currentUser : "", isApprovalDmms, isApprovalKttc, contactInfo
+        );
     } else {
         dataFilterInfo = {
             defaultFilter: htktExpenseView_buildRelatedUserFilter(currentUser, hasView),
@@ -317,6 +454,18 @@ function renderExpenseList() {
             dataScopeField: relatedUserFields,
             dataScopeUnits: currentUser ? [currentUser] : []
         };
+
+//        var leadershipFilter = htktExpenseView_buildLeadershipFilter(
+//            currentUser, isApprovalDmms, isApprovalKttc, dataPermission
+//        );
+//        if (leadershipFilter) {
+//            dataFilterInfo.defaultFilter = "(" + dataFilterInfo.defaultFilter + " OR " + leadershipFilter + ")";
+//            dataFilterInfo.dataScope = "Nguoi lien quan hoac lanh dao DMMS/KTTC trong pham vi Data Permission";
+//            dataFilterInfo.dataScopeCode = "HTKT_EXPENSE_RELATED_USER_WITH_LEADERSHIP";
+//            dataFilterInfo.dataScopeField = relatedUserFields + "+initial.role+unit.lv1+unit.lv2";
+//            dataFilterInfo.dataScopeUnits = dataPermission.scope === "QT_PQDL_01"
+//                ? [currentUser] : dataPermission.unit;
+//        }
     }
 
     var defaultFilter = dataFilterInfo.defaultFilter;
@@ -342,6 +491,7 @@ function renderExpenseList() {
             },
             defaultFilter: defaultFilter,
             permissionQuery: defaultFilter,
+//            leadershipFilter: dataFilterInfo.leadershipFilter || "",
             dataScope: dataFilterInfo.dataScope,
             dataScopeCode: dataFilterInfo.dataScopeCode,
             dataScopeField: dataFilterInfo.dataScopeField,

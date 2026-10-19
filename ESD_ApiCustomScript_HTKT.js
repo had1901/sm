@@ -197,6 +197,9 @@ function run() {
             case "getAccountingErrorApproverKttcOptions": // Danh sách cán bộ phê duyệt KTTC cho khai báo kết quả
                 result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.getAccountingErrorApproverKttcOptions(input);
                 break;
+            case "getAccountingErrorStatusCounts":
+                result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.getAccountingErrorStatusCounts(input);
+                break;    
             case "approveAccountingErrorsResult": // Phê duyệt kết quả khai báo hạch toán
                 result = { success: true, data: lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.approveAccountingErrorsResult(input) };
                 break;
@@ -216,6 +219,8 @@ function run() {
             case "createPaymentVendor":
                 result = lib.ESD_HTKT_EXPENSE_VENDOR.createPaymentVendor(input);
                 break;
+            case "importExpenseVendors":
+                return safeReturn(lib.ESD_HTKT_EXPENSE_VENDOR.importExpenseVendors(input));
             case "syncExpenseVendorsToOgl": // Đồng bộ OGL từng món dự chi
                 return safeReturn(lib.ESD_HTKT_EXPENSE_VENDOR.syncExpenseVendorsToOgl(input));
             case "deleteExpenseVendor":

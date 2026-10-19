@@ -17,6 +17,7 @@ var RULE_SET_MAIL = {
     S6_MAIL_01_05: "ESD_HTKT_SENDEMAIL_S6_MAIL_01_05", // Hạch toán thành công
     S6_MAIL_01_06: "ESD_HTKT_SENDEMAIL_S6_MAIL_01_06", // Hạch toán lỗi
     S6_MAIL_01_07: "ESD_HTKT_SENDEMAIL_S6_MAIL_01_07", // Tái phân công cán bộ
+    S6_MAIL_01_08: "ESD_HTKT_SENDEMAIL_S6_MAIL_01_08", // Kết quả hạch toán dự chi
 
     S6_MAIL_02_01: "ESD_HTKT_SENDEMAIL_S6_MAIL_02_01", // Lỗi hạch toán đã được xử lý
     S6_MAIL_02_02: "ESD_HTKT_SENDEMAIL_S6_MAIL_02_02", // Yêu cầu duyệt kết quả xử lý lỗi hạch toán
@@ -205,39 +206,94 @@ function getContactInfo(contactName) {
     if (!contactName) {
         return null;
     }
-    var safeName = String(contactName).trim();
+    var rawName = String(contactName).trim();
+    if (!rawName) return null;
+
+    var safeName = escapeSmQueryValue(rawName);
     var f = new SCFile("contacts", SCFILE_READONLY);
     try {
-        // 1. Tìm nguyên bản trong bảng contacts
+        // 1. Tìm theo contact.name trong bảng contacts (nguyên bản, toUpper, toLower)
         var rc = f.doSelect('contact.name="' + safeName + '"');
-
-        // 2. Nếu không ra, thử dạng CHỮ HOA (chuẩn lưu trữ của contacts: VTB.HTKT.117)
         if (rc != RC_SUCCESS) {
-            rc = f.doSelect('contact.name="' + safeName.toUpperCase() + '"');
+            rc = f.doSelect('contact.name="' + escapeSmQueryValue(rawName.toUpperCase()) + '"');
+        }
+        if (rc != RC_SUCCESS) {
+            rc = f.doSelect('tolower(contact.name)="' + escapeSmQueryValue(rawName.toLowerCase()) + '"');
         }
 
-        // 3. Fallback tìm không phân biệt hoa thường trong contacts
+        // 2. Tìm theo operator.id trong bảng contacts
         if (rc != RC_SUCCESS) {
-            rc = f.doSelect('tolower(contact.name)="' + safeName.toLowerCase() + '"');
+            rc = f.doSelect('operator.id="' + safeName + '"');
+        }
+        if (rc != RC_SUCCESS) {
+            rc = f.doSelect('tolower(operator.id)="' + escapeSmQueryValue(rawName.toLowerCase()) + '"');
         }
 
-        if (rc != RC_SUCCESS) {
-            return null;
+        if (rc == RC_SUCCESS) {
+            return {
+                contactName: f["contact.name"] || rawName,
+                fullName: f["full.name"] || f["contact.name"] || rawName,
+                email: f["email"] || "",
+                position: f["position"] || "",
+                lv1Id: f["lv1.id"] || "",
+                lv2Id: f["lv2.id"] || ""
+            };
         }
-
-        return {
-            contactName: f["contact.name"],
-            fullName: f["full.name"],
-            email: f["email"],
-            position: f["position"],
-            lv1Id: f["lv1.id"],
-            lv2Id: f["lv2.id"]
-        };
+    } catch (eContacts) {
     } finally {
         if (f) {
-            f.doClose();
+            try { f.doClose(); } catch (eCl) {}
         }
     }
+
+    // 3. Fallback: Tìm trong bảng operator (tài khoản đăng nhập hệ thống)
+    var op = new SCFile("operator", SCFILE_READONLY);
+    try {
+        var opRc = op.doSelect('name="' + safeName + '"');
+        if (opRc != RC_SUCCESS) {
+            opRc = op.doSelect('tolower(name)="' + escapeSmQueryValue(rawName.toLowerCase()) + '"');
+        }
+        if (opRc != RC_SUCCESS) {
+            opRc = op.doSelect('name="' + escapeSmQueryValue(rawName.toUpperCase()) + '"');
+        }
+
+        if (opRc == RC_SUCCESS) {
+            var opContactName = op["contact.name"] || "";
+            var opFullName = op["full.name"] || op["name"] || rawName;
+            var opEmail = op["email"] || "";
+
+            // Nếu operator có liên kết contact.name khác, thử lấy thông tin phòng ban từ contact đó
+            if (opContactName && opContactName !== rawName) {
+                var linkedContact = getContactInfo(opContactName);
+                if (linkedContact) {
+                    return {
+                        contactName: linkedContact.contactName || opContactName,
+                        fullName: linkedContact.fullName || opFullName,
+                        email: linkedContact.email || opEmail,
+                        position: linkedContact.position || "",
+                        lv1Id: linkedContact.lv1Id || "",
+                        lv2Id: linkedContact.lv2Id || ""
+                    };
+                }
+            }
+
+            return {
+                contactName: rawName,
+                fullName: opFullName,
+                email: opEmail,
+                position: "",
+                lv1Id: "",
+                lv2Id: ""
+            };
+        }
+    } catch (eOp) {
+    } finally {
+        if (op) {
+            try { op.doClose(); } catch (eClOp) {}
+        }
+    }
+
+    return null;
 }
 
 function getUnitInfo(lvId) {
@@ -326,10 +382,6 @@ function sendEmailAction(record, ruleset_name) {
     try {
         callRuleSet(record, ruleset_name);
     } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
     }
 }
 
@@ -349,38 +401,173 @@ function sendEmailPaymentRequestAction(record) {
             sendEmailAction(record, RULE_SET_MAIL.S6_MAIL_01_01); // mail theo luong
         }
     } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
     }
     ///////
     cleanGlobalVariable();
 }
 
 function sendEmailRequestEdit(record) {
-    var receiver = getContactInfo(record["created.by"]);
-    vars["$G.mail.receiver"] = [receiver.email];
-    vars["$G.mail.receiver.name"] = receiver.fullName || "";
-    var currentUser = String(vars.$lo_operator["contact.name"] || vars["$lo.contact.name"] || "");
-    var sender = getContactInfo(currentUser);
-    vars["$G.mail.sender"] = [sender.email];
-    vars["$G.mail.sender.name"] = sender.fullName || "";
-    vars["$G.mail.sender.contactname"] = sender.contactName || "";
-    vars["$G.mail.sender.position"] = sender.position || "";
-    /////MAIL/////
-    try {
-        if (record["status"] == "request_edit") {
-            sendEmailAction(record, RULE_SET_MAIL.S6_MAIL_01_02);
-        }
-    } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
+    if (!record) return;
+
+    var ticketId = String(record.id || record["id"] || "").trim();
+    var createdBy = String(record["created.by"] || record.created_by || "").trim();
+    var returnReason = String(record["return.reason"] || record.return_reason || vars["$return.reason"] || "").trim();
+
+    // 1. Xác định người nhận (Người tạo phiếu)
+    var receiver = getContactInfo(createdBy);
+    if (!receiver || !receiver.email) {
+        return;
     }
-    ///////
-    cleanGlobalVariable();
+
+    // 2. Xác định người gửi (Người yêu cầu chỉnh sửa)
+    var currentUser = String(
+            (vars.$lo_operator ? (vars.$lo_operator["contact.name"] || vars.$lo_operator["name"]) : "") ||
+            vars["$lo.contact.name"] ||
+            system.user.name ||
+            ""
+    ).trim();
+    var sender = getContactInfo(currentUser);
+
+    var senderFullName = (sender && sender.fullName) ? sender.fullName : currentUser;
+    var senderEmail = (sender && sender.email) ? sender.email : "";
+    var senderContactName = (sender && sender.contactName) ? sender.contactName : currentUser;
+    var senderPosition = (sender && sender.position) ? sender.position : "";
+
+    // 3. Xác định loại phiếu (object_type) và viết hoa chữ cái đầu (obj_upper_first_letter)
+    var upperId = ticketId.toUpperCase();
+    var isPrepayment = upperId.indexOf("TU") === 0;
+    var isReserve = upperId.indexOf("DC") === 0;
+
+    // object_type: dùng trong câu: "Phiếu {object_type}", "Phiếu đề nghị {object_type}"
+    var objectType = isPrepayment ? "tạm ứng" : (isReserve ? "dự chi" : "thanh toán");
+    // obj_upper_first_letter: dùng trong ô Loại phiếu, viết hoa chữ cái đầu ("Thanh toán", "Tạm ứng", "Dự chi")
+    var objUpperFirstLetter = isPrepayment ? "Tạm ứng" : (isReserve ? "Dự chi" : "Thanh toán");
+
+    // 4. Số tiền, tiền tệ, ngày tạo, đơn vị đề xuất
+    var rawAmount = 0;
+    if (isPrepayment) {
+        rawAmount = record["amount"] != null ? record["amount"] : (record["total.amount.paid"] != null ? record["total.amount.paid"] : 0);
+    } else {
+        rawAmount = record["total.amount.paid"] != null ? record["total.amount.paid"] : (record["amount"] != null ? record["amount"] : 0);
+    }
+    var formattedAmount = rawAmount != null ? rawAmount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".") : "0";
+    var currency = record.currency || record["currency"] || "VND";
+
+    var rawCreatedDate = record["created.at"] || record["created.date"] || "";
+    var createdDate = rawCreatedDate ? formatOnlyDate(rawCreatedDate) : formatOnlyDate(system.functions.tod());
+    var requestDate = formatOnlyDate(system.functions.tod());
+
+    var creatorUnitName = "Không xác định";
+    if (receiver) {
+        var lv1 = receiver.lv1Id ? getUnitInfo(receiver.lv1Id) : null;
+        var lv2 = receiver.lv2Id ? getUnitInfo(receiver.lv2Id) : null;
+        if (lv1 && lv2) {
+            creatorUnitName = lv1 + " - " + lv2;
+        } else if (lv1) {
+            creatorUnitName = lv1;
+        } else if (lv2) {
+            creatorUnitName = lv2;
+        }
+    }
+
+    var systemUrl = (lib.urlCreator && typeof lib.urlCreator.getRelativeURL === "function") ? lib.urlCreator.getRelativeURL() : "#";
+    if (!systemUrl || systemUrl === "http://null" || systemUrl === "null") {
+        systemUrl = "#";
+    }
+
+    // 5. Gán biến toàn cục phục vụ Mail Template binding
+    vars["$G.mail.receiver"] = [receiver.email];
+    vars["$G.mail.receiver.name"] = receiver.fullName || createdBy;
+    vars["$G.mail.name_receiver"] = receiver.fullName || createdBy;
+
+    vars["$G.mail.sender"] = senderEmail ? [senderEmail] : [];
+    vars["$G.mail.sender.name"] = senderFullName;
+    vars["$G.mail.sender.contactname"] = senderContactName;
+    vars["$G.mail.sender.position"] = senderPosition;
+    vars["$G.mail.return.reason"] = returnReason;
+
+    vars["$G.mail.ticket_id"] = ticketId;
+    vars["$G.mail.object_type"] = objectType;
+    vars["$G.mail.obj_upper_first_letter"] = objUpperFirstLetter;
+    vars["$G.mail.amount"] = formattedAmount;
+    vars["$G.mail.currency"] = currency;
+    vars["$G.mail.creator_unit_name"] = creatorUnitName;
+    vars["$G.mail.creator_full_name"] = receiver.fullName || createdBy;
+    vars["$G.mail.created_date"] = createdDate;
+    vars["$G.mail.sender_name"] = senderFullName;
+    vars["$G.mail.sender_position"] = senderPosition;
+    vars["$G.mail.request_date"] = requestDate;
+    vars["$G.mail.system_url"] = systemUrl;
+
+    // Gán trực tiếp tên biến không có tiền tố để tương thích mọi cơ chế parse template
+    vars["$ticket_id"] = ticketId;
+    vars["$object_type"] = objectType;
+    vars["$obj_upper_first_letter"] = objUpperFirstLetter;
+    vars["$name_receiver"] = receiver.fullName || createdBy;
+    vars["$creator_full_name"] = receiver.fullName || createdBy;
+    vars["$creator_unit_name"] = creatorUnitName;
+    vars["$created_date"] = createdDate;
+    vars["$amount"] = formattedAmount;
+    vars["$currency"] = currency;
+    vars["$sender_name"] = senderFullName;
+    vars["$sender_position"] = senderPosition;
+    vars["$request_date"] = requestDate;
+    vars["$return_reason"] = returnReason;
+    vars["$system_url"] = systemUrl;
+
+    var metadata = {
+        ticketId: ticketId,
+        objectType: objectType,
+        objUpperFirstLetter: objUpperFirstLetter,
+        createdBy: createdBy,
+        creatorFullName: receiver.fullName || createdBy,
+        creatorUnitName: creatorUnitName,
+        createdDate: createdDate,
+        amount: formattedAmount,
+        currency: currency,
+        sender: currentUser,
+        senderFullName: senderFullName,
+        senderPosition: senderPosition,
+        returnReason: returnReason,
+        requestDate: requestDate,
+        systemUrl: systemUrl
+    };
+    vars["$G.mail.metadata"] = JSON.stringify(metadata);
+
+    try {
+        sendEmailAction(record, RULE_SET_MAIL.S6_MAIL_01_02);
+    } catch (emailError) {
+    } finally {
+        vars["$G.mail.return.reason"] = null;
+        vars["$G.mail.metadata"] = null;
+        vars["$G.mail.ticket_id"] = null;
+        vars["$G.mail.object_type"] = null;
+        vars["$G.mail.obj_upper_first_letter"] = null;
+        vars["$G.mail.amount"] = null;
+        vars["$G.mail.currency"] = null;
+        vars["$G.mail.creator_unit_name"] = null;
+        vars["$G.mail.creator_full_name"] = null;
+        vars["$G.mail.created_date"] = null;
+        vars["$G.mail.sender_name"] = null;
+        vars["$G.mail.sender_position"] = null;
+        vars["$G.mail.request_date"] = null;
+        vars["$G.mail.system_url"] = null;
+        vars["$ticket_id"] = null;
+        vars["$object_type"] = null;
+        vars["$obj_upper_first_letter"] = null;
+        vars["$name_receiver"] = null;
+        vars["$creator_full_name"] = null;
+        vars["$creator_unit_name"] = null;
+        vars["$created_date"] = null;
+        vars["$amount"] = null;
+        vars["$currency"] = null;
+        vars["$sender_name"] = null;
+        vars["$sender_position"] = null;
+        vars["$request_date"] = null;
+        vars["$return_reason"] = null;
+        vars["$system_url"] = null;
+        cleanGlobalVariable();
+    }
 }
 
 
@@ -404,10 +591,6 @@ function sendEmailCompleted(record) {
             sendEmailAction(record, RULE_SET_MAIL.S6_MAIL_01_03);
         }
     } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
     }
     ///////
     vars["$G.mail.receiver"] = null;
@@ -424,10 +607,6 @@ function sendEmailCompleted(record) {
                 sendEmailAction(record, RULE_SET_MAIL.S6_MAIL_01_03);
             }
         } catch (emailError) {
-            print(
-                    "[MAIL] Send email error: " +
-                    emailError
-            );
         }
         ///////
 
@@ -554,7 +733,6 @@ function sendEmailCancelled(record) {
                 rc = activityFile.getNext();
             }
         } catch (e) {
-            print("[MAIL] Query activity error: " + e);
         } finally {
             if (activityFile) {
                 activityFile.doClose();
@@ -618,9 +796,6 @@ function sendEmailCancelled(record) {
                     /////MAIL/////
                     sendEmailAction(record, RULE_SET_MAIL.S6_MAIL_01_04);
                 } catch (emailError) {
-                    print(
-                            "[MAIL] Send email error for " + receiver.email + ": " + emailError
-                    );
                 } finally {
                     cleanGlobalVariable();
                 }
@@ -667,10 +842,6 @@ function sendEmailAccountingCompleted(accountingRecord) { // record la ban ghi e
     try {
         sendEmailAction(accountingRecord, RULE_SET_MAIL.S6_MAIL_01_05);
     } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
     }
     ///////
     ////clear nguoi nhan/////
@@ -685,10 +856,6 @@ function sendEmailAccountingCompleted(accountingRecord) { // record la ban ghi e
         try {
             sendEmailAction(accountingRecord, RULE_SET_MAIL.S6_MAIL_01_05);
         } catch (emailError) {
-            print(
-                    "[MAIL] Send email error: " +
-                    emailError
-            );
         }
         ///////
     }
@@ -737,10 +904,6 @@ function sendEmailAccountingError(accountingRecord) { // record la ban ghi esdHT
         sendEmailAction(accountingRecord, RULE_SET_MAIL.S6_MAIL_01_06);
 
     } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
     }
     //Step 2: clear
     ////clear nguoi nhan/////
@@ -811,10 +974,6 @@ function sendAccountingErrorResolvedEmail(oldAccountingRecord, accountingRecord,
     try {
         sendEmailAction(accountingRecord, RULE_SET_MAIL.S6_MAIL_02_01);
     } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
     }
     ///////
     ////clear nguoi nhan/////
@@ -829,10 +988,6 @@ function sendAccountingErrorResolvedEmail(oldAccountingRecord, accountingRecord,
         try {
             sendEmailAction(accountingRecord, RULE_SET_MAIL.S6_MAIL_02_01);
         } catch (emailError) {
-            print(
-                    "[MAIL] Send email error: " +
-                    emailError
-            );
         }
         ///////
     }
@@ -848,21 +1003,15 @@ function sendAccountingErrorResolvedEmail(oldAccountingRecord, accountingRecord,
 // S6_MAIL_02_02: Yeu cau duyet ket qua xu ly loi hach toan
 function sendAccountingApprovalRequestEmail(accountingRecord, approverContactName, declarerFullName, metadataObj) {
     var ticketId = (accountingRecord && (accountingRecord["prepayment.id"] || accountingRecord["request.id"])) || "";
-    print("[MAIL][S6_MAIL_02_02] Bắt đầu xử lý gửi email Yêu cầu duyệt kết quả xử lý lỗi hạch toán cho phiếu: " + ticketId);
-    print("[MAIL][S6_MAIL_02_02] Cán bộ duyệt: " + approverContactName + " | Người khai báo: " + declarerFullName);
 
     if (!accountingRecord) {
-        print("[MAIL][S6_MAIL_02_02] LỖI: accountingRecord rỗng, hủy gửi email.");
         return;
     }
 
     var receiver = getContactInfo(approverContactName);
     if (!receiver || !receiver.email) {
-        print("[MAIL][S6_MAIL_02_02] LỖI: Không tìm thấy email của người duyệt: " + approverContactName);
         return;
     }
-
-    print("[MAIL][S6_MAIL_02_02] Tìm thấy email người nhận: " + receiver.email + " (" + (receiver.fullName || approverContactName) + ")");
 
     vars["$G.mail.receiver"] = [receiver.email];
     vars["$G.mail.receiver.name"] = receiver.fullName || approverContactName;
@@ -872,28 +1021,27 @@ function sendAccountingApprovalRequestEmail(accountingRecord, approverContactNam
     }
 
     try {
-        print("[MAIL][S6_MAIL_02_02] Đang gọi RuleSet: " + RULE_SET_MAIL.S6_MAIL_02_02);
         sendEmailAction(accountingRecord, RULE_SET_MAIL.S6_MAIL_02_02);
-        print("[MAIL][S6_MAIL_02_02] Hoàn tất gọi gửi email cho người duyệt: " + receiver.email);
     } catch (emailError) {
-        print("[MAIL][S6_MAIL_02_02] LỖI ngoại lệ khi gửi mail: " + emailError);
     } finally {
         vars["$G.mail.receiver"] = null;
         vars["$G.mail.receiver.name"] = null;
         vars["$G.mail.sender.name"] = null;
         vars["$G.mail.metadata"] = null;
-        print("[MAIL][S6_MAIL_02_02] Đã dọn dẹp các biến toàn cục $G.mail.*");
     }
 }
 
 // S6_MAIL_02_03: Ket qua xu ly loi hach toan bi tu choi
-function sendAccountingRejectedEmail(accountingRecord, declarerContactName, rejectReason, leaderFullName, metadataObj) {
+function sendAccountingRejectedEmail(accountingRecord, declarerContactName, leaderFullName, metadataObj) {
+    // Ho tro ca truong hop goi 5 tham so cu: (accountingRecord, declarerContactName, rejectReason, leaderFullName, metadataObj)
+    if (arguments.length >= 5) {
+        leaderFullName = arguments[3];
+        metadataObj = arguments[4];
+    }
+
     var ticketId = (accountingRecord && (accountingRecord["prepayment.id"] || accountingRecord["request.id"])) || "";
-    print("[MAIL][S6_MAIL_02_03] Bắt đầu xử lý gửi email Từ chối kết quả xử lý lỗi hạch toán cho phiếu: " + ticketId);
-    print("[MAIL][S6_MAIL_02_03] Cán bộ khai báo (người nhận): " + declarerContactName + " | Lãnh đạo từ chối: " + leaderFullName + " | Lý do: " + rejectReason);
 
     if (!accountingRecord) {
-        print("[MAIL][S6_MAIL_02_03] LỖI: accountingRecord rỗng, hủy gửi email.");
         return;
     }
 
@@ -904,12 +1052,11 @@ function sendAccountingRejectedEmail(accountingRecord, declarerContactName, reje
     if ((!receiver || !receiver.email) && ticketId) {
         var parentTicket = null;
         try {
-            var tbl = ticketId.toUpperCase().startsWith("TT") ? "esdHTKTpayment" : "esdHTKTprepayment";
+            var tbl = ticketId.toUpperCase().indexOf("TT") === 0 ? "esdHTKTpayment" : "esdHTKTprepayment";
             parentTicket = new SCFile(tbl, SCFILE_READONLY);
             if (parentTicket.doSelect('id="' + escapeSmQueryValue(ticketId) + '"') === RC_SUCCESS) {
                 var fallbackContact = String(parentTicket["user.checker.kttc"] || parentTicket["created.by"] || "").trim();
                 if (fallbackContact) {
-                    print("[MAIL][S6_MAIL_02_03] Fallback tìm thấy người nhận từ phiếu cha: " + fallbackContact);
                     receiver = getContactInfo(fallbackContact);
                     if (receiver && receiver.email) {
                         targetDeclarer = fallbackContact;
@@ -923,16 +1070,12 @@ function sendAccountingRejectedEmail(accountingRecord, declarerContactName, reje
     }
 
     if (!receiver || !receiver.email) {
-        print("[MAIL][S6_MAIL_02_03] LỖI: Không tìm thấy email của CB KTTC: " + targetDeclarer);
         return;
     }
-
-    print("[MAIL][S6_MAIL_02_03] Tìm thấy email người nhận: " + receiver.email + " (" + (receiver.fullName || targetDeclarer) + ")");
 
     vars["$G.mail.receiver"] = [receiver.email];
     vars["$G.mail.receiver.name"] = receiver.fullName || targetDeclarer;
     vars["$G.mail.sender.name"] = leaderFullName || "Lãnh đạo phòng KTTC";
-    vars["$G.mail.reject.reason"] = rejectReason || "Không có lý do cụ thể.";
 
     if (!metadataObj) {
         var recType = String(accountingRecord["type"] || "").toUpperCase();
@@ -955,26 +1098,20 @@ function sendAccountingRejectedEmail(accountingRecord, declarerContactName, reje
             oldCheckedTime: accountingRecord["checked.time"] || "",
             oldMessage: accountingRecord["message"] || "",
             oldResponse: accountingRecord["response"] || "",
-            declareResult: declareResultStr,
-            rejectReason: rejectReason || "Không có lý do cụ thể."
+            declareResult: declareResultStr
         };
     }
 
     vars["$G.mail.metadata"] = JSON.stringify(metadataObj);
 
     try {
-        print("[MAIL][S6_MAIL_02_03] Đang gọi RuleSet: " + RULE_SET_MAIL.S6_MAIL_02_03);
         sendEmailAction(accountingRecord, RULE_SET_MAIL.S6_MAIL_02_03);
-        print("[MAIL][S6_MAIL_02_03] Hoàn tất gọi gửi email từ chối cho: " + receiver.email);
     } catch (emailError) {
-        print("[MAIL][S6_MAIL_02_03] LỖI ngoại lệ khi gửi mail: " + emailError);
     } finally {
         vars["$G.mail.receiver"] = null;
         vars["$G.mail.receiver.name"] = null;
         vars["$G.mail.sender.name"] = null;
-        vars["$G.mail.reject.reason"] = null;
         vars["$G.mail.metadata"] = null;
-        print("[MAIL][S6_MAIL_02_03] Đã dọn dẹp các biến toàn cục $G.mail.*");
     }
 }
 
@@ -987,10 +1124,6 @@ function sendEmailInvoiceCheckResult(invoiceRecord) { // record la ban ghi esdHT
     try {
         sendEmailAction(invoiceRecord, RULE_SET_MAIL.S6_MAIL_03_01);
     } catch (emailError) {
-        print(
-                "[MAIL] Send email error: " +
-                emailError
-        );
     }
 }
 
@@ -998,19 +1131,230 @@ function sendEmailInvoiceCheckResult(invoiceRecord) { // record la ban ghi esdHT
 
 /////////////////trigger script////////
 function onAccountingInfoSavedTrigger(oldRec, newRec) { // trigger table esdHTKTaccountingInformation
-    if (!oldRec) {
+    if (!oldRec || !newRec) {
         return;
     }
     var oldPrepaymentId = oldRec['prepayment.id'] || oldRec['prepayment_id'];
     var prepaymentId = newRec['prepayment.id'] || newRec['prepayment_id'];
     if (oldPrepaymentId != prepaymentId) return;
-    if ((oldRec['status'] == "NEW" || oldRec['status'] == "CREATED") && newRec['status'] == "COMPLETED") {
-        sendEmailAccountingCompleted(newRec);
-    }
-    if ((oldRec['status'] == "NEW" || oldRec['status'] == "CREATED") && newRec['status'] == "ERROR") {
-        sendEmailAccountingError(newRec);
+
+    var upperPrepaymentId = String(prepaymentId || "").toUpperCase();
+    var isExpense = upperPrepaymentId.startsWith("DC");
+
+    // ==================== DỰ CHI (DC): CHẠY VÀO KÊNH RIÊNG ====================
+    if (isExpense) {
+        sendExpenseAccountingNotification(oldRec, newRec);
+        return;
     }
 
+    // ==================== THANH TOÁN (TT) & TẠM ỨNG (TU): GỬI MAIL S6 ====================
+    if ((oldRec['status'] == "NEW" || oldRec['status'] == "CREATED") && newRec['status'] == "COMPLETED") {
+        sendEmailAccountingCompleted(newRec); // S6_MAIL_01_05
+    }
+    if ((oldRec['status'] == "NEW" || oldRec['status'] == "CREATED") && newRec['status'] == "ERROR") {
+        sendEmailAccountingError(newRec); // S6_MAIL_01_06
+    }
+
+}
+
+/**
+ * Kiểm tra trạng thái hạch toán có phải là trạng thái đang chờ xử lý hay không.
+ * Các trạng thái chờ bao gồm: NEW, CREATED, INQUEUE (và IN_QUEUE).
+ * @param {string} status
+ * @returns {boolean}
+ */
+function isPendingAccountingStatus(status) {
+    if (!status) return false;
+    var s = String(status).toUpperCase().trim();
+    return s === "NEW" || s === "CREATED" || s === "INQUEUE" || s === "IN_QUEUE";
+}
+
+// Kết quả hạch toán dự chi S6_MAIL_01_08
+function sendEmailExpenseAccountingResult(accountingRecord) {
+    if (!accountingRecord) {
+        return;
+    }
+
+    var ticketRecord = null;
+    var ticket_id = accountingRecord["prepayment.id"] || accountingRecord["prepayment_id"] || accountingRecord["payment.id"];
+    if (ticket_id) {
+        ticketRecord = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+    }
+
+    var createdBy = null;
+    var userCheckerKttc = null;
+    var initialRole = null;
+
+    try {
+        if (ticketRecord && ticket_id) {
+            var rc = ticketRecord.doSelect('id="' + escapeSmQueryValue(ticket_id) + '"');
+            if (rc == RC_SUCCESS) {
+                createdBy = ticketRecord["created.by"];
+                userCheckerKttc = ticketRecord["user.checker.kttc"];
+                initialRole = ticketRecord["initial.role"] || ticketRecord["initial_role"];
+            }
+        }
+
+        if (!createdBy && accountingRecord["created.by"]) {
+            createdBy = accountingRecord["created.by"];
+        }
+
+        var recordToSend = ticketRecord || accountingRecord;
+
+        var executeSendAction = function(record, ruleSet) {
+            try {
+                callRuleSet(record, ruleSet);
+            } catch (errRuleSet) {
+                if (accountingRecord && accountingRecord !== record) {
+                    try {
+                        callRuleSet(accountingRecord, ruleSet);
+                    } catch (errFallback) {}
+                }
+            }
+        };
+
+        // Step 1: Gửi cho người tạo (có thể là KTTC hoặc DMMS)
+        if (createdBy) {
+            var receiver = getContactInfo(createdBy);
+            if (receiver && receiver.email) {
+                vars["$G.mail.receiver"] = [receiver.email];
+                vars["$G.mail.receiver.name"] = receiver.fullName || createdBy;
+                /////MAIL/////
+                executeSendAction(recordToSend, RULE_SET_MAIL.S6_MAIL_01_08);
+                ///////
+                vars["$G.mail.receiver"] = null;
+                vars["$G.mail.receiver.name"] = null;
+            }
+        }
+
+        // Step 2: Nếu tạo bởi DMMS thì gửi thêm cho KTTC (người tạo đã được gửi ở Step 1)
+        if (String(initialRole).toLowerCase() == "dmms" && userCheckerKttc && userCheckerKttc !== createdBy) {
+            var checkerReceiver = getContactInfo(userCheckerKttc);
+            if (checkerReceiver && checkerReceiver.email) {
+                vars["$G.mail.receiver"] = [checkerReceiver.email];
+                vars["$G.mail.receiver.name"] = checkerReceiver.fullName || userCheckerKttc;
+                /////MAIL/////
+                executeSendAction(recordToSend, RULE_SET_MAIL.S6_MAIL_01_08);
+                ///////
+                vars["$G.mail.receiver"] = null;
+                vars["$G.mail.receiver.name"] = null;
+            }
+        }
+    } finally {
+        if (ticketRecord) {
+            try { ticketRecord.doClose(); } catch (eCl) {}
+        }
+        cleanGlobalVariable();
+    }
+}
+
+/**
+ * Xử lý thông báo kết quả hạch toán cho phân hệ Dự chi (DC) qua kênh riêng S6_MAIL_01_08
+ * @param {SCFile|object} oldRec
+ * @param {SCFile|object} newRec
+ */
+function sendExpenseAccountingNotification(oldRec, newRec) {
+    print("sendExpenseAccountingNotification newRec", newRec);
+    try {
+        if (!newRec && oldRec) {
+            newRec = oldRec;
+            oldRec = null;
+        }
+        if (!newRec) {
+            return;
+        }
+
+        var oldStatus = oldRec ? String(oldRec['status'] || "").toUpperCase().trim() : "";
+        var newStatus = String(newRec['status'] || "").toUpperCase().trim();
+
+        // Nếu có oldRec và trạng thái không đổi thì không xử lý
+        if (oldStatus && oldStatus === newStatus) {
+            return;
+        }
+
+        // Nếu trạng thái mới của bản ghi hiện tại vẫn đang ở trạng thái chờ thì chắc chắn chưa hoàn tất
+        if (isPendingAccountingStatus(newStatus)) {
+            return;
+        }
+
+        // Nếu có oldRec và trạng thái cũ không phải là trạng thái chờ/đang xử lý thì bỏ qua
+        if (oldStatus && !isPendingAccountingStatus(oldStatus) && oldStatus !== "PROCESSING") {
+            return;
+        }
+
+        var ticketId = String(newRec['prepayment.id'] || newRec['prepayment_id'] || newRec['payment.id'] || newRec['payment_id'] || "").trim();
+        if (!ticketId) {
+            return;
+        }
+
+        // Kiểm tra query trong bảng esdHTKTaccountingInformation:
+        // Đảm bảo nếu tất cả các bản ghi accounting gắn với phiếu dự chi hiện tại
+        // không còn bản ghi nào ở trạng thái NEW, CREATED, INQUEUE thì mới thực hiện call S6_MAIL_01_08.
+        var currentRecId = String(newRec['id'] || "").trim();
+        var currentRequestId = String(newRec['request.id'] || "").trim();
+        var currentInternalRefId = String(newRec['internal.ref.id'] || "").trim();
+
+        var hasPending = false;
+        var aiFile = new SCFile("esdHTKTaccountingInformation", SCFILE_READONLY);
+
+        try {
+            var safeTicketId = escapeSmQueryValue(ticketId);
+            var query = 'prepayment.id="' + safeTicketId + '"';
+            var rc = aiFile.doSelect(query);
+            if (rc !== RC_SUCCESS) {
+                query = 'payment.id="' + safeTicketId + '"';
+                rc = aiFile.doSelect(query);
+            }
+
+            while (rc === RC_SUCCESS) {
+                var rowId = String(aiFile['id'] || "").trim();
+                var rowRequestId = String(aiFile['request.id'] || "").trim();
+                var rowInternalRefId = String(aiFile['internal.ref.id'] || "").trim();
+
+                var isCurrent = (currentRecId && rowId && currentRecId === rowId) ||
+                                (currentRequestId && rowRequestId && currentRequestId === rowRequestId) ||
+                                (currentInternalRefId && rowInternalRefId && currentInternalRefId === rowInternalRefId);
+
+                // Nếu là bản ghi đang cập nhật thì dùng newStatus, ngược lại lấy status từ DB
+                var rowStatus = isCurrent ? newStatus : String(aiFile['status'] || "").toUpperCase().trim();
+
+                if (isPendingAccountingStatus(rowStatus)) {
+                    hasPending = true;
+                    break;
+                }
+
+                rc = aiFile.getNext();
+            }
+        } catch (eQuery) {
+            hasPending = true;
+        } finally {
+            if (aiFile) {
+                try { aiFile.doClose(); } catch (eCl) {}
+            }
+        }
+
+        // Nếu vẫn còn bản ghi accounting ở trạng thái NEW, CREATED, INQUEUE thì chưa gửi mail
+        if (hasPending) {
+            return;
+        }
+
+        // Tất cả bản ghi accounting gắn với dự chi hiện tại đã kết thúc (không còn NEW, CREATED, INQUEUE)
+        // Thực hiện call S6_MAIL_01_08
+        sendEmailExpenseAccountingResult(newRec);
+
+    } catch (e) {
+        // print("[ERROR] sendExpenseAccountingNotification: " + e.toString());
+    }
+}
+
+function notifyExpenseAccountingSuccess(accountingRecord) {
+    // Kênh riêng cho Dự chi khi hạch toán thành công (Webhook / Queue / API riêng)
+    // TODO: Triển khai logic gửi thông báo kênh riêng cho Dự chi tại đây
+}
+
+function notifyExpenseAccountingError(accountingRecord) {
+    // Kênh riêng cho Dự chi khi hạch toán thất bại (Webhook / Queue / API riêng)
+    // TODO: Triển khai logic gửi thông báo kênh riêng cho Dự chi tại đây
 }
 
 //trigger kiem tra hoa don
@@ -1030,74 +1374,133 @@ function onInvoiceAfterUpdateTrigger(oldRec, newRec) { // trigger table esdHTKTi
 // Tái phân công cán bộ S6_MAIL_01_07
 function sendEmailReassignOfficer(reassignRecord) { // reassignRecord là bản ghi chứa thông tin tái phân công
     var ticketId = (reassignRecord && reassignRecord.id) || "";
-    print("[MAIL][S6_MAIL_01_07] Bắt đầu xử lý gửi email Tái phân công cán bộ cho phiếu: " + ticketId);
 
     if (!reassignRecord) {
-        print("[MAIL][S6_MAIL_01_07] LỖI: reassignRecord rỗng, hủy gửi email.");
         return;
     }
 
     // 1. Xác định cán bộ nhận bàn giao mới
     var newAssignee = reassignRecord["new.assignee"] || reassignRecord["assignee"] || reassignRecord["new_assignee"];
-    print("[MAIL][S6_MAIL_01_07] Cán bộ nhận bàn giao mới: " + newAssignee + " | Vai trò: " + (reassignRecord.role || reassignRecord.field));
 
     if (!newAssignee) {
-        print("[MAIL][S6_MAIL_01_07] LỖI: Không tìm thấy cán bộ được tái phân công (new.assignee rỗng)");
         return;
     }
 
     // 2. Tra cứu email và tên người nhận qua getContactInfo
     var receiver = getContactInfo(newAssignee);
     if (!receiver || !receiver.email) {
-        print("[MAIL][S6_MAIL_01_07] LỖI: Không tìm thấy email của cán bộ: " + newAssignee);
         return;
     }
 
-    print("[MAIL][S6_MAIL_01_07] Tìm thấy email người nhận: " + receiver.email + " (" + (receiver.fullName || newAssignee) + ")");
+    // 3. Tra cứu họ tên CB phụ trách trước, Người tái phân công & Ngày tái phân công
+    var oldAssigneeUser = reassignRecord["old.assignee"] || reassignRecord["previous.assignee"] || "";
+    var oldAssigneeFullName = reassignRecord["old.assignee.name"] || reassignRecord["oldAssigneeName"] || "";
+    if (!oldAssigneeFullName && oldAssigneeUser) {
+        var oldAssigneeInfo = getContactInfo(oldAssigneeUser);
+        oldAssigneeFullName = (oldAssigneeInfo && oldAssigneeInfo.fullName) ? oldAssigneeInfo.fullName : oldAssigneeUser;
+    }
 
-    // 3. Gán biến toàn cục phục vụ gửi mail và binding vào template
+    var newAssigneeFullName = reassignRecord["new.assignee.name"] || reassignRecord["newAssigneeName"] || (receiver ? receiver.fullName : "") || newAssignee;
+
+    var operatorUser = reassignRecord["operator"] || (vars.$lo_operator ? (vars.$lo_operator["contact.name"] || vars.$lo_operator["name"]) : "") || vars["$lo.contact.name"] || "";
+    var operatorFullName = reassignRecord["operator.name"] || reassignRecord["operatorName"] || "";
+    if (!operatorFullName && operatorUser) {
+        var operatorInfo = getContactInfo(operatorUser);
+        operatorFullName = (operatorInfo && operatorInfo.fullName) ? operatorInfo.fullName : operatorUser;
+    }
+
+    var reassignDate = reassignRecord["date"] || formatOnlyDate(system.functions.tod());
+
+    // 4. Gán biến toàn cục phục vụ gửi mail và binding vào template
     vars["$G.mail.receiver"] = [receiver.email];
-    vars["$G.mail.receiver.name"] = receiver.fullName || newAssignee;
-    vars["$G.mail.new.assignee"] = newAssignee;
-    vars["$G.mail.old.assignee"] = reassignRecord["old.assignee"] || reassignRecord["previous.assignee"] || "";
+    vars["$G.mail.receiver.name"] = newAssigneeFullName;
+
+    // CB được tái phân công
+    vars["$G.mail.new.assignee"] = newAssigneeFullName;
+    vars["$G.mail.new.assignee.name"] = newAssigneeFullName;
+    vars["$G.mail.new_assignee"] = newAssigneeFullName;
+
+    // CB phụ trách trước
+    vars["$G.mail.old.assignee"] = oldAssigneeFullName;
+    vars["$G.mail.old.assignee.name"] = oldAssigneeFullName;
+    vars["$G.mail.old_assignee"] = oldAssigneeFullName;
+
+    // Người tái phân công
+    vars["$G.mail.reassign.operator"] = operatorFullName;
+    vars["$G.mail.reassign_operator"] = operatorFullName;
+    vars["$G.mail.sender.name"] = operatorFullName;
+
+    // Ngày tái phân công
+    vars["$G.mail.reassign.date"] = reassignDate;
+    vars["$G.mail.reassign_date"] = reassignDate;
+
     vars["$G.mail.reassign.reason"] = reassignRecord["reason"] || "";
     vars["$G.mail.reassign.role"] = reassignRecord["role"] || reassignRecord["field"] || "";
 
-    // Lấy SCFile thực tế của phiếu để tránh lỗi $RECORD bị null trong template
+    // Đóng gói metadata để template có thể parse an toàn
+    var metadata = {
+        oldAssignee: oldAssigneeFullName,
+        oldAssigneeUser: oldAssigneeUser,
+        newAssignee: newAssigneeFullName,
+        newAssigneeUser: newAssignee,
+        operator: operatorFullName,
+        operatorUser: operatorUser,
+        reassignDate: reassignDate,
+        role: reassignRecord["role"] || reassignRecord["field"] || "",
+        reason: reassignRecord["reason"] || ""
+    };
+    vars["$G.mail.metadata"] = JSON.stringify(metadata);
+
+    // Lấy SCFile thực tế của phiếu để tránh lỗi $RECORD bị null trong template (hỗ trợ cả Thanh toán TT, Dự chi DC và Tạm ứng TU)
     var targetFile = null;
     if (ticketId) {
         try {
-            var tbl = ticketId.toUpperCase().startsWith("TT") ? "esdHTKTpayment" : "esdHTKTprepayment";
-            var tf = new SCFile(tbl, SCFILE_READONLY);
+            var upperId = ticketId.toUpperCase();
+            var isPayment = upperId.indexOf("TT") === 0 || upperId.indexOf("DC") === 0;
+            var primaryTbl = isPayment ? "esdHTKTpayment" : "esdHTKTprepayment";
+            var tf = new SCFile(primaryTbl, SCFILE_READONLY);
             if (tf.doSelect('id="' + escapeSmQueryValue(ticketId) + '"') === RC_SUCCESS) {
                 targetFile = tf;
+            } else {
+                try { tf.doClose(); } catch (eCl1) {}
+                // Fallback tra cứu bảng còn lại phòng trường hợp mã phiếu khác
+                var fallbackTbl = isPayment ? "esdHTKTprepayment" : "esdHTKTpayment";
+                var tfFallback = new SCFile(fallbackTbl, SCFILE_READONLY);
+                if (tfFallback.doSelect('id="' + escapeSmQueryValue(ticketId) + '"') === RC_SUCCESS) {
+                    targetFile = tfFallback;
+                } else {
+                    try { tfFallback.doClose(); } catch (eCl2) {}
+                }
             }
         } catch (eTf) {}
     }
     var recordToSend = targetFile || reassignRecord;
 
-    ///// 4. GỬI MAIL /////
+    ///// 5. GỬI MAIL /////
     try {
-        print("[MAIL][S6_MAIL_01_07] Đang gọi RuleSet: " + RULE_SET_MAIL.S6_MAIL_01_07);
         sendEmailAction(recordToSend, RULE_SET_MAIL.S6_MAIL_01_07);
-        print("[MAIL][S6_MAIL_01_07] Hoàn tất gọi gửi email tái phân công cho: " + receiver.email);
     } catch (emailError) {
-        print(
-                "[MAIL][S6_MAIL_01_07] LỖI ngoại lệ khi gửi mail: " +
-                emailError
-        );
     } finally {
         if (targetFile) {
             try { targetFile.doClose(); } catch (eCloseTf) {}
         }
-        // 5. Dọn dẹp biến toàn cục
+        // 6. Dọn dẹp biến toàn cục
         vars["$G.mail.receiver"] = null;
         vars["$G.mail.receiver.name"] = null;
         vars["$G.mail.new.assignee"] = null;
+        vars["$G.mail.new.assignee.name"] = null;
+        vars["$G.mail.new_assignee"] = null;
         vars["$G.mail.old.assignee"] = null;
+        vars["$G.mail.old.assignee.name"] = null;
+        vars["$G.mail.old_assignee"] = null;
+        vars["$G.mail.reassign.operator"] = null;
+        vars["$G.mail.reassign_operator"] = null;
+        vars["$G.mail.sender.name"] = null;
+        vars["$G.mail.reassign.date"] = null;
+        vars["$G.mail.reassign_date"] = null;
         vars["$G.mail.reassign.reason"] = null;
         vars["$G.mail.reassign.role"] = null;
-        print("[MAIL][S6_MAIL_01_07] Đã dọn dẹp các biến toàn cục $G.mail.*");
+        vars["$G.mail.metadata"] = null;
     }
 }
 
