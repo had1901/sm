@@ -34,7 +34,7 @@ function validateDataInPhase(record, type) {
 
     var errorMss = [];
 
-    // Validate đã chọn nhà cung cấp cho phiếu Dự chi
+    // Validate NCC, nội dung đề nghị và số tiền của từng món đã lưu.
     var vendorErrors = validateVendorAndPaymentDetailsOnWorkflow(record);
     if (vendorErrors && vendorErrors.length > 0) {
          errorMss = errorMss.concat(vendorErrors);
@@ -336,6 +336,15 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
             if (!String(vendor["vendor.id"] || "").trim()) {
                 return ["Chưa chọn Nhà cung cấp cho món dự chi."];
             }
+
+            var transactionDescription = String(vendor["transaction.des"] || "").trim();
+            var descriptionError = "";
+            if (!transactionDescription) {
+                descriptionError = "Nội dung đề nghị của món Dự chi không được để trống.";
+            } else if (transactionDescription.length > 255) {
+                descriptionError = "Nội dung đề nghị của món Dự chi không được vượt quá 255 ký tự.";
+            }
+            if (descriptionError && errorMss.indexOf(descriptionError) < 0) errorMss.push(descriptionError);
 
             var amountText = vendor["amount"] == null ? "" : String(vendor["amount"]).replace(/,/g, "").trim();
             var amount = amountText ? Number(amountText) : NaN;
