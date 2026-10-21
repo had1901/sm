@@ -118,6 +118,9 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['return.reason'] = "";
     expenseRec['unit.lv1'] = expenseData['unitLv1'] || expenseData['unit.lv1'] || "";
     expenseRec['unit.lv2'] = expenseData['unitLv2'] || expenseData['unit.lv2'] || "";
+    if (String(expenseRec['unit.lv1'] || "").replace(/^\s+|\s+$/g, "").indexOf("0999") === 0) {
+        expenseRec['entity.code'] = "1010098";
+    }
     expenseRec['unit.lv1.name'] = expenseData['unitLv1Name'] || expenseData['unit.lv1.name'] ||
             htktCreateExpense_getUnitName(expenseRec['unit.lv1']);
     expenseRec['unit.lv2.name'] = expenseData['unitLv2Name'] || expenseData['unit.lv2.name'] ||
