@@ -1037,7 +1037,7 @@ function validateVendorAndPaymentDetails(record) {
     return errorMss;
 }
 
-/** Import tạo mới: validate mọi dòng trước khi cấp mã và ghi dữ liệu. */
+/** Import tạo mới: bỏ qua dòng lỗi dữ liệu, ghi các dòng hợp lệ. */
 function importExpenseVendors(input) {
     var params = getExpenseVendorInputDetails(input);
     var paymentId = normalizeExpenseVendorValue(params.paymentId);
@@ -1051,7 +1051,7 @@ function importExpenseVendors(input) {
         } 
         expenseImportCheckPayment(payment, paymentId, currentUser);
         var contractParams = expenseImportGetContractParams(payment, currentUser);
-        var cache = { contracts: {}, vendors: {}, currencies: {}, links: {} };
+        var cache = { contracts: {}, vendors: {}, links: {} };
         var valid = [];
         var errors = [];
         for (var i = 0; i < rows.length; i++) {
@@ -1064,12 +1064,16 @@ function importExpenseVendors(input) {
                 errors.push((fileName ? fileName + " - " : "") + "Dòng " + line + ": " + String(rowError.message || rowError));
             }
         }
-        if (errors.length) {
+        if (!valid.length) {
             return { 
                 success: false, 
                 errorCode: "IMPORT_ROW_VALIDATION_FAILED",
-                message: "Không thể import do có lỗi khi kiểm tra dữ liệu.",
-                errors: errors 
+                message: "Đã import thành công 0/" + rows.length + " bản ghi.",
+                totalCount: rows.length,
+                successCount: 0,
+                failedCount: rows.length,
+                errors: errors,
+                createdItems: []
             };
         } 
         expenseImportCheckPayment(payment, paymentId, currentUser);
@@ -1103,7 +1107,11 @@ function importExpenseVendors(input) {
         expenseImportRefreshTotals(payment, paymentId);
         return { 
             success: true, 
-            message: "Đã tạo " + created.length + " món Dự chi.", 
+            message: "Đã import thành công " + created.length + "/" + rows.length + " bản ghi.",
+            totalCount: rows.length,
+            successCount: created.length,
+            failedCount: rows.length - created.length,
+            errors: errors,
             createdItems: created 
         };
     } catch (error) {
@@ -1144,6 +1152,10 @@ function importExpenseVendors(input) {
             errorCode: error.importCode || "IMPORT_FAILED",
             debugContext: error.importDebugContext || null,
             message: failureMessage + (rollbackErrors.length ? " " + rollbackErrors.join(" ") : ""),
+            totalCount: rows.length,
+            successCount: remaining.length,
+            failedCount: rows.length - remaining.length,
+            errors: errors || [],
             createdItems: remaining 
         };
     } finally { closeExpenseVendorFile(payment); }
@@ -1239,6 +1251,10 @@ function expenseImportGetContractParams(payment, currentUser) {
     } finally { closeExpenseVendorFile(contact); }
 }
 
+function expenseImportDescribeField(fieldName, value) {
+    return "Cột " + JSON.stringify(fieldName) + ", giá trị " + JSON.stringify(normalizeExpenseVendorValue(value) || "(trống)");
+}
+
 function expenseImportValidateRow(raw, contractParams, cache) {
     raw = raw || {};
     if (normalizeExpenseVendorValue(raw.itemCode || raw.id)) {
@@ -1247,79 +1263,62 @@ function expenseImportValidateRow(raw, contractParams, cache) {
 
     var code = normalizeExpenseVendorValue(raw.contractCode);
     var vendorCode = normalizeExpenseVendorValue(raw.vendorCode);
-    var currency = normalizeExpenseVendorValue(raw.currency).toUpperCase();
-    var amountText = normalizeExpenseVendorValue(raw.amount);
-    var amount = Number(amountText);
+    var amount = raw.amount;
+    var contractField = expenseImportDescribeField("Mã HĐ/KMS", code);
+    var vendorField = expenseImportDescribeField("MST NCC", vendorCode);
 
-    if (!code || !vendorCode || !currency) {
-        throw new Error("HĐ/KMS, NCC và loại tiền là bắt buộc.");
-    } 
+    if (!code) throw new Error(contractField + ": chưa nhập giá trị bắt buộc.");
+    if (!vendorCode) throw new Error(vendorField + ": chưa nhập giá trị bắt buộc.");
 
-    if (!amountText || !isFinite(amount) || amount <= 0 || amount > 9007199254740991) {
-        throw new Error("Số tiền dự chi phải là số lớn hơn 0 hợp lệ.");
+    if (typeof amount !== "number" || !isFinite(amount) || amount <= 0 || amount > 9007199254740991) {
+        throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là Number lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
     }
 
     if (!cache.contracts["$" + code]) {
         var contract = new SCFile("esdHDcontract", SCFILE_READONLY);
-        var contractInfo;
         try {
             var contractRc = contract.doSelect('id="' + escapeExpenseVendorQueryValue(code) + '"');
             if (contractRc === RC_NO_MORE) {
-                throw new Error("HĐ/KMS " + code + " không tồn tại trong hệ thống. Vui lòng kiểm tra lại cột Mã HĐ/KMS trong file Excel.");
+                throw new Error(contractField + ": không tồn tại trong hệ thống. Vui lòng kiểm tra lại mã hợp đồng/khoản mua sắm đã nhập trong file Excel.");
             }
             if (contractRc !== RC_SUCCESS) {
-                throw new Error("Không tra cứu được HĐ/KMS " + code + " do lỗi hệ thống. Vui lòng thử lại.");
+                throw new Error(contractField + ": không tra cứu được do lỗi hệ thống. Vui lòng thử lại.");
             }
-            contractInfo = { currency: normalizeExpenseVendorValue(contract["currency"] || contract["currency.code"]).toUpperCase() };
         } finally { closeExpenseVendorFile(contract); }
         contractParams.contractId = code;
         var result = lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listPurchaseContracts({ queryString: JSON.stringify(contractParams) });
         if (!result || result.success !== true) {
-            throw new Error("Không kiểm tra được điều kiện chọn HĐ/KMS " + code + ": " + (result && result.message || "Lỗi hệ thống, vui lòng thử lại."));
+            throw new Error(contractField + ": không kiểm tra được điều kiện chọn. " + (result && result.message || "Lỗi hệ thống, vui lòng thử lại."));
         } 
         if (!result.data || !result.data.length || normalizeExpenseVendorValue(result.data[0].id) !== code) {
-            throw new Error("HĐ/KMS " + code + " có trong hệ thống nhưng không đủ điều kiện hoặc ngoài phạm vi được chọn của bạn.");
+            throw new Error(contractField + ": có trong hệ thống nhưng không đủ điều kiện hoặc ngoài phạm vi được chọn của bạn.");
         }
-        cache.contracts["$" + code] = contractInfo;
-    }
-    if (!cache.currencies["$" + currency]) {
-        var currencyFile = new SCFile("esdDMcategoryItems", SCFILE_READONLY);
-        try {
-            const currencyResult = currencyFile.doSelect('category.id="dm_loai_tien" and item.id="' + escapeExpenseVendorQueryValue(currency) + '" and status="Dang hoat dong"');
-            if (currencyResult === RC_NO_MORE) {
-                throw new Error("Loại tiền " + currency + " không có trong danh mục loại tiền đang hoạt động.");
-            }
-            if (currencyResult !== RC_SUCCESS) {
-                throw new Error("Không tra cứu được loại tiền " + currency + " do lỗi hệ thống. Vui lòng thử lại.");
-            }
-            cache.currencies["$" + currency] = true;
-        } finally { closeExpenseVendorFile(currencyFile); }
-    }
-    var contractCurrency = cache.contracts["$" + code].currency;
-    if (contractCurrency && contractCurrency !== currency) {
-        throw new Error("Loại tiền " + currency + " không khớp HĐ/KMS " + code + " (" + contractCurrency + ").");
+        cache.contracts["$" + code] = true;
     }
     if (!cache.vendors["$" + vendorCode]) {
         var vendor = new SCFile("esdHTKTvendor", SCFILE_READONLY);
         try {
             var escaped = escapeExpenseVendorQueryValue(vendorCode);
-            var vendorRc = vendor.doSelect('(vendor.number="' + escaped + '" or supplier.id="' + escaped + '" or id="' + escaped + '")');
+            var vendorRc = vendor.doSelect('vendor.number="' + escaped + '"');
             if (vendorRc === RC_NO_MORE) {
-                throw new Error("NCC " + vendorCode + " không tồn tại trong danh mục NCC hạch toán. Vui lòng kiểm tra lại cột Mã NCC trong file Excel.");
+                throw new Error(vendorField + ": không tồn tại trong danh mục NCC hạch toán. Vui lòng nhập mã số thuế đã có trong hệ thống vào cột này; không nhập ID hoặc mã NCC nội bộ.");
             }
             if (vendorRc !== RC_SUCCESS) {
-                throw new Error("Không tra cứu được NCC " + vendorCode + " do lỗi hệ thống. Vui lòng thử lại.");
+                throw new Error(vendorField + ": không tra cứu được do lỗi hệ thống. Vui lòng thử lại.");
             }
-            var vendorInfo = { id: normalizeExpenseVendorValue(vendor["id"]), supplierId: normalizeExpenseVendorValue(vendor["supplier.id"]) };
+            var vendorInfo = {
+                id: normalizeExpenseVendorValue(vendor["id"]),
+                supplierId: normalizeExpenseVendorValue(vendor["supplier.id"])
+            };
             if (!vendorInfo.id || !vendorInfo.supplierId) {
-                throw new Error("NCC " + vendorCode + " thiếu liên kết nhà cung cấp.");
+                throw new Error(vendorField + ": bản ghi NCC thiếu liên kết nhà cung cấp.");
             }
             var nextVendorRc = vendor.getNext();
             if (nextVendorRc === RC_SUCCESS) {
-                throw new Error("Mã NCC " + vendorCode + " không xác định duy nhất một nhà cung cấp.");
+                throw new Error(vendorField + ": không xác định duy nhất một nhà cung cấp.");
             }
             if (nextVendorRc !== RC_NO_MORE) {
-                throw new Error("Không xác định được NCC " + vendorCode + " do lỗi hệ thống. Vui lòng thử lại.");
+                throw new Error(vendorField + ": không xác định được NCC do lỗi hệ thống. Vui lòng thử lại.");
             }
             cache.vendors["$" + vendorCode] = vendorInfo;
         } finally { closeExpenseVendorFile(vendor); }
@@ -1331,15 +1330,15 @@ function expenseImportValidateRow(raw, contractParams, cache) {
         try {
             var linkRc = link.doSelect('contract.id="' + escapeExpenseVendorQueryValue(code) + '" and supplier.id="' + escapeExpenseVendorQueryValue(selected.supplierId) + '"');
             if (linkRc === RC_NO_MORE) {
-                throw new Error("NCC " + vendorCode + " có trong hệ thống nhưng không có liên kết với HĐ/KMS " + code + ". Vui lòng đối chiếu lại hai mã trong file Excel.");
+                throw new Error(vendorField + ": có trong hệ thống nhưng không có liên kết với HĐ/KMS tương ứng. " + contractField + ". Vui lòng đối chiếu lại hai giá trị trong file Excel.");
             }
             if (linkRc !== RC_SUCCESS) {
-                throw new Error("Không kiểm tra được liên kết giữa NCC " + vendorCode + " và HĐ/KMS " + code + " do lỗi hệ thống. Vui lòng thử lại.");
+                throw new Error(vendorField + "; " + contractField + ": không kiểm tra được liên kết do lỗi hệ thống. Vui lòng thử lại.");
             }
             cache.links[linkKey] = true;
         } finally { closeExpenseVendorFile(link); }
     }
-    return { contractCode: code, vendorId: selected.id, currency: currency, amount: amount, sourceRow: Number(raw.sourceRow) || 0 };
+    return { contractCode: code, vendorId: selected.id, amount: amount, sourceRow: Number(raw.sourceRow) || 0 };
 }
 
 function expenseImportSetItem(item, itemId, paymentId, row, description) {
@@ -1347,7 +1346,7 @@ function expenseImportSetItem(item, itemId, paymentId, row, description) {
     item["payment.id"] = paymentId;
     item["contract.id"] = row.contractCode;
     item["vendor.id"] = row.vendorId;
-    item["currency"] = row.currency;
+    // Currency thuộc món Dự chi; giữ nguyên giá trị SM khởi tạo khi Add.
     item["amount"] = row.amount;
     item["total.invoice"] = 0;
     item["ogl.sync.status"] = false;
