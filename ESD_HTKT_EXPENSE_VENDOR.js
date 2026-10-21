@@ -1271,7 +1271,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
     if (!vendorCode) throw new Error(vendorField + ": chưa nhập giá trị bắt buộc.");
 
     if (typeof amount !== "number" || !isFinite(amount) || amount <= 0 || amount > 9007199254740991) {
-        throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là Number lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
+        throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là chữ số lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
     }
 
     if (!cache.contracts["$" + code]) {
@@ -1279,7 +1279,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
         try {
             var contractRc = contract.doSelect('id="' + escapeExpenseVendorQueryValue(code) + '"');
             if (contractRc === RC_NO_MORE) {
-                throw new Error(contractField + ": không tồn tại trong hệ thống. Vui lòng kiểm tra lại mã hợp đồng/khoản mua sắm đã nhập trong file Excel.");
+                throw new Error(contractField + ": không tồn tại trong hệ thống. Vui lòng kiểm tra lại Mã HĐ/KMS đã nhập trong file Excel.");
             }
             if (contractRc !== RC_SUCCESS) {
                 throw new Error(contractField + ": không tra cứu được do lỗi hệ thống. Vui lòng thử lại.");
@@ -1301,7 +1301,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
             var escaped = escapeExpenseVendorQueryValue(vendorCode);
             var vendorRc = vendor.doSelect('vendor.number="' + escaped + '"');
             if (vendorRc === RC_NO_MORE) {
-                throw new Error(vendorField + ": không tồn tại trong danh mục NCC hạch toán. Vui lòng nhập mã số thuế đã có trong hệ thống vào cột này; không nhập ID hoặc mã NCC nội bộ.");
+                throw new Error(vendorField + ": không tồn tại trong danh mục NCC hạch toán. Vui lòng nhập MST đã có trong hệ thống.");
             }
             if (vendorRc !== RC_SUCCESS) {
                 throw new Error(vendorField + ": không tra cứu được do lỗi hệ thống. Vui lòng thử lại.");

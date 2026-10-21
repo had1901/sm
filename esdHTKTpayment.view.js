@@ -14,6 +14,7 @@ try {
 
 var record = vars.$L_file;
 
+
 vars.$showTab = false;
 vars.$descriptionReadOnly = !lib.ESD_HTKT_PAYMENT_WF.canEditInCurrenPhase(vars.$L_file);
 vars.$hideApprovalKttc = record['created.by'] == vars.$lo_operator["contact.name"] && record['initial.role'] == 'dmms';
@@ -46,17 +47,6 @@ vars["$showAttachmentTab"] = lib.ESD_HTKT_EXPENSE_VIEW.canShowAttachmentTab(acco
 vars["$showAccountingResultTab"] =
     accountingCurrentPhase == "end" &&
     paymentStatus != "cancelled";
-
-if (vars.$L_file.department) {
-    var unitId = vars.$L_file.department;
-    try {
-        var orgUnitFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
-        if (orgUnitFile.doSelect("unit.id=\"" + unitId + "\"") == RC_SUCCESS) {
-            vars.$departmentName = orgUnitFile["unit.name"];
-        }
-        orgUnitFile.doClose();
-    } catch (eDept) { }
-}
 
 
 vars.$totalContractAmount = "0";
@@ -123,4 +113,4 @@ if (contractId) {
     }
 }
 
-vars['$showWF'] = lib.ESD_ENV_CONFIG.getENV() == "SIT";
+//vars['$showWF'] = lib.ESD_ENV_CONFIG.getENV() == "SIT";
