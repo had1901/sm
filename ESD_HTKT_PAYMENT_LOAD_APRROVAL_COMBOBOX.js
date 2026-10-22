@@ -137,7 +137,7 @@ function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity) {
 
     try {
         contactFile = new SCFile("contacts", SCFILE_READONLY);
-        contactFile.setFields(["contact.id", "contact.name"]);
+        contactFile.setFields(["contact.id", "contact.name", "lv1.id"]);
 
         var contactRc = contactFile.doSelect(
                 'contact.name="' +
@@ -165,6 +165,7 @@ function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity) {
                             contactFile["contact.id"]
             ).trim();
 
+            var resolvedContactLv1 = normalizeHTKTApprovalUnitCode(contactFile["lv1.id"]);
             var hasDuplicate = false;
             try {
                 hasDuplicate = contactFile.getNext() === RC_SUCCESS;
@@ -175,6 +176,7 @@ function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity) {
             if (!hasDuplicate) {
                 if (resolvedIdentity && canonicalContactName) {
                     resolvedIdentity.contactName = canonicalContactName;
+                    resolvedIdentity.contactLv1 = resolvedContactLv1;
                 }
                 if (canonicalContactName) {
                     addRightsByIdentity(canonicalContactName);
@@ -222,7 +224,7 @@ function readPaymentApprovalValue(payment, field) {
             value == null ? "" : value
     ).trim();
 }
-function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity) {
+function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, cachedLeaderAccess) {
     var phase = readPaymentApprovalValue(payment, "current.phase").toLowerCase();
     var role = readPaymentApprovalValue(payment, "initial.role").toLowerCase();
     var creator = readPaymentApprovalValue(payment, "created.by").toLowerCase();
@@ -253,7 +255,8 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity) {
             status === "approved" ||
             status === "accounted";
 
-    var leaderAccess = getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity);
+    var leaderAccess = cachedLeaderAccess ||
+            getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity);
 
     /*
      * Xác định quyền lãnh đạo theo 2 nguồn:
@@ -579,8 +582,9 @@ function validateDuplicatePaymentApprovalUser(payment, currentField, newValue) {
     }
 }
 
-function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, reason, currentUser) {
+function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, reason, currentUser, cachedPayment, cachedLeaderAccess) {
     var payment = null;
+    var ownsPayment = false;
 
     try {
         var safePaymentId = String(paymentId == null ? "" : paymentId).trim();
@@ -614,7 +618,8 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
             return;
         }
 
-        var leadership = getPaymentReassignmentRoleAccess(safeCurrentUser);
+        var leadership = cachedLeaderAccess ||
+                getPaymentReassignmentRoleAccess(safeCurrentUser);
 
         if (
                 !leadership ||
@@ -626,15 +631,19 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
             return;
         }
 
-        payment = new SCFile("esdHTKTpayment", SCFILE_READONLY);
-        payment.setFields(["id", "initial.role", "transaction.type"]);
+        payment = cachedPayment || null;
+        if (!payment) {
+            payment = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+            ownsPayment = true;
+            payment.setFields(["id", "initial.role", "transaction.type"]);
 
-        if (
-                payment.doSelect(
-                        'id="' + escapeSmQueryValue(safePaymentId) + '"'
-                ) !== RC_SUCCESS
-        ) {
-            return;
+            if (
+                    payment.doSelect(
+                            'id="' + escapeSmQueryValue(safePaymentId) + '"'
+                    ) !== RC_SUCCESS
+            ) {
+                return;
+            }
         }
 
         var initialRole = String(
@@ -718,7 +727,7 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         );
     } finally {
         try {
-            if (payment) {
+            if (payment && ownsPayment) {
                 payment.doClose();
             }
         } catch (eClosePayment) {}
@@ -732,11 +741,13 @@ function savePaymentApprovalField(details) {
 function runPaymentApprovalApi(details, save) {
     details = details || {};
     var payment = null;
-    var timingStart = save ? 0 : new Date().getTime();
+    var timingStart = save ? new Date().getTime() : 0;
     var timingRecord = 0;
     var timingAccess = 0;
     var timingIdentity = 0;
     var timingOptions = 0;
+    var timingUpdate = 0;
+    var timingHistory = 0;
     try {
         var paymentId = String(details.paymentId || "").trim();
         var currentUser = String(details.currentUser || "").trim();
@@ -752,7 +763,18 @@ function runPaymentApprovalApi(details, save) {
         }
         if (timingStart) timingRecord = new Date().getTime();
         var resolvedIdentity = {};
-        var apiAccess = getPaymentApprovalAccess(payment, currentUser, resolvedIdentity);
+        // Never retain permission/domain data across requests or users.
+        var requestContext = { domains: {}, entityPsCodes: {}, contactLv1: {} };
+        var reassignmentRoleAccess = getPaymentReassignmentRoleAccess(
+                currentUser,
+                resolvedIdentity
+        );
+        var apiAccess = getPaymentApprovalAccess(
+                payment,
+                currentUser,
+                resolvedIdentity,
+                reassignmentRoleAccess
+        );
         if (timingStart) timingAccess = new Date().getTime();
         var apiEditable =
                 apiAccess &&
@@ -794,9 +816,13 @@ function runPaymentApprovalApi(details, save) {
         var result;
         if (!save || (!isCheckbox && value)) {
             var permissionContactId = resolvedIdentity.contactName || resolvePaymentApprovalContactId(currentUser);
+            if (resolvedIdentity.contactName && resolvedIdentity.contactLv1) {
+                requestContext.contactLv1["$" + resolvedIdentity.contactName] = resolvedIdentity.contactLv1;
+            }
             if (timingStart) timingIdentity = new Date().getTime();
             var loaded = save ? validatePaymentApprovalAssignee(payment, field, value, {
                 currentUser: permissionContactId,
+                requestContext: requestContext,
                 page: 1,
                 pageSize: 1,
                 keyword: ""
@@ -848,6 +874,9 @@ function runPaymentApprovalApi(details, save) {
                 "" :
                 readPaymentApprovalValue(payment, field);
 
+        if (!isCheckbox && previousApprovalValue === value) {
+            return { success: true, data: { field: field, value: value, clearedField: "" } };
+        }
         payment[field] = value;
         var clearedField = "";
         if (isCheckbox && !value) {
@@ -855,17 +884,21 @@ function runPaymentApprovalApi(details, save) {
             payment[clearedField] = "";
         }
         if (payment.doUpdate() !== RC_SUCCESS) throw new Error("Không lưu được thông tin phê duyệt.");
+        if (timingStart) timingUpdate = new Date().getTime();
 
-        if (!isCheckbox) {
+        if (!isCheckbox && previousApprovalValue && previousApprovalValue !== value) {
             createPaymentReassignmentHistory(
                     paymentId,
                     field,
                     previousApprovalValue,
                     value,
                     details.reason,
-                    currentUser
+                    currentUser,
+                    payment,
+                    reassignmentRoleAccess
             );
         }
+        if (timingStart) timingHistory = new Date().getTime();
 
         return {
             success: true,
@@ -887,6 +920,8 @@ function runPaymentApprovalApi(details, save) {
                         " access=" + (timingRecord && timingAccess ? timingAccess - timingRecord : -1) +
                         " identity=" + (timingAccess && timingIdentity ? timingIdentity - timingAccess : -1) +
                         " options=" + (timingIdentity && timingOptions ? timingOptions - timingIdentity : -1) +
+                        " update=" + (timingUpdate ? timingUpdate - (timingOptions || timingIdentity || timingAccess) : -1) +
+                        " history=" + (timingUpdate && timingHistory ? timingHistory - timingUpdate : -1) +
                         " total=" + (timingEnd - timingStart) + "ms"
                 );
             }
@@ -989,9 +1024,13 @@ function getHTKTApprovalActiveEntityCodeByPsCode(psCode) {
     return entityCodes.length === 1 ? entityCodes[0] : "";
 }
 
-function getHTKTApprovalActivePsCodesByEntityCode(entityCode, psPrefix) {
+function getHTKTApprovalActivePsCodesByEntityCode(entityCode, psPrefix, requestContext) {
     var safeEntityCode = String(entityCode == null ? "" : entityCode).trim();
     var safePrefix = String(psPrefix == null ? "" : psPrefix).trim();
+    var cacheKey = "$" + safeEntityCode + "|" + safePrefix;
+    if (requestContext && requestContext.entityPsCodes.hasOwnProperty(cacheKey)) {
+        return requestContext.entityPsCodes[cacheKey];
+    }
     var result = [];
     var seen = {};
     var entityFile = null;
@@ -1026,13 +1065,18 @@ function getHTKTApprovalActivePsCodesByEntityCode(entityCode, psPrefix) {
         try { if (entityFile) entityFile.doClose(); } catch (closeError) {}
     }
 
+    if (requestContext) requestContext.entityPsCodes[cacheKey] = result;
     return result;
 }
 
-function resolveHTKTApprovalDataDomain(targetLv1) {
+function resolveHTKTApprovalDataDomain(targetLv1, requestContext) {
     var HEAD_OFFICE_PS_PREFIX = "0999";
     var HEAD_OFFICE_OGL_SEG1 = "1010098";
     var normalizedLv1 = normalizeHTKTApprovalUnitCode(targetLv1);
+    var cacheKey = "$" + normalizedLv1;
+    if (requestContext && requestContext.domains.hasOwnProperty(cacheKey)) {
+        return requestContext.domains[cacheKey];
+    }
 
     var result = {
         valid: false,
@@ -1042,6 +1086,7 @@ function resolveHTKTApprovalDataDomain(targetLv1) {
         allowedLv1List: []
     };
 
+    if (requestContext) requestContext.domains[cacheKey] = result;
     if (!normalizedLv1) return result;
 
     if (normalizedLv1.indexOf(HEAD_OFFICE_PS_PREFIX) !== 0) {
@@ -1058,7 +1103,8 @@ function resolveHTKTApprovalDataDomain(targetLv1) {
 
     var headOfficePsCodes = getHTKTApprovalActivePsCodesByEntityCode(
             HEAD_OFFICE_OGL_SEG1,
-            HEAD_OFFICE_PS_PREFIX
+            HEAD_OFFICE_PS_PREFIX,
+            requestContext
     );
 
     if (!headOfficePsCodes.length) {
@@ -1076,11 +1122,15 @@ function resolveHTKTApprovalDataDomain(targetLv1) {
     return result;
 }
 
-function getHTKTApprovalContactLv1(contactId) {
+function getHTKTApprovalContactLv1(contactId, requestContext) {
     var safeContactId = String(contactId == null ? "" : contactId).trim();
     var contactFile = null;
 
     if (!safeContactId) return "";
+    var cacheKey = "$" + safeContactId;
+    if (requestContext && requestContext.contactLv1.hasOwnProperty(cacheKey)) {
+        return requestContext.contactLv1[cacheKey];
+    }
 
     try {
         contactFile = new SCFile("contacts", SCFILE_READONLY);
@@ -1091,7 +1141,9 @@ function getHTKTApprovalContactLv1(contactId) {
         );
 
         if (rc !== RC_SUCCESS) return "";
-        return normalizeHTKTApprovalUnitCode(contactFile["lv1.id"]);
+        var lv1 = normalizeHTKTApprovalUnitCode(contactFile["lv1.id"]);
+        if (requestContext) requestContext.contactLv1[cacheKey] = lv1;
+        return lv1;
     } catch (e) {
         return "";
     } finally {
@@ -1343,6 +1395,7 @@ function loadPaymentFinalCheckerComboBox(paymentFile) {
 }
 
 function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiOptions) {
+    var requestContext = apiOptions && apiOptions.requestContext;
     var HTKT_SUB_MODULE = "00401";
     var ALLOW_GLOBAL_SCOPE_IN_COMBO = false;
 
@@ -1464,7 +1517,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         return output;
     }
 
-    resolvedTargetDomain = resolveHTKTApprovalDataDomain(output.targetLv1);
+    resolvedTargetDomain = resolveHTKTApprovalDataDomain(output.targetLv1, requestContext);
     if (!resolvedTargetDomain.valid) {
         clearAllComboBoxes(configs);
         output.success = false;
@@ -1553,7 +1606,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         }
 
         try {
-            var domain = resolvedTargetDomain || resolveHTKTApprovalDataDomain(targetLv1);
+            var domain = resolvedTargetDomain || resolveHTKTApprovalDataDomain(targetLv1, requestContext);
             var allowedLv1List = domain.allowedLv1List || [];
             if (!domain.valid || !allowedLv1List.length) {
                 validation.message = "Không xác định được miền dữ liệu hợp lệ của hồ sơ.";
@@ -1851,7 +1904,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             return result;
         }
 
-        var targetDomain = resolvedDomain || resolveHTKTApprovalDataDomain(targetLv1);
+        var targetDomain = resolvedDomain || resolveHTKTApprovalDataDomain(targetLv1, requestContext);
         if (!targetDomain.valid) {
             result.message = "Không xác định được miền dữ liệu hợp lệ của lv1 hồ sơ.";
             return result;
@@ -1888,8 +1941,8 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
 
         if (result.scope === "QT_PQDL_06") {
             if (targetDomain.type === "HEAD_OFFICE") {
-                var currentUserLv1 = normalizeUnitCode(getHTKTApprovalContactLv1(contactId));
-                var currentUserDomain = resolveHTKTApprovalDataDomain(currentUserLv1);
+                var currentUserLv1 = normalizeUnitCode(getHTKTApprovalContactLv1(contactId, requestContext));
+                var currentUserDomain = resolveHTKTApprovalDataDomain(currentUserLv1, requestContext);
 
                 if (currentUserDomain.valid && currentUserDomain.type === "HEAD_OFFICE") {
                     result.canAccessTargetLv1 = true;

@@ -981,42 +981,15 @@ function validateVendorAndPaymentDetails(record) {
 //}
 
 function validateVendorAndPaymentDetailsOnWorkflow(record) {
-    var paymentId = String(record.id || "").trim();
-    if (!paymentId) return ["Thiếu mã phiếu Dự chi để kiểm tra các món."];
-
-    var errorMss = [];
+    var paymentId = String(record.id || "");
     var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+    var rc = vendor.doSelect('payment.id="' + paymentId + '"');
+
     try {
-        var escapedPaymentId = paymentId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-        var rc = vendor.doSelect('payment.id="' + escapedPaymentId + '"');
-        if (rc === RC_NO_MORE) return ["Vui lòng chọn ít nhất một món dự chi."];
+        vendor.doClose();
+    } catch (e) {}
 
-        while (rc === RC_SUCCESS) {
-            if (!String(vendor["vendor.id"] || "").trim()) {
-                return ["Vui lòng chọn Nhà cung cấp."];
-            }
-
-            var amountText = vendor["amount"] == null ? "" : String(vendor["amount"]).replace(/,/g, "").trim();
-            var amount = amountText ? Number(amountText) : NaN;
-            var amountError = "";
-            if (!isFinite(amount)) {
-                amountError = "Số tiền dự chi là bắt buộc và phải là số hợp lệ.";
-            } else if (amount <= 0) {
-                amountError = "Số tiền dự chi phải lớn hơn 0.";
-            }
-            if (amountError && errorMss.indexOf(amountError) < 0) errorMss.push(amountError);
-            rc = vendor.getNext();
-        }
-        if (rc !== RC_NO_MORE) {
-            errorMss.push("Không đọc được đầy đủ các món Dự chi. Code: " + rc);
-        }
-    } catch (error) {
-        errorMss.push("Không kiểm tra được các món Dự chi: " + String(error.message || error));
-    } finally {
-        try { vendor.doClose(); } catch (closeError) {}
-    }
-
-    return errorMss.length > 0 ? errorMss : null;
+    return rc == RC_SUCCESS ? null : ["Vui lòng chọn nhà cung cấp."];
 }
 
 /**

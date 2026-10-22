@@ -33,10 +33,10 @@ function resolveInitialAccountingErrorExecutor(requestRec) {
     if (!requestRec) return "";
 
     var initialRole = String(
-            requestRec['initial.role'] || requestRec['initial_role'] || ""
+            requestRec['initial.role'] || ""
     ).trim().toLowerCase();
     var createdBy = String(
-            requestRec['created.by'] || requestRec['created_by'] || ""
+            requestRec['created.by'] || ""
     ).trim();
     var checkerKttc = String(
             requestRec['user.checker.kttc'] || ""
@@ -589,7 +589,6 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
         while (accountingRc === RC_SUCCESS) {
             var prepaymentId = String(
                     accountingRec['prepayment.id'] ||
-                    accountingRec['prepayment_id'] ||
                     ""
             ).trim();
 
@@ -630,7 +629,6 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
                 if (!summary.contractId) {
                     summary.contractId = String(
                             accountingRec['contract.id'] ||
-                            accountingRec['contract_id'] ||
                             ""
                     ).trim();
                 }
@@ -709,7 +707,7 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
             var paymentCreatedAt = null;
             var department = "";
             var initialKttcExecutor = "";
-            
+
             try {
                 detailRec = new SCFile(tableName, SCFILE_READONLY);
 
@@ -729,12 +727,11 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
                     totalSkipped++;
                     continue;
                 }
-                
+
                 paymentCreatedAt =
                         detailRec['created.at'] ||
-                        detailRec['created_at'] ||
                         null;
-                        
+
                 department = String(detailRec['department'] ||"").trim();
                 initialKttcExecutor = resolveInitialAccountingErrorExecutor(
                         detailRec
@@ -742,15 +739,12 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
 
                 requestTypeLabel = String(
                         detailRec['transaction.type'] ||
-                        detailRec['transaction_type'] ||
                         ""
                 );
 
                 contractCode = String(
                         detailRec['contract.code'] ||
-                        detailRec['contract_code'] ||
                         detailRec['contract.id'] ||
-                        detailRec['contract_id'] ||
                         item.contractId ||
                         ""
                 );
@@ -760,7 +754,6 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
                     amount = Number(
                             detailRec['total.amount.paid'] ||
                             detailRec['total.expense.amount'] ||
-                            detailRec['total_amount_paid'] ||
                             detailRec['amount'] ||
                             0
                     );
@@ -771,13 +764,11 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
                 // Unit - giữ nguyên STRING để không mất số 0 đầu
                 unitLv1 = String(
                         detailRec['unit.lv1'] ||
-                        detailRec['unit_lv1'] ||
                         ""
                 ).trim();
 
                 unitLv2 = String(
                         detailRec['unit.lv2'] ||
-                        detailRec['unit_lv2'] ||
                         ""
                 ).trim();
 
@@ -850,9 +841,9 @@ function syncAllAccountingErrorHandling(requestIdFilter) {
             // BƯỚC 5: TÍNH STATUS
             // ============================================================
 //            var finalStatus = item.totalErrorTrans > 0 ? "ERROR" : "ACCOUNTED";
-            
+
             var finalStatus = item.totalTrans > 0 &&
-                    item.totalCompletedTrans === item.totalTrans
+            item.totalCompletedTrans === item.totalTrans
                     ? "ACCOUNTED"
                     : (item.totalPendingApprovalTrans > 0
                             ? ACCOUNTING_STATUS.PENDING_APPROVAL
@@ -1030,11 +1021,11 @@ function getPaymentDetailInfo(requestId, subType) {
         try {
             if (prepayRec.doSelect('id="' + requestId + '"') === RC_SUCCESS) {
                 result['amount'] = prepayRec['amount'] || 0;
-                result['contractId'] = prepayRec['contract_id'] || "";
-                result['createdAt'] = prepayRec['created_at'] || null;
+                result['contractId'] = prepayRec['contract.id'] || "";
+                result['createdAt'] = prepayRec['created.at'] || null;
                 // Lấy đơn vị từ bảng Prepayment
-                result['unitLv1'] = prepayRec['unit.lv1'] || prepayRec['unit_lv1'] || "";
-                result['unitLv2'] = prepayRec['unit.lv2'] || prepayRec['unit_lv2'] || "";
+                result['unitLv1'] = prepayRec['unit.lv1'] || "";
+                result['unitLv2'] = prepayRec['unit.lv2'] || "";
             }
         } finally {
             if (prepayRec) prepayRec.doClose();
@@ -1045,12 +1036,12 @@ function getPaymentDetailInfo(requestId, subType) {
         var payRec = new SCFile("esdHTKTpayment", SCFILE_READONLY);
         try {
             if (payRec.doSelect('id="' + requestId + '"') === RC_SUCCESS) {
-                result['amount'] = payRec['total_amount_paid'] || 0;
-                result['contractId'] = payRec['contract_id'] || "";
-                result['createdAt'] = payRec['created_at'] || null;
+                result['amount'] = payRec['total.amount.paid'] || 0;
+                result['contractId'] = payRec['contract.id'] || "";
+                result['createdAt'] = payRec['created.at'] || null;
                 // Lấy đơn vị từ bảng Payment
-                result['unitLv1'] = payRec['unit.lv1'] || payRec['unit_lv1'] || "";
-                result['unitLv2'] = payRec['unit.lv2'] || payRec['unit_lv2'] || "";
+                result['unitLv1'] = payRec['unit.lv1'] || "";
+                result['unitLv2'] = payRec['unit.lv2'] || "";
             }
         } finally {
             if (payRec) payRec.doClose();
@@ -1118,7 +1109,7 @@ function getLatestAccountingCheckedTime(requestId) {
         var rc = accountingRec.doSelect(query);
 
         while (rc === RC_SUCCESS) {
-            var checkedTime = accountingRec['checked_time'] || accountingRec['checked.time'];
+            var checkedTime = accountingRec['checked.time'];
             var type = accountingRec['type'];
             var status = String(accountingRec['status'] || '').toUpperCase();
 
@@ -1272,17 +1263,14 @@ function resolveCoreRetryInquiryChanRefno(payload, requestId, subType) {
 }
 
 /**
- * Vấn tin CORE trước khi gửi lại. Mọi lỗi vấn tin hoặc trạng thái
- * khác C đều trả completed=false để luồng retry gọi callApiCore().
+ * Block retry only when the inquiry call/response fails. Business errors allow resend.
  */
 function inquireCoreStatusBeforeRetry(payload, requestId, subType) {
     var result = {
+        success: false,
         completed: false,
-        chanRefno: resolveCoreRetryInquiryChanRefno(
-                payload,
-                requestId,
-                subType
-        ),
+        error: "g\u1ecdi v\u1ea5n tin tr\u1ea1ng th\u00e1i th\u1ea5t b\u1ea1i",
+        chanRefno: resolveCoreRetryInquiryChanRefno(payload, requestId, subType),
         pmtStatus: "",
         hostRefNum: "",
         inquiryResult: null
@@ -1299,36 +1287,50 @@ function inquireCoreStatusBeforeRetry(payload, requestId, subType) {
         result.inquiryResult = inquiryLib.inquireTransactionStatus({
             chanRefno: result.chanRefno
         });
+        var inquiry = result.inquiryResult;
+        var body = inquiry && inquiry.body;
+        if (typeof body === "string") {
+            body = JSON.parse(body);
+        }
+        if (!inquiry ||
+                !body || typeof body !== "object" || Array.isArray(body)) {
+            return result;
+        }
 
-        var body = result.inquiryResult && result.inquiryResult.body;
-        var inquiryData = body && body.data &&
-                typeof body.data === "object"
-                ? body.data
-                : {};
-        var inquiryTransactionInfo = inquiryData.txnInfo &&
-                typeof inquiryData.txnInfo === "object"
-                ? inquiryData.txnInfo
-                : {};
+        // The normalized library uses httpStatus; postJson uses statusCode for HTTP.
+        // Do not confuse either with body.status.code (the business result).
+        var httpStatus = typeof inquiry.httpStatus !== "undefined"
+                ? inquiry.httpStatus
+                : (typeof inquiry.callSucceeded === "undefined" ? inquiry.statusCode : null);
+        var hasHttpStatus = httpStatus != null && String(httpStatus).trim() !== "";
+        var httpSucceeded = hasHttpStatus
+                ? Number(httpStatus) >= 200 && Number(httpStatus) < 300
+                : inquiry.callSucceeded === true || (inquiry.success === true && !inquiry.error);
+        if (inquiry.callSucceeded === false || !httpSucceeded) return result;
 
-        result.pmtStatus = String(
-                inquiryData.pmtStatus || ""
-        ).trim().toUpperCase();
-        result.hostRefNum = String(
-                inquiryTransactionInfo.hostRefNum ||
-                inquiryData.hostRefNum ||
-                ""
-        ).trim();
-        result.completed = result.inquiryResult &&
-                String(result.inquiryResult.statusCode || "").trim() === "0" &&
-                result.pmtStatus === "C" &&
-                !!result.hostRefNum;
+        var businessCode = body.status && body.status.code;
+        if (businessCode == null || String(businessCode).trim() === "") return result;
+        inquiry.body = body;
+
+        var inquiryData = body.data && typeof body.data === "object"
+                ? body.data : {};
+        var trnInfo = inquiryData.trnInfo && typeof inquiryData.trnInfo === "object"
+                ? inquiryData.trnInfo : {};
+        var txnInfo = inquiryData.txnInfo && typeof inquiryData.txnInfo === "object"
+                ? inquiryData.txnInfo : {};
+        result.pmtStatus = String(inquiryData.pmtStatus || "").trim().toUpperCase();
+        result.hostRefNum = String(trnInfo.hostRefNum || txnInfo.hostRefNum || inquiryData.hostRefNum || "").trim();
+
+        result.success = true;
+        result.error = "";
+        result.completed = String(businessCode).trim() === "0" &&
+                (result.pmtStatus === "C" || result.pmtStatus === "CN") && !!result.hostRefNum;
     } catch (eInquiry) {
         result.inquiryResult = {
             success: false,
             error: String(eInquiry && eInquiry.message || eInquiry)
         };
     }
-
     return result;
 }
 
@@ -1558,6 +1560,21 @@ function retryAccountingErrorsResult(input) {
             };
 
             // Luu snapshot cu va lien ket voi ban ghi xu ly loi truoc khi retry.
+            // A transport/response failure must not change accounting data or dispatch another transfer.
+            var coreInquiry = null;
+            if (accountingType === "CORE") {
+                coreInquiry = inquireCoreStatusBeforeRetry(currentPayload, targetRequestId, retrySubType);
+                if (!coreInquiry.success) {
+                    result.failed++;
+                    result.errors.push({
+                        requestId: targetRequestId,
+                        type: accountingType,
+                        message: coreInquiry.error
+                    });
+                    continue;
+                }
+            }
+
             var retryHistoryResult = createAccountingRetryHistory(
                 retryPrepaymentId,
                 targetRequestId,
@@ -1582,11 +1599,6 @@ function retryAccountingErrorsResult(input) {
 
             // CORE phải vấn tin trước khi gửi lại để tránh giao dịch kép.
             if (accountingType === "CORE") {
-                var coreInquiry = inquireCoreStatusBeforeRetry(
-                        currentPayload,
-                        targetRequestId,
-                        retrySubType
-                );
 
                 if (coreInquiry.completed) {
                     var inquiryCheckedTime = system.functions.tod();
@@ -2034,7 +2046,6 @@ function saveAccountingErrorsResult(input) {
 
     // Nếu Client gửi kèm clientTime thì ưu tiên dùng, nếu không mới lấy tod() của Server
     var currentTime = (rows[0] && rows[0].clientTime) ? new Date(rows[0].clientTime) : system.functions.tod();
-    var currentOpName = system.functions.operator();
 
     var result = {
         success: true,
@@ -2128,7 +2139,7 @@ function saveAccountingErrorsResult(input) {
                 }
 
                 // Lấy Transaction ID từ payload hoặc DB hoặc response/data
-                var transId = String(row.transactionId || row._transactionId || rec["transaction.id"] || rec["transaction_id"] || "").trim();
+                var transId = String(row.transactionId || row._transactionId || rec["transaction.id"] || "").trim();
                 if (!transId && responseObj) {
                     transId = String(responseObj.hostRefNum || responseObj.trnRefNum || responseObj.transactionId || (responseObj.data && (responseObj.data.hostRefNum || responseObj.data.trnRefNum || responseObj.data.transactionId)) || "").trim();
                 }
@@ -3282,12 +3293,12 @@ function getAccountingErrors(input) {
                 note: errorRec['note'] || "",
                 amount: errorRec['amount'] || 0,
                 checkedTime: currentCheckedTime,
-                updatedBy: errorRec['updated.by'] || errorRec['updated_by'] || errorRec['sysmoduser'] || (activitiesList && activitiesList.length > 0 ? activitiesList[0].operator : "") || null,
+                updatedBy: errorRec['updated.by'] || errorRec['sysmoduser'] || (activitiesList && activitiesList.length > 0 ? activitiesList[0].operator : "") || null,
                 updatedAt: currentUpdatedAt,
                 data: parseData,
                 response: parseResponse,
                 responseHttpStatus: errorRec['response.http.status'] === null ||
-                        errorRec['response.http.status'] === undefined
+                errorRec['response.http.status'] === undefined
                         ? ""
                         : String(errorRec['response.http.status']),
                 description: entryDescription,
@@ -3476,15 +3487,15 @@ function syncPendingApprovalTransition(oldRec, newRec, prepaymentId) {
  */
 function onAccountingInfoSavedTrigger(oldRec, newRec, eventType) {
     // ------------------------------------------------------------------------
-    // BƯỚC 1: LẤY VÀ KIỂM TRA MÃ ĐỀ NGHỊ (prepayment.id / prepayment_id)
+    // BƯỚC 1: LẤY VÀ KIỂM TRA MÃ ĐỀ NGHỊ (prepayment.id / payment.id)
     // ------------------------------------------------------------------------
     var prepaymentId = "";
     if (eventType === "DELETE") {
         if (!oldRec) return;
-        prepaymentId = oldRec['prepayment.id'] || oldRec['prepayment_id'];
+        prepaymentId = oldRec['prepayment.id'] || oldRec['payment.id'];
     } else {
         if (!newRec) return;
-        prepaymentId = newRec['prepayment.id'] || newRec['prepayment_id'];
+        prepaymentId = newRec['prepayment.id'] || newRec['payment.id'];
     }
 
     if (!prepaymentId) return;
@@ -3517,8 +3528,8 @@ function onAccountingInfoSavedTrigger(oldRec, newRec, eventType) {
         try { if (requestRec) requestRec.doClose(); } catch (eRequestClose) {}
     }
 
-    // Lưu khai báo chỉ chuyển ERROR -> PENDING_APPROVAL.
-    // Cập nhật trực tiếp bảng tổng hợp để tránh full sync trong doUpdate().
+    // Nhánh Lưu khai báo chỉ thay đổi ERROR -> PENDING_APPROVAL.
+    // Cập nhật trực tiếp bảng tổng hợp để tránh full sync đồng bộ trong doUpdate().
     if (
             eventType === "UPDATE" &&
             syncPendingApprovalTransition(oldRec, newRec, prepaymentId)
@@ -3592,8 +3603,8 @@ function handleAccountingDelete(oldRec, prepaymentId) {
                 : (deleteFinalStatus === ACCOUNTING_STATUS.ERROR
                         ? getInitialAccountingErrorExecutor(prepaymentId)
                         : "");
-        deleteTargetRec['total_trans'] = totalTrans;
-        deleteTargetRec['total_error_trans'] = totalErrorTrans;
+        deleteTargetRec['total.trans'] = totalTrans;
+        deleteTargetRec['total.error.trans'] = totalErrorTrans;
         deleteTargetRec['user.approver.kttc'] = deleteExecutorKttc;
         deleteTargetRec['status'] = deleteFinalStatus;
         deleteTargetRec.doUpdate();
@@ -3666,61 +3677,61 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
             ]);
             var firstRc = accountingRec.doSelect(accountingQuery);
             while (firstRc === RC_SUCCESS) {
-            totalTrans++;
-            var accStatus = "";
-            var accType = "";
+                totalTrans++;
+                var accStatus = "";
+                var accType = "";
 
-            // Kiểm tra xem dòng trong DB có trùng với dòng newRec đang sửa/lưu hay không
-            var isCurrentRecord = false;
-            if (newRec) {
-                var curRecId = newRec['id'] || newRec['request.id'] || newRec['request_id'];
-                var dbRecId = accountingRec['id'] || accountingRec['request.id'] || accountingRec['request_id'];
-                if (curRecId && dbRecId && String(curRecId) === String(dbRecId)) {
-                    isCurrentRecord = true;
+                // Kiểm tra xem dòng trong DB có trùng với dòng newRec đang sửa/lưu hay không
+                var isCurrentRecord = false;
+                if (newRec) {
+                    var curRecId = newRec['id'] || newRec['request.id'];
+                    var dbRecId = accountingRec['id'] || accountingRec['request.id'];
+                    if (curRecId && dbRecId && String(curRecId) === String(dbRecId)) {
+                        isCurrentRecord = true;
+                    }
                 }
-            }
 
-            // Nếu đúng dòng đang sửa -> Lấy giá trị mới nhất từ newRec (tránh lỗi cache DB)
-            if (isCurrentRecord) {
-                accStatus = String(newRec['status'] || "").toUpperCase();
-                accType = String(newRec['type'] || "").toUpperCase();
-            } else {
-                accStatus = String(accountingRec['status'] || "").toUpperCase();
-                accType = String(accountingRec['type'] || "").toUpperCase();
-            }
-
-            // Đếm trạng thái giao dịch
-            if (accStatus === "ERROR") {
-                totalErrorTrans++;
-                if (!detectedErrorChannel) {
-                    detectedErrorChannel = accType; // Lấy type giao dịch bị lỗi (VD: CORE)
+                // Nếu đúng dòng đang sửa -> Lấy giá trị mới nhất từ newRec (tránh lỗi cache DB)
+                if (isCurrentRecord) {
+                    accStatus = String(newRec['status'] || "").toUpperCase();
+                    accType = String(newRec['type'] || "").toUpperCase();
+                } else {
+                    accStatus = String(accountingRec['status'] || "").toUpperCase();
+                    accType = String(accountingRec['type'] || "").toUpperCase();
                 }
-            }
-            if (
-                    accStatus === "CREATED" ||
-                    accStatus === "IN_QUEUE" ||
-                    accStatus === "NEW" ||
-                    accStatus === ACCOUNTING_STATUS.PENDING_APPROVAL
-            ) {
-                totalHandlingTrans++;
-            }
-            if (accStatus === ACCOUNTING_STATUS.PENDING_APPROVAL) {
-                totalPendingApprovalTrans++;
-            }
-            if (accStatus === "COMPLETED") {
-                totalCompletedTrans++;
-            }
 
-            if (accType === "AP" || accType === "GL") {
-                totalOglTrans++;
+                // Đếm trạng thái giao dịch
+                if (accStatus === "ERROR") {
+                    totalErrorTrans++;
+                    if (!detectedErrorChannel) {
+                        detectedErrorChannel = accType; // Lấy type giao dịch bị lỗi (VD: CORE)
+                    }
+                }
+                if (
+                        accStatus === "CREATED" ||
+                        accStatus === "IN_QUEUE" ||
+                        accStatus === "NEW" ||
+                        accStatus === ACCOUNTING_STATUS.PENDING_APPROVAL
+                ) {
+                    totalHandlingTrans++;
+                }
+                if (accStatus === ACCOUNTING_STATUS.PENDING_APPROVAL) {
+                    totalPendingApprovalTrans++;
+                }
                 if (accStatus === "COMPLETED") {
-                    totalOglCompletedTrans++;
+                    totalCompletedTrans++;
                 }
-            }
-            if (accType === "CORE" &&
-                    (accStatus === "CREATED" || accStatus === "IN_QUEUE")) {
-                hasCoreAwaitingDispatch = true;
-            }
+
+                if (accType === "AP" || accType === "GL") {
+                    totalOglTrans++;
+                    if (accStatus === "COMPLETED") {
+                        totalOglCompletedTrans++;
+                    }
+                }
+                if (accType === "CORE" &&
+                        (accStatus === "CREATED" || accStatus === "IN_QUEUE")) {
+                    hasCoreAwaitingDispatch = true;
+                }
 
                 firstRc = accountingRec.getNext();
             }
@@ -3886,11 +3897,11 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
     if (tableName) {
         var detailRec = new SCFile(tableName, SCFILE_READONLY);
         if (detailRec.doSelect('id="' + escapeQueryValue(prepaymentId) + '"') === RC_SUCCESS) {
-            extraInfo.requestTypeLabel = detailRec['transaction.type'] || detailRec['transaction_type'] || "";
-            extraInfo.contractCode = detailRec['contract.code'] || detailRec['contract_code'] || detailRec['contract_id'] || "";
+            extraInfo.requestTypeLabel = detailRec['transaction.type'] || "";
+            extraInfo.contractCode = detailRec['contract.code'] || detailRec['contract.id'] || "";
             extraInfo.amount = Number(detailRec['total.amount.paid'] || detailRec['total.expense.amount'] || detailRec['amount'] || 0);
-            extraInfo.requestUnitLv1 = detailRec['unit.lv1'] || detailRec['unit_lv1'] || "";
-            extraInfo.requestUnitLv2 = detailRec['unit.lv2'] || detailRec['unit_lv2'] || "";
+            extraInfo.requestUnitLv1 = detailRec['unit.lv1'] || "";
+            extraInfo.requestUnitLv2 = detailRec['unit.lv2'] || "";
             extraInfo.paymentCreatedAt = detailRec['created.at'];
             extraInfo.department = String(detailRec['department'] || "").trim();
             extraInfo.initialKttcExecutor = resolveInitialAccountingErrorExecutor(
@@ -3942,7 +3953,7 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
     if (targetRec.doSelect(targetQuery) === RC_SUCCESS) {
         // ===> ĐÃ CÓ BẢN GHI -> TIẾN HÀNH CẬP NHẬT (UPDATE)
         targetRec['request.type'] = requestType;
-        targetRec['contract.id'] = (newRec && (newRec['contract.id'] || newRec['contract_id'])) || targetRec['contract.id'] || "";
+        targetRec['contract.id'] = (newRec && newRec['contract.id']) || targetRec['contract.id'] || "";
         targetRec['total.trans'] = totalTrans;
         targetRec['total.error.trans'] = totalErrorTrans;
         targetRec['status'] = finalStatus;
@@ -3977,7 +3988,7 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
         targetRec['id'] = generatedId;
         targetRec['request.id'] = prepaymentId;
         targetRec['request.type'] = requestType;
-        targetRec['contract.id'] = (newRec && (newRec['contract.id'] || newRec['contract_id'])) || "";
+        targetRec['contract.id'] = (newRec && newRec['contract.id']) || "";
         targetRec['status'] = finalStatus;
         targetRec['total.trans'] = totalTrans;
         targetRec['total.error.trans'] = totalErrorTrans;
@@ -4044,15 +4055,15 @@ function readHTKTContactInfo(currentUser) {
 
         // 3. Nếu tìm thấy bản ghi thông tin contact thành công
         if (rcContact == RC_SUCCESS) {
-            // Lấy thông tin phân cấp cơ cấu tổ chức (Hỗ trợ fallback cả dạng CamelCase và Snake_case)
-            result.lv1 = contactFile["lv1.id"] || contactFile.lv1_id || "";
-            result.lv2 = contactFile["lv2.id"] || contactFile.lv2_id || "";
-            result.lv3 = contactFile["lv3.id"] || contactFile.lv3_id || "";
-            result.orgUnit = contactFile["org.unit"] || contactFile.org_unit || "";
+            // Lấy thông tin phân cấp cơ cấu tổ chức theo tên trường chuẩn SM.
+            result.lv1 = contactFile["lv1.id"] || "";
+            result.lv2 = contactFile["lv2.id"] || "";
+            result.lv3 = contactFile["lv3.id"] || "";
+            result.orgUnit = contactFile["org.unit"] || "";
 
             // Lấy thông tin chức danh
             result.position = contactFile["position"] || "";
-            result.positionName = contactFile["position.name"] || contactFile.position_name || "";
+            result.positionName = contactFile["position.name"] || "";
 
             // Lấy thông tin Họ tên (Ưu tiên theo thứ tự trường dữ liệu tồn tại)
             result.fullName = contactFile["full.name"] ||
@@ -4061,7 +4072,6 @@ function readHTKTContactInfo(currentUser) {
                     "";
             // Lấy Mã chi nhánh
             result.branchCode = contactFile["branch.code"] ||
-                    contactFile["branch_code"] ||
                     "";
         }
     } catch (eContact) {

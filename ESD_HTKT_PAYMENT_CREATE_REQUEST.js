@@ -579,6 +579,7 @@ function listPurchaseContracts(input) {
     if (params.contractId) {
         conditions.push('id="' + escapeSmQueryValue(String(params.contractId).trim()) + '"');
     }
+    
     if (keywordFilter) {
         conditions.push('tolower(id) like "*' + escapeSmQueryValue(keywordFilter) + '*"');
     }

@@ -336,7 +336,7 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
             if (!String(vendor["vendor.id"] || "").trim()) {
                 return ["Chưa chọn Nhà cung cấp cho món dự chi."];
             }
-
+            
             var transactionDescription = String(vendor["transaction.des"] || "").trim();
             var descriptionError = "";
             if (!transactionDescription) {

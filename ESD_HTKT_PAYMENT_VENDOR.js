@@ -78,39 +78,25 @@ function run() {
 
 function totalContractSuppliers(input) {
     var totalSuppliers = 0;
-    var paymentId = "";
+    var contractId = "";
 
     try {
         if (input.details) {
             var queryObj = JSON.parse(input.details);
-            paymentId = queryObj.paymentId || "";
+            contractId = queryObj.contractId || "";
         } else if (input.queryString) {
             var queryObjOld = JSON.parse(input.queryString);
-            paymentId = queryObjOld.paymentId || "";
+            contractId = queryObjOld.contractId || "";
         }
     } catch (ex) {
         return totalSuppliers;
     }
 
-    if (!paymentId) return totalSuppliers;
+    if (!contractId) return totalSuppliers;
 
-    // 1. Lấy contractId từ esdHTKTpayment
-    var contractId = "";
-    var payment = new SCFile("esdHTKTpayment", SCFILE_READONLY);
-    var sqlPayment = "id=\"" + paymentId + "\"";
-
-    if (payment.doSelect(sqlPayment) == RC_SUCCESS) {
-        if (payment["contract.id"]) {
-            contractId = payment["contract.id"];
-        }
-    }
-
-    // 2. Tính tổng số nhà cung cấp từ esdHDcontractSupplier theo contractId
-    if (contractId) {
-        var vendorFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
-        var sqlVendor = "contract.id=\"" + contractId + "\"";
-        totalSuppliers = vendorFile.doCount(sqlVendor);
-    }
+    var vendorFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
+    var sqlVendor = "contract.id=\"" + contractId + "\"";
+    totalSuppliers = vendorFile.doCount(sqlVendor);
 
     return totalSuppliers;
 }

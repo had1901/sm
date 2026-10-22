@@ -1037,6 +1037,10 @@ function validateVendorAndPaymentDetails(record) {
     return errorMss;
 }
 
+
+
+
+
 /** Import tạo mới: bỏ qua dòng lỗi dữ liệu, ghi các dòng hợp lệ. */
 function importExpenseVendors(input) {
     var params = getExpenseVendorInputDetails(input);
@@ -1251,6 +1255,7 @@ function expenseImportGetContractParams(payment, currentUser) {
     } finally { closeExpenseVendorFile(contact); }
 }
 
+
 function expenseImportDescribeField(fieldName, value) {
     return "Cột " + JSON.stringify(fieldName) + ", giá trị " + JSON.stringify(normalizeExpenseVendorValue(value) || "(trống)");
 }
@@ -1271,7 +1276,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
     if (!vendorCode) throw new Error(vendorField + ": chưa nhập giá trị bắt buộc.");
 
     if (typeof amount !== "number" || !isFinite(amount) || amount <= 0 || amount > 9007199254740991) {
-        throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là chữ số lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
+       throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là chữ số lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
     }
 
     if (!cache.contracts["$" + code]) {
@@ -1339,6 +1344,19 @@ function expenseImportValidateRow(raw, contractParams, cache) {
         } finally { closeExpenseVendorFile(link); }
     }
     return { contractCode: code, vendorId: selected.id, amount: amount, sourceRow: Number(raw.sourceRow) || 0 };
+}
+
+function expenseImportSetItem(item, itemId, paymentId, row, description) {
+    item["id"] = itemId;
+    item["payment.id"] = paymentId;
+    item["contract.id"] = row.contractCode;
+    item["vendor.id"] = row.vendorId;
+    // Currency thuộc món Dự chi; giữ nguyên giá trị SM khởi tạo khi Add.
+    item["amount"] = row.amount;
+    item["total.invoice"] = 0;
+    item["ogl.sync.status"] = false;
+    item["vendor.site.id"] = "";
+    item["transaction.des"] = normalizeExpenseVendorValue(description);
 }
 
 function expenseImportSetItem(item, itemId, paymentId, row, description) {

@@ -258,8 +258,8 @@ function callApiAp(esdHTKTacountingInfo) {
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.DU_CHI ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.TAM_UNG ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.THUE) {
-            apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApInvoice(payload);
-//            apiResult = { success: false }
+//            apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApInvoice(payload);
+            apiResult = { success: false }
         } else if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.TAT_TOAN) {
             apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApPayment(payload);
         } else {
@@ -455,8 +455,10 @@ function checkAccountingInfo(requestId) {
     if (result == RC_SUCCESS) {
         var response = null;
         var prepId = itemAccounting['prepayment.id'];
-        if (itemAccounting.status !== ACCOUNTING_STATUS.NEW && itemAccounting.status !== ACCOUNTING_STATUS.PROCESSING) {
-            // chi check voi 2 trang thai NEW && PROCESSING
+        if (itemAccounting.status !== ACCOUNTING_STATUS.CREATED &&
+            itemAccounting.status !== ACCOUNTING_STATUS.NEW &&
+            itemAccounting.status !== ACCOUNTING_STATUS.PROCESSING) {
+            // Chi check voi cac trang thai CREATED, NEW, PROCESSING.
             var currentStatus = itemAccounting.status;
             try { if (itemAccounting) itemAccounting.doClose(); } catch (e) {}
             if (currentStatus === ACCOUNTING_STATUS.COMPLETED && prepId) {
@@ -732,7 +734,7 @@ function jobCallCheckAccoutingStatus() {
     var sortFields = ["created.time"];
     var sortSeqs = [SCFILE_ASC];
     accountingInfoItem.setOrderBy(sortFields, sortSeqs);
-    var result = accountingInfoItem.doSelect(`(type = "${ACCOUNTING_TYPE.AP}" or type = "${ACCOUNTING_TYPE.GL}") and transaction.id <> NULL and (status = "${ACCOUNTING_STATUS.NEW}" or status = "${ACCOUNTING_STATUS.PROCESSING}")`);
+    var result = accountingInfoItem.doSelect(`(type = "${ACCOUNTING_TYPE.AP}" or type = "${ACCOUNTING_TYPE.GL}") and transaction.id <> NULL and (status = "${ACCOUNTING_STATUS.CREATED}" or status = "${ACCOUNTING_STATUS.NEW}" or status = "${ACCOUNTING_STATUS.PROCESSING}")`);
     var count = 0;
     var arrCheck = [];
     while (result == RC_SUCCESS && count < 5) {

@@ -219,7 +219,7 @@ function run() {
             case "createPaymentVendor":
                 result = lib.ESD_HTKT_EXPENSE_VENDOR.createPaymentVendor(input);
                 break;
-            case "importExpenseVendors": // Nhập danh sách món Dự chi từ file Excel.
+            case "importExpenseVendors":  // Nhập danh sách món Dự chi từ file Excel.
                 return safeReturn(lib.ESD_HTKT_EXPENSE_VENDOR.importExpenseVendors(input));
             case "syncExpenseVendorsToOgl": // Đồng bộ OGL từng món dự chi
                 return safeReturn(lib.ESD_HTKT_EXPENSE_VENDOR.syncExpenseVendorsToOgl(input));
