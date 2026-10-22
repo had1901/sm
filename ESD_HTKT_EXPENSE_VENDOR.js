@@ -1281,6 +1281,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
 
     if (!cache.contracts["$" + code]) {
         var contract = new SCFile("esdHDcontract", SCFILE_READONLY);
+        var contractCurrency;
         try {
             var contractRc = contract.doSelect('id="' + escapeExpenseVendorQueryValue(code) + '"');
             if (contractRc === RC_NO_MORE) {
@@ -1289,6 +1290,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
             if (contractRc !== RC_SUCCESS) {
                 throw new Error(contractField + ": không tra cứu được do lỗi hệ thống. Vui lòng thử lại.");
             }
+            contractCurrency = normalizeExpenseVendorValue(contract["currency"]) || "VND";
         } finally { closeExpenseVendorFile(contract); }
         contractParams.contractId = code;
         var result = lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listPurchaseContracts({ queryString: JSON.stringify(contractParams) });
@@ -1298,7 +1300,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
         if (!result.data || !result.data.length || normalizeExpenseVendorValue(result.data[0].id) !== code) {
             throw new Error(contractField + ": có trong hệ thống nhưng không đủ điều kiện hoặc ngoài phạm vi được chọn của bạn.");
         }
-        cache.contracts["$" + code] = true;
+        cache.contracts["$" + code] = { currency: contractCurrency };
     }
     if (!cache.vendors["$" + vendorCode]) {
         var vendor = new SCFile("esdHTKTvendor", SCFILE_READONLY);
@@ -1343,7 +1345,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
             cache.links[linkKey] = true;
         } finally { closeExpenseVendorFile(link); }
     }
-    return { contractCode: code, vendorId: selected.id, amount: amount, sourceRow: Number(raw.sourceRow) || 0 };
+    return { contractCode: code, vendorId: selected.id, currency: cache.contracts["$" + code].currency, amount: amount, sourceRow: Number(raw.sourceRow) || 0 };
 }
 
 function expenseImportSetItem(item, itemId, paymentId, row, description) {
@@ -1351,20 +1353,8 @@ function expenseImportSetItem(item, itemId, paymentId, row, description) {
     item["payment.id"] = paymentId;
     item["contract.id"] = row.contractCode;
     item["vendor.id"] = row.vendorId;
-    // Currency thuộc món Dự chi; giữ nguyên giá trị SM khởi tạo khi Add.
-    item["amount"] = row.amount;
-    item["total.invoice"] = 0;
-    item["ogl.sync.status"] = false;
-    item["vendor.site.id"] = "";
-    item["transaction.des"] = normalizeExpenseVendorValue(description);
-}
-
-function expenseImportSetItem(item, itemId, paymentId, row, description) {
-    item["id"] = itemId;
-    item["payment.id"] = paymentId;
-    item["contract.id"] = row.contractCode;
-    item["vendor.id"] = row.vendorId;
-    // Currency thuộc món Dự chi; giữ nguyên giá trị SM khởi tạo khi Add.
+    // Giữ loại tiền SM đã khởi tạo; nếu trống thì dùng mặc định như thêm thủ công.
+    if (!normalizeExpenseVendorValue(item["currency"])) item["currency"] = row.currency;
     item["amount"] = row.amount;
     item["total.invoice"] = 0;
     item["ogl.sync.status"] = false;
