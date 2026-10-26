@@ -118,9 +118,9 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['return.reason'] = "";
     expenseRec['unit.lv1'] = expenseData['unitLv1'] || expenseData['unit.lv1'] || "";
     expenseRec['unit.lv2'] = expenseData['unitLv2'] || expenseData['unit.lv2'] || "";
-    if (String(expenseRec['unit.lv1'] || "").replace(/^\s+|\s+$/g, "").indexOf("0999") === 0) {
-        expenseRec['entity.code'] = "1010098";
-    }
+    var unitLv1 = String(expenseRec['unit.lv1'] || "").replace(/^\s+|\s+$/g, "");
+    var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(unitLv1);
+    expenseRec['entity.code'] = entityInfo && entityInfo.entity ? String(entityInfo.entity) : "";
     expenseRec['unit.lv1.name'] = expenseData['unitLv1Name'] || expenseData['unit.lv1.name'] ||
             htktCreateExpense_getUnitName(expenseRec['unit.lv1']);
     expenseRec['unit.lv2.name'] = expenseData['unitLv2Name'] || expenseData['unit.lv2.name'] ||
@@ -135,7 +135,7 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['total.contract.amount'] = 0;
     expenseRec['current.phase'] = "start";
     expenseRec['currency'] = "VND";
-    expenseRec['executor.payment'] = expenseData['currentUser'];
+    expenseRec['current.executor'] = expenseData['currentUser'];
 
     var creatorUser = String(expenseData['currentUser'] || "").replace(/^\s+|\s+$/g, "");
     if (!creatorUser) {

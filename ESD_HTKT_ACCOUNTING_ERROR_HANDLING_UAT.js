@@ -3392,7 +3392,7 @@ function syncPendingApprovalTransition(oldRec, newRec, prepaymentId) {
         var pendingApproverKttc = "";
         var detectedErrorChannel = "";
         var currentRecordId = String(
-                newRec["id"] || newRec["request.id"] || ""
+                newRec["request.id"] || ""
         );
 
         accountingRec = new SCFile(
@@ -3400,7 +3400,7 @@ function syncPendingApprovalTransition(oldRec, newRec, prepaymentId) {
                 SCFILE_READONLY
         );
         accountingRec.setFields([
-            "id", "request.id", "status", "type", "user.approver.kttc"
+            "request.id", "status", "type", "user.approver.kttc"
         ]);
         var accountingRc = accountingRec.doSelect(
                 'prepayment.id="' + escapeQueryValue(prepaymentId) + '"'
@@ -3408,7 +3408,6 @@ function syncPendingApprovalTransition(oldRec, newRec, prepaymentId) {
 
         while (accountingRc === RC_SUCCESS) {
             var recordId = String(
-                    accountingRec["id"] ||
                     accountingRec["request.id"] ||
                     ""
             );
@@ -3673,7 +3672,7 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
                     SCFILE_READONLY
             );
             accountingRec.setFields([
-                "id", "request.id", "prepayment.id", "status", "type"
+                "request.id", "prepayment.id", "status", "type"
             ]);
             var firstRc = accountingRec.doSelect(accountingQuery);
             while (firstRc === RC_SUCCESS) {
@@ -3684,8 +3683,8 @@ function processAccountingSync(newRec, prepaymentId, tableName) {
                 // Kiểm tra xem dòng trong DB có trùng với dòng newRec đang sửa/lưu hay không
                 var isCurrentRecord = false;
                 if (newRec) {
-                    var curRecId = newRec['id'] || newRec['request.id'];
-                    var dbRecId = accountingRec['id'] || accountingRec['request.id'];
+                    var curRecId = newRec['request.id'];
+                    var dbRecId = accountingRec['request.id'];
                     if (curRecId && dbRecId && String(curRecId) === String(dbRecId)) {
                         isCurrentRecord = true;
                     }
