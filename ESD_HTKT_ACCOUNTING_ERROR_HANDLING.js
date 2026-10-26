@@ -1261,14 +1261,9 @@ function inquireCoreStatusBeforeRetry(payload, requestId, subType) {
         var httpStatus = typeof inquiry.httpStatus !== "undefined"
                 ? inquiry.httpStatus
                 : (typeof inquiry.callSucceeded === "undefined" ? inquiry.statusCode : null);
-        var hasHttpStatus = httpStatus != null && String(httpStatus).trim() !== "";
-        var httpSucceeded = hasHttpStatus
-                ? Number(httpStatus) >= 200 && Number(httpStatus) < 300
-                : inquiry.callSucceeded === true || (inquiry.success === true && !inquiry.error);
-        if (inquiry.callSucceeded === false || !httpSucceeded) return result;
+        if (Number(httpStatus) !== 200) return result;
 
         var businessCode = body.status && body.status.code;
-        if (businessCode == null || String(businessCode).trim() === "") return result;
         inquiry.body = body;
 
         var inquiryData = body.data && typeof body.data === "object"
