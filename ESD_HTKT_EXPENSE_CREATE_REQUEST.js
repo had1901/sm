@@ -130,7 +130,6 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['created.by'] = expenseData['createdBy'];
     expenseRec['total.transaction'] = 0;
     expenseRec['total.contract'] = 0;
-    expenseRec['total.vendor'] = 0;
     expenseRec['total.amount.paid'] = 0;
     expenseRec['total.contract.amount'] = 0;
     expenseRec['current.phase'] = "start";
