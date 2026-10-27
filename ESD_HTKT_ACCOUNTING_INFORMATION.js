@@ -165,22 +165,37 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
         };
     }
 
-    var contextResult = mapPrepaymentApiContext(prepayment);
-    if (!contextResult.success) return contextResult;
+    var vendorsResult = mapPrepaymentVendors(prepayment.id);
+    if (!vendorsResult.success) return vendorsResult;
+    var contexts = {};
+    var vendorIds = [];
+    for (var vendorIndex = 0; vendorIndex < vendorsResult.data.length; vendorIndex++) {
+        var prepaymentVendor = vendorsResult.data[vendorIndex];
+        var vendorKey = '$' + prepaymentVendor.vendor_id;
+        if (contexts[vendorKey]) {
+            return mapError('AMBIGUOUS_PREPAYMENT_VENDOR',
+                'Nhieu quan he NCC cung vendor.id=' + prepaymentVendor.vendor_id + '.');
+        }
+        var contextResult = mapPrepaymentApiContext(
+            prepayment, prepaymentVendor, vendorsResult.data.length
+        );
+        if (!contextResult.success) return contextResult;
+        contexts[vendorKey] = contextResult.data;
+        vendorIds.push(prepaymentVendor.vendor_id);
+    }
 
     // Chốt một lần để invoiceDate của AP luôn trùng accountingDate của GL.
     var accountingDate = mapDateToYmd(new Date());
     var glEntryGroups = groupGlEntries(entries, prepaymentId);
-    // Trưởng sửa: gom toàn bộ dòng TU-BT-02 vào một payload STANDARD.
+    // Gom các dòng TU-BT-02 trong cùng NCC vào một payload STANDARD.
     var standardEntryDiscountTypes = getStandardApEntryDiscountTypes(entries);
     var standardEntries = getStandardApEntries(
         entries,
         standardEntryDiscountTypes
     );
     var preparedGlGroups = {};
-    var preparedStandardGroup = false;
     var preparedStandardGroups = {};
-    var preparedCoreTransfer = false;
+    var preparedCoreTransfers = {};
     var preparedRows = [];
     for (var prepareIndex = 0; prepareIndex < entries.length; prepareIndex++) {
         var preparedEntry = entries[prepareIndex];
@@ -197,6 +212,19 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
         // KHAUTRU_003 thuộc PREPAYMENT, không sinh line/record STANDARD riêng.
         if (preparedDiscountType === DISCOUNT_NONE) continue;
 
+        var entryVendorId = safeString(preparedEntry.vendor_id).trim();
+        if (!entryVendorId && vendorIds.length === 1) entryVendorId = vendorIds[0];
+        var entryVendorKey = '$' + entryVendorId;
+        var entryContext = contexts[entryVendorKey];
+        if (isPreparedGl) {
+            // GL thuộc đề nghị; không gán tùy ý NCC khi có nhiều NCC.
+            entryContext = copyObject({}, contexts['$' + vendorIds[0]]);
+            entryContext.vendorId = vendorIds.length === 1 ? vendorIds[0] : '';
+        } else if (!entryContext) {
+            return mapError('PREPAYMENT_ENTRY_VENDOR_NOT_FOUND',
+                'Khong xac dinh duoc NCC cua entry ' + preparedEntry.id + '.');
+        }
+
         if (isPreparedGl) {
             var glPosition = getGlEntryPosition(
                 prepaymentId,
@@ -211,43 +239,24 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
             preparedEntries = glEntryGroups[glGroupKey] || preparedEntries;
         }
 
-        // PHUONG AN 1: gom tat ca loai thue vao mot ban ghi STANDARD.
+        // Gom các loại thuế theo NCC, không trộn số tiền và hóa đơn giữa NCC.
         if (isPreparedStandard) {
-            if (preparedStandardGroup) continue;
-
-            preparedStandardGroup = true;
-            preparedEntries = standardEntries;
-        }
-
-        // PHUONG AN 2: tach moi loai thue thanh mot ban ghi STANDARD.
-        /*
-        if (isPreparedStandard) {
-            if (preparedStandardGroups[preparedDiscountType]) continue;
-
-            preparedStandardGroups[preparedDiscountType] = true;
-            var separatedStandardEntries = [];
-            for (
-                var standardEntryIndex = 0;
-                standardEntryIndex < entries.length;
-                standardEntryIndex++
-            ) {
-                if (
-                    standardEntryDiscountTypes[standardEntryIndex] ===
-                    preparedDiscountType
-                ) {
-                    separatedStandardEntries.push(entries[standardEntryIndex]);
-                }
+            if (preparedStandardGroups[entryVendorKey]) continue;
+            preparedStandardGroups[entryVendorKey] = true;
+            preparedEntries = [];
+            for (var standardIndex = 0; standardIndex < standardEntries.length; standardIndex++) {
+                var standardVendorId = safeString(standardEntries[standardIndex].vendor_id).trim();
+                if (!standardVendorId && vendorIds.length === 1) standardVendorId = vendorIds[0];
+                if (standardVendorId === entryVendorId) preparedEntries.push(standardEntries[standardIndex]);
             }
-            preparedEntries = separatedStandardEntries;
         }
-        */
 
         var isPreparedApCredit =
             preparedEntryType === ACCOUNTING_TYPE.AP &&
             isCreditAccountType(preparedEntry.account_type);
         var isPreparedCoreTransfer = isCoreTransferEntry(
             preparedEntry,
-            contextResult.data
+            entryContext
         );
 
         // map TU-BT-03 chuyển khoản thành CORE; các dòng ghi Có AP khác vẫn không sinh accountingInformation.
@@ -255,7 +264,7 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
             continue;
         }
 
-        if (isPreparedCoreTransfer) preparedCoreTransfer = true;
+        if (isPreparedCoreTransfer) preparedCoreTransfers[entryVendorKey] = true;
 
         var requestId = safeString(lib.UUID.generateUUID())
             .trim()
@@ -266,7 +275,7 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
             requestId,
             prepayment,
             preparedEntries,
-            contextResult.data,
+            entryContext,
             accountingDate
         );
         if (!payloadResult.success) return payloadResult;
@@ -279,14 +288,15 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
         });
     }
 
-    if (
-        isBankTransferPaymentMethod(contextResult.data.paymentMethod) &&
-        !preparedCoreTransfer
-    ) {
-        return mapError(
-            'CORE_PAYMENT_ENTRY_NOT_FOUND',
-            'Khong tim thay dong AP TU-BT-03 de sinh accounting CORE cho phuong thuc Chuyen khoan.'
-        );
+    for (var coreIndex = 0; coreIndex < vendorIds.length; coreIndex++) {
+        var coreVendorKey = '$' + vendorIds[coreIndex];
+        if (isBankTransferPaymentMethod(contexts[coreVendorKey].paymentMethod) &&
+            !preparedCoreTransfers[coreVendorKey]) {
+            return mapError(
+                'CORE_PAYMENT_ENTRY_NOT_FOUND',
+                'Khong tim thay dong AP TU-BT-03 de sinh accounting CORE cho NCC ' + vendorIds[coreIndex] + '.'
+            );
+        }
     }
 
     var deleted = deleteAccountingInformation(prepaymentId);
@@ -660,14 +670,10 @@ function getPrepayment(prepaymentId) {
 }
 
 /**
- * map dữ liệu dùng chung của đề nghị: NCC, site NCC, đơn vị theo LV1,
+ * Map dữ liệu theo từng NCC của đề nghị: site NCC, đơn vị theo LV1,
  * cán bộ KTTC tạo/tiếp nhận, cán bộ KTTC phê duyệt và vatList.
  */
-function mapPrepaymentApiContext(prepayment) {
-    var prepaymentVendorResult = mapSinglePrepaymentVendor(prepayment.id);
-    if (!prepaymentVendorResult.success) return prepaymentVendorResult;
-
-    var prepaymentVendor = prepaymentVendorResult.data;
+function mapPrepaymentApiContext(prepayment, prepaymentVendor, vendorCount) {
     var vendor = mapVendor(prepaymentVendor.vendor_id);
     if (!vendor) {
         return mapError(
@@ -728,7 +734,7 @@ function mapPrepaymentApiContext(prepayment) {
         );
     }
 
-    var vatListResult = mapVatList(prepayment.id);
+    var vatListResult = mapVatList(prepayment.id, vendor.vendor_number, vendorCount);
     if (!vatListResult.success) return vatListResult;
 
     var cashout = mapPaymentMethodToCashout(prepaymentVendor.payment_method);
@@ -1645,9 +1651,9 @@ function mapDateToYmd(value) {
 }
 
 /**
- * map đúng một quan hệ đề nghị - NCC để lấy thông tin NCC, hình thức thanh toán và ngân hàng thụ hưởng.
+ * Đọc các quan hệ đề nghị - NCC, sao chép dữ liệu trước khi getNext.
  */
-function mapSinglePrepaymentVendor(prepaymentId) {
+function mapPrepaymentVendors(prepaymentId) {
     var f;
     var rc;
 
@@ -1678,21 +1684,16 @@ function mapSinglePrepaymentVendor(prepaymentId) {
             );
         }
 
-        var data = {
-            vendor_id: readText(f, 'vendor.id').trim(),
-            vendor_site_id: readText(f, 'vendor.site.id').trim(),
-            payment_method: readText(f, 'payment.method').trim(),
-            beneficiary_bank: readText(f, 'beneficiary.bank').trim(),
-            bank_branch_code: readText(f, 'bank.branch.code').trim()
-        };
-        var nextRc = f.getNext();
-        // closeFile(f);
-
-        if (nextRc === RC_SUCCESS) {
-            return mapError(
-                'MULTIPLE_PREPAYMENT_VENDORS',
-                'De nghi ' + prepaymentId + ' co nhieu hon mot NCC.'
-            );
+        var data = [];
+        while (rc === RC_SUCCESS) {
+            data.push({
+                vendor_id: readText(f, 'vendor.id').trim(),
+                vendor_site_id: readText(f, 'vendor.site.id').trim(),
+                payment_method: readText(f, 'payment.method').trim(),
+                beneficiary_bank: readText(f, 'beneficiary.bank').trim(),
+                bank_branch_code: readText(f, 'bank.branch.code').trim()
+            });
+            rc = f.getNext();
         }
 
         return { success: true, data: data };
@@ -1922,7 +1923,7 @@ function mapEntityCodeByTransactionCode(transactionCode, branchCode) {
 /**
  * map các hóa đơn của đề nghị vào vatList.
  */
-function mapVatList(prepaymentId) {
+function mapVatList(prepaymentId, vendorNumber, vendorCount) {
     var f;
     var rc;
     var rows = [];
@@ -1957,11 +1958,22 @@ function mapVatList(prepaymentId) {
                       function (invoiceRecord) {
                           return {
                               oglId: readText(invoiceRecord, 'ogl.id').trim(),
-                              taxAmount: readNumber(invoiceRecord, 'total.tax')
+                              taxAmount: readNumber(invoiceRecord, 'total.tax'),
+                              sellerTaxCode: readText(invoiceRecord, 'seller.tax.code').trim()
                           };
                       }
                   )
                 : null;
+            // Cùng quy tắc ghép hóa đơn với NCC như prepayment-entry.js.
+            var sellerTaxCode = invoiceData
+                ? normalizeBusinessText(invoiceData.sellerTaxCode).replace(/[^a-z0-9]+/g, '') : '';
+            var vendorTaxCode = normalizeBusinessText(vendorNumber).replace(/[^a-z0-9]+/g, '');
+            if (sellerTaxCode && vendorTaxCode
+                ? sellerTaxCode !== vendorTaxCode
+                : vendorCount > 1) {
+                rc = f.getNext();
+                continue;
+            }
             var invoiceOglId = invoiceData ? invoiceData.oglId : '';
             var invoiceTaxAmount = invoiceData
                 ? invoiceData.taxAmount

@@ -994,7 +994,7 @@ function writeValue(record, fieldName, value) {
         record[fieldName] = value;
         return true;
     } catch (eWrite) {
-        logError("writeValue", eWrite);
+        // logError("writeValue", eWrite);
         return false;
     }
 }
@@ -1231,7 +1231,7 @@ function selectOne(tableName, fieldNames, value) {
                 return file;
             }
         } catch (eSelect) {
-            logError("selectOne", eSelect);
+            // logError("selectOne", eSelect);
         }
 
         closeFile(file);

@@ -945,9 +945,9 @@ function sendAccountingErrorResolvedEmail(oldAccountingRecord, accountingRecord,
     var ticketRecord = null;
     oldAccountingRecord = oldAccountingRecord || {};
     var metadata = {
-        oldResponse: oldAccountingRecord['oldResponse'],
-        oldMessage: oldAccountingRecord['oldMessage'],
-        oldCheckedTime: oldAccountingRecord['oldCheckedTime'],
+        oldResponse: oldAccountingRecord['oldResponse'] || oldAccountingRecord['response'] || "",
+        oldMessage: oldAccountingRecord['oldMessage'] || oldAccountingRecord['message'] || "",
+        oldCheckedTime: oldAccountingRecord['oldCheckedTime'] || oldAccountingRecord['checked.time'] || "",
         processTime: accountingRecord['checked.time']
     };
     vars["$G.mail.metadata"] = JSON.stringify(metadata);
@@ -1347,7 +1347,8 @@ function onAccountingInfoSavedTrigger(oldRec, newRec) { // trigger table esdHTKT
     var prepaymentId = newRec['prepayment.id'] || newRec['payment.id'];
     if (oldPrepaymentId && prepaymentId && oldPrepaymentId != prepaymentId) return;
 
-    var upperPrepaymentId = String(prepaymentId || oldPrepaymentId || "").toUpperCase();
+    var targetTicketId = prepaymentId || oldPrepaymentId || "";
+    var upperPrepaymentId = String(targetTicketId).toUpperCase();
     var isExpense = upperPrepaymentId.startsWith("DC");
 
     // ==================== DỰ CHI (DC): CHẠY VÀO KÊNH RIÊNG ====================
@@ -1357,13 +1358,99 @@ function onAccountingInfoSavedTrigger(oldRec, newRec) { // trigger table esdHTKT
     }
 
     // ==================== THANH TOÁN (TT) & TẠM ỨNG (TU): GỬI MAIL S6 ====================
-    if (newStatus === "COMPLETED") {
-        sendEmailAccountingCompleted(newRec); // S6_MAIL_01_05
-    }
+    // 1. Nếu trạng thái mới là ERROR:
+    // Chỉ gửi S6_MAIL_01_06 cho lần đầu tiên phát sinh lỗi (oldStatus là trạng thái chờ).
     if (newStatus === "ERROR") {
+        if (isOglWaitingStatus(oldStatus)) {
         sendEmailAccountingError(newRec); // S6_MAIL_01_06
     }
+        return;
+    }
 
+    // 2. Nếu trạng thái mới là COMPLETED:
+    // Phân biệt rõ:
+    // - Case A: Bút toán đã bị lỗi (được thử lại thành công) -> Gửi S6_MAIL_02_01.
+    // - Case B: Bút toán thành công ngay từ đầu (chưa từng bị lỗi) -> Gửi S6_MAIL_01_05.
+    if (newStatus === "COMPLETED") {
+        var requestId = String(newRec['request.id'] || oldRec['request.id'] || "").trim();
+        var isRetryOrResolved = isAccountingRetryOrResolved(targetTicketId, requestId, oldStatus, oldRec, newRec);
+
+        if (isRetryOrResolved) {
+            // Bút toán đã từng bị lỗi, nay thử lại thành công -> S6_MAIL_02_01
+            var oldAccObj = {
+                oldResponse: oldRec['response'] || oldRec['oldResponse'] || "",
+                oldMessage: oldRec['message'] || oldRec['oldMessage'] || "",
+                oldCheckedTime: oldRec['checked.time'] || oldRec['oldCheckedTime'] || ""
+            };
+            var processer = String(newRec['updated.by'] || vars['$lo.contact.name'] || system.user.name || "").trim();
+            sendAccountingErrorResolvedEmail(oldAccObj, newRec, processer);
+        } else {
+            // Bút toán chưa từng bị lỗi, hạch toán lần đầu thành công -> S6_MAIL_01_05
+            sendEmailAccountingCompleted(newRec);
+        }
+    }
+}
+
+/**
+ * Kiểm tra xem giao dịch hạch toán này là giao dịch được thử lại (đã từng lỗi) hay là hạch toán lần đầu.
+ * Theo quy tắc:
+ * - Giao dịch đã từng lỗi (được thử lại) sẽ có bản ghi trong bảng esdHTKTaccountingErrorHandling hoặc esdHTKTaccountingErrorHandlingItem.
+ * - Giao dịch thành công ngay từ đầu (không lỗi) sẽ KHÔNG CÓ bản ghi trong 2 bảng trên.
+ */
+function isAccountingRetryOrResolved(prepaymentId, requestId, oldStatus, oldRec, newRec) {
+    var upperOldStatus = String(oldStatus || "").toUpperCase().trim();
+
+    // 1. Trạng thái trước khi cập nhật là ERROR -> Chắc chắn là giao dịch lỗi được thử lại
+    if (upperOldStatus === "ERROR") {
+        return true;
+    }
+
+    // 2. Kiểm tra trong bảng esdHTKTaccountingErrorHandlingItem (lịch sử thử lại của giao dịch)
+    if (prepaymentId) {
+        var itemFile = null;
+        try {
+            itemFile = new SCFile("esdHTKTaccountingErrorHandlingItem", SCFILE_READONLY);
+            itemFile.setFields(["id"]);
+            var itemQuery = 'payment.id="' + escapeSmQueryValue(prepaymentId) + '"';
+            if (requestId) {
+                itemQuery += ' and request.id="' + escapeSmQueryValue(requestId) + '"';
+            }
+            if (itemFile.doSelect(itemQuery) === RC_SUCCESS) {
+                return true;
+            }
+        } catch (eItem) {
+        } finally {
+            if (itemFile) {
+                try { itemFile.doClose(); } catch (eClItem) {}
+            }
+        }
+    }
+
+    // 3. Kiểm tra trong bảng esdHTKTaccountingErrorHandling (phiếu có bản ghi quản lý lỗi)
+    if (prepaymentId) {
+        var handlingFile = null;
+        try {
+            handlingFile = new SCFile("esdHTKTaccountingErrorHandling", SCFILE_READONLY);
+            handlingFile.setFields(["id", "total.error.trans"]);
+            if (handlingFile.doSelect('request.id="' + escapeSmQueryValue(prepaymentId) + '"') === RC_SUCCESS) {
+                // Nếu phiếu đã có bản ghi quản lý lỗi và trạng thái cũ không phải là trạng thái chờ lần đầu
+                if (!isOglWaitingStatus(upperOldStatus)) {
+                    return true;
+                }
+                // Hoặc nếu bản ghi hạch toán cũ có chứa thông điệp lỗi trước đó
+                if (oldRec && (oldRec['message'] || oldRec['response'])) {
+                    return true;
+                }
+            }
+        } catch (eHandling) {
+        } finally {
+            if (handlingFile) {
+                try { handlingFile.doClose(); } catch (eClHandling) {}
+            }
+        }
+    }
+
+    return false;
 }
 
 function isOglWaitingStatus(status) {
@@ -1382,13 +1469,35 @@ function isOglResultStatus(status) {
 }
 
 function shouldSkipOglAccountingNotification(oldStatus, newStatus) {
-    if (isManualAccountingStatus(oldStatus) || isManualAccountingStatus(newStatus)) {
+    var oStatus = String(oldStatus || "").toUpperCase().trim();
+    var nStatus = String(newStatus || "").toUpperCase().trim();
+
+    // 1. Không có sự thay đổi trạng thái
+    if (oStatus === nStatus) {
         return true;
     }
-    if (String(oldStatus || "").toUpperCase().trim() === "ERROR" && !isOglResultStatus(newStatus)) {
+
+    // 2. Bỏ qua các trạng thái phê duyệt thủ công (đã được xử lý riêng trong hàm nghiệp vụ)
+    if (isManualAccountingStatus(oStatus) || isManualAccountingStatus(nStatus)) {
         return true;
     }
-    return !isOglWaitingStatus(oldStatus) || !isOglResultStatus(newStatus);
+
+    // 3. Trạng thái mới phải là trạng thái có kết quả (COMPLETED hoặc ERROR)
+    if (!isOglResultStatus(nStatus)) {
+        return true;
+    }
+
+    // 4. Nếu trước đó đã là ERROR và hiện tại vẫn là ERROR -> Bỏ qua, không gửi lại mail lỗi
+    if (oStatus === "ERROR" && nStatus === "ERROR") {
+        return true;
+    }
+
+    // 5. Nếu trạng thái cũ không phải trạng thái chờ và cũng không phải ERROR -> Bỏ qua
+    if (!isOglWaitingStatus(oStatus) && oStatus !== "ERROR") {
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -1580,7 +1689,7 @@ function sendExpenseAccountingNotification(oldRec, newRec) {
                 var rowRequestId = String(aiFile['request.id'] || "").trim();
                 var rowTransactionId = String(aiFile['transaction.id'] || "").trim();
                 var isCurrent = (currentRequestId && rowRequestId && currentRequestId === rowRequestId) ||
-                    (currentTransactionId && rowTransactionId && currentTransactionId === rowTransactionId);
+                        (currentTransactionId && rowTransactionId && currentTransactionId === rowTransactionId);
                 var rowStatus = isCurrent ? newStatus : String(aiFile['status'] || "").toUpperCase().trim();
 
                 if (!isOglResultStatus(rowStatus)) {

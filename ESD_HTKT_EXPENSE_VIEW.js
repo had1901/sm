@@ -247,18 +247,18 @@ function htktExpenseView_buildLeadershipScope(currentUser, isApprovalDmms, isApp
         return result;
     }
 
-    if (lv1.indexOf("0999") === 0) {
-        if (htktExpenseView_getActiveEntityCodeByPsCode(lv1) !== "1010098") {
-            return result;
-        }
+    var currentEntityCode = htktExpenseView_getActiveEntityCodeByPsCode(lv1);
+    if (!currentEntityCode) return result;
+    if (currentEntityCode === "1010098") {
         result.defaultFilter = 'entity.code="1010098"';
         result.dataScope = "Tru so chinh - Lanh dao DMMS/KTTC";
         result.dataScopeField = "entity.code";
         result.dataScopeUnits = ["1010098"];
     } else {
-        result.defaultFilter = 'unit.lv1="' + htktExpenseView_escapeQueryValue(lv1) + '"';
+        result.defaultFilter = 'entity.code="' + htktExpenseView_escapeQueryValue(currentEntityCode) + '"';
         result.dataScope = "Chi nhanh - Lanh dao DMMS/KTTC";
-        result.dataScopeUnits = [lv1];
+        result.dataScopeField = "entity.code";
+        result.dataScopeUnits = [currentEntityCode];
     }
     return result;
 }
@@ -364,13 +364,11 @@ function htktExpenseView_buildPostAuditFilter(contactInfo, dataPermission) {
         return result;
     }
 
-    var HEAD_OFFICE_PS_PREFIX = "0999";
     var HEAD_OFFICE_OGL_SEG1 = "1010098";
-    var allowedLv1 = [];
+    var currentEntityCode = htktExpenseView_getActiveEntityCodeByPsCode(lv1);
+    if (!currentEntityCode) return result;
 
-    if (lv1.indexOf(HEAD_OFFICE_PS_PREFIX) !== 0) {
-        allowedLv1 = [lv1];
-    } else if (htktExpenseView_getActiveEntityCodeByPsCode(lv1) === HEAD_OFFICE_OGL_SEG1) {
+    if (currentEntityCode === HEAD_OFFICE_OGL_SEG1) {
         // Trụ sở chính lọc trực tiếp entity của phiếu, không liệt kê từng LV1.
         result.defaultFilter = 'entity.code="1010098"';
         result.dataScope = "Tru so chinh - Hau kiem";
@@ -379,17 +377,9 @@ function htktExpenseView_buildPostAuditFilter(contactInfo, dataPermission) {
         return result;
     }
 
-    if (allowedLv1.length === 0) {
-        return result;
-    }
-
-    var conditions = [];
-    for (var i = 0; i < allowedLv1.length; i++) {
-        conditions.push('unit.lv1="' + htktExpenseView_escapeQueryValue(allowedLv1[i]) + '"');
-    }
-
-    result.defaultFilter = conditions.length === 1 ? conditions[0] : "(" + conditions.join(" OR ") + ")";
-    result.dataScopeUnits = allowedLv1;
+    result.defaultFilter = 'entity.code="' + htktExpenseView_escapeQueryValue(currentEntityCode) + '"';
+    result.dataScopeField = "entity.code";
+    result.dataScopeUnits = [currentEntityCode];
     return result;
 }
 
@@ -469,6 +459,7 @@ function renderExpenseList() {
     }
 
     var defaultFilter = dataFilterInfo.defaultFilter;
+    defaultFilter = '(' + defaultFilter + ') AND status ~= "cancelled"';
 
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
         'HachToanKeToan/DuChi/DanhSachDuChi',
@@ -481,6 +472,7 @@ function renderExpenseList() {
             operatorName: operatorName,
             fullName: contactInfo.fullName,
             branchCode: contactInfo.branchCode,
+            entityCode: htktExpenseView_getActiveEntityCodeByPsCode(contactInfo.lv1),
             unit: {
                 lv1: contactInfo.lv1,
                 lv2: contactInfo.lv2,

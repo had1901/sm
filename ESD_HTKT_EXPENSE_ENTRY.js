@@ -431,8 +431,8 @@ function isSavedEntriesCompleteAndValid(expenseId, savedEntries, vendors) {
 
     for (var i = 0; i < savedEntries.length; i++) {
         var s = savedEntries[i];
-        // Nếu tồn tại dòng rác (không có ref_id hoặc tiền <= 0 hoặc không có số TK) -> cần sync lại để làm sạch
-        if (!safeString(s.ref_id || s['ref.id']).trim() || toNumber(s.amount) <= 0 || !safeString(s.account_number).trim()) {
+        // Nếu tồn tại dòng rác (không có ref_id hoặc tiền <= 0) -> cần sync lại để làm sạch
+        if (!safeString(s.ref_id || s['ref.id']).trim() || toNumber(s.amount) <= 0) {
             return false;
         }
         var ref = safeString(s.ref_id || s['ref.id']).trim();
@@ -482,9 +482,9 @@ function getUniqueCostEntriesByAccountNumber(entries) {
         var entry = entries[i];
         var isManual = isUserAddedEntryId(entry.id);
 
-        // Loại bỏ các dòng rác: không có ref_id (mã món dự chi), hoặc không có số tài khoản, hoặc số tiền <= 0
+        // Loại bỏ các dòng rác: không có ref_id (mã món dự chi), hoặc số tiền <= 0
         if (!isManual) {
-            if (!safeString(entry.ref_id || entry['ref.id']).trim() || !safeString(entry.account_number).trim() || toNumber(entry.amount) <= 0) {
+            if (!safeString(entry.ref_id || entry['ref.id']).trim() || toNumber(entry.amount) <= 0) {
                 continue;
             }
         } else {
@@ -596,7 +596,7 @@ function deleteAutoExpenseEntriesForVendor(expenseId, paymentVendorId) {
     return deleted;
 }
 
-/** Xóa các dòng rác: không có ref_id (mã món dự chi), hoặc không có số tài khoản và số tiền <= 0 */
+/** Xóa các dòng rác: không có ref_id (mã món dự chi), hoặc số tiền <= 0 */
 function deleteJunkExpenseEntries(expenseId) {
     var deleted = 0;
     var f = new SCFile(TABLE_PAYMENT_ENTRY);
@@ -607,9 +607,8 @@ function deleteJunkExpenseEntries(expenseId) {
         var isManual = isUserAddedEntryId(f['id']);
         if (!isManual) {
             var refId = safeString(f['ref.id']).trim();
-            var accNum = safeString(f['account.number']).trim();
             var amt = toNumber(f['amount']);
-            if (!refId || (!accNum && amt <= 0)) {
+            if (!refId || amt <= 0) {
                 var deleteRc = f.doDelete();
                 if (deleteRc === RC_SUCCESS) deleted++;
             }
@@ -836,7 +835,7 @@ function getPreservedAutoEntriesForOtherVendors(savedEntries, successfulVendorId
     for (var j = 0; j < savedEntries.length; j++) {
         var saved = savedEntries[j];
         if (!isAutoEntry(saved)) continue;
-        if (toNumber(saved.amount) <= 0 && !safeString(saved.account_number).trim()) continue;
+        if (toNumber(saved.amount) <= 0) continue;
 
         var savedRefId = safeString(saved.ref_id || saved['ref.id']).trim();
         if (savedRefId && successfulMap[savedRefId]) continue;
@@ -1302,7 +1301,7 @@ function buildExpenseCaseEntries(c) {
     var totalTaxAmount = c.hasTax ? c.taxInfo.totalDeductibleTax : 0;
     var costAmount = Math.max(0, c.expenseAmount - totalTaxAmount);
 
-    // Dòng 1: TT-BK-01* - Ghi nhận chi phí (Nợ)
+    // Dòng 1: TT-BK-01* - Ghi nhận chi phí (Nợ) (bỏ trống số tài khoản như bên thanh toán để KT nhập sau)
     if (c.expenseAmount > 0) {
         rows.push(buildExpenseEntryRow({
             expenseId: c.expenseId,
@@ -1312,8 +1311,8 @@ function buildExpenseCaseEntries(c) {
             amount: costAmount,
             order: order++,
             accountOverride: {
-                number: c.vendor.debit_account,
-                name: getGlAccountName(c.vendor.debit_account)
+                number: '',
+                name: ''
             }
         }));
     }
@@ -1334,7 +1333,7 @@ function buildExpenseCaseEntries(c) {
         }
     }
 
-    // Dòng 3: TT-BK-03* - Ghi nhận nghĩa vụ thanh toán (Có)
+    // Dòng 3: TT-BK-03* - Ghi nhận nghĩa vụ thanh toán (Có) (bỏ trống số tài khoản để KT nhập sau)
     if (c.expenseAmount > 0) {
         rows.push(buildExpenseEntryRow({
             expenseId: c.expenseId,
@@ -1344,8 +1343,8 @@ function buildExpenseCaseEntries(c) {
             amount: c.expenseAmount,
             order: order++,
             accountOverride: {
-                number: c.vendor.credit_account,
-                name: getGlAccountName(c.vendor.credit_account)
+                number: '',
+                name: ''
             }
         }));
     }
@@ -1408,16 +1407,10 @@ function resolveAccount(entryCode, vendor, taxInfo) {
         };
     }
 
-    if (entryCode === AUTO_ENTRY_CODE.LIABILITY) {
-        return {
-            number: vendor.credit_account,
-            name: getGlAccountName(vendor.credit_account)
-        };
-    }
-
+    // Dòng chi phí và dòng phải trả sinh tự động bỏ trống số tài khoản để KT nhập sau
     return {
-        number: vendor.debit_account,
-        name: getGlAccountName(vendor.debit_account)
+        number: '',
+        name: ''
     };
 }
 
@@ -1680,12 +1673,10 @@ function getAutoEntryRowErrors(row) {
     }
 
     if (!row.account_number) {
-        if (entryCode === AUTO_ENTRY_CODE.COST) {
-            // Cho phép sinh dòng chi phí chưa chọn tài khoản để KT nhập sau
+        if (entryCode === AUTO_ENTRY_CODE.COST || entryCode === AUTO_ENTRY_CODE.LIABILITY) {
+            // Cho phép sinh dòng chi phí và dòng phải trả chưa chọn tài khoản để KT nhập sau
         } else if (entryCode === AUTO_ENTRY_CODE.TAX) {
             errors.push(subject + vendorReference + ' chưa được thiết lập Tài khoản thuế GTGT đầu vào. Vui lòng kiểm tra lại.');
-        } else if (entryCode === AUTO_ENTRY_CODE.LIABILITY) {
-            errors.push(subject + vendorReference + ' chưa được thiết lập Tài khoản công nợ phải trả tại danh mục Site NCC. Vui lòng kiểm tra lại.');
         }
     }
 
@@ -1959,7 +1950,7 @@ function mergeEditableAutoEntryFields(savedEntries, expectedEntries) {
             expected.id = safeString(matched.id);
             expected.description = safeString(matched.description).trim() || expected.description;
 
-            if (isEditableDebitAccountEntry(expected)) {
+            if (isEditableDebitAccountEntry(expected) || isEditableCreditAccountEntry(expected)) {
                 var generatedAccountNumber = safeString(expected.account_number);
                 var savedAccountNumber = safeString(matched.account_number);
                 if (savedAccountNumber) {
@@ -1984,7 +1975,7 @@ function makeAutoEntryMatchKey(row) {
 
     var key = safeString(row.ref_id || row['ref.id']).trim() + '|' +
             safeString(row.vendor_id).trim() + '|' + entryType;
-    if (entryType === ENTRY_TYPE.COST || entryType === ENTRY_TYPE.TAX) {
+    if (entryType === ENTRY_TYPE.TAX) {
         key += '|' + safeString(row.account_number).trim();
     }
     return key;
@@ -1992,6 +1983,10 @@ function makeAutoEntryMatchKey(row) {
 
 function isEditableDebitAccountEntry(row) {
     return normalizeEntryType(row.entry_type) === ENTRY_TYPE.COST;
+}
+
+function isEditableCreditAccountEntry(row) {
+    return normalizeEntryType(row.entry_type) === ENTRY_TYPE.PAYABLE;
 }
 
 function replaceAutoExpenseEntries(expenseId, rows) {
@@ -2100,7 +2095,7 @@ function deleteAutoExpenseEntries(expenseId) {
 
     while (rc === RC_SUCCESS) {
         var isManual = isUserAddedEntryId(f['id']);
-        var isJunk = !isManual && (!safeString(f['ref.id']).trim() || toNumber(f['amount']) <= 0 || !safeString(f['account.number']).trim());
+        var isJunk = !isManual && (!safeString(f['ref.id']).trim() || toNumber(f['amount']) <= 0);
         if (isJunk || isAutoEntry({
             id: f['id'],
             payment_id: f['payment.id'],

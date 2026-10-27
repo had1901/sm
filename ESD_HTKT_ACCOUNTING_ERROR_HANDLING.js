@@ -3329,9 +3329,7 @@ function syncPendingApprovalTransition(oldRec, newRec, prepaymentId) {
         var totalPendingApprovalTrans = 0;
         var pendingApproverKttc = "";
         var detectedErrorChannel = "";
-        var currentRecordId = String(
-                newRec["request.id"] || ""
-        );
+        var currentRecordId = String(newRec["request.id"] || "");
 
         accountingRec = new SCFile(
                 "esdHTKTaccountingInformation",

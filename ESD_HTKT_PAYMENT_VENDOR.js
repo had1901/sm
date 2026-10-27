@@ -150,7 +150,7 @@ function getListPaymentVendor(input) {
 
     while (rc == RC_SUCCESS) {
         var item = mapRowToObject(f, fieldMappings);
-        
+
         var vendorId = item.vendorId || "";
         var countInvoiceId = 0;
 
@@ -193,7 +193,7 @@ function getPaymentRemainingAmount(paymentId) {
         ['hdVendor.supplier.name', 'supplier_name', 'S'],
         ['hpv.payment.method', 'payment_method', 'S'],
         ['hpv.amount', 'amount', 'N'],
-        ['hdVendor.remaining.amount', 'remaining_amount', 'N'],
+        ['hdVendor.unpaid.amount', 'remaining_amount', 'N'],
         ['hv.vendor.number', 'tax_code', 'S'],
         ['hv.ogl.sync.status', 'ogl_sync_status', 'S'],
         ['hvs.ogl.site.code', 'ogl_site_code', 'S'],
@@ -301,7 +301,7 @@ function getListInvoinVendor(input) {
     while (rc == RC_SUCCESS) {
 
         var currentRequestId = f["request.id"];
-        
+
 //        var isValidStatus = (checkStatusDetail != "E01" && checkStatusDetail != "E03" && checkStatusDetail != "E03B");
         var isRequestEmpty = (currentRequestId == null || currentRequestId == "");
 //        if (isRequestEmpty && isValidStatus) {
@@ -332,7 +332,7 @@ function getInvoicesBySupplier(input) {
     var paymentId = "";
     var vendorId = "";
     var paymentVendorId = "";
-    
+
     var tempObj = {};
 
     try {
@@ -345,7 +345,7 @@ function getInvoicesBySupplier(input) {
         paymentId = tempObj.paymentId || "";
         vendorId = tempObj.vendorId || "";
         paymentVendorId = String(tempObj.paymentVendorId || "").trim();
-        
+
     } catch (ex) {
         // print("[DEBUG run] Error parsing JSON: " + ex);
         return invoiceList;
@@ -354,7 +354,7 @@ function getInvoicesBySupplier(input) {
     if (!paymentId) return invoiceList;
     var isExpense = String(paymentId).split(".")[0].toUpperCase() === "DC";
     if (isExpense && !paymentVendorId) return invoiceList;
-    
+
     var fieldMappings = [
         ['i.id', 'id', 'S'], // Số hoá đơn
         ['i.invoice.number', 'invoiceNumber', 'S'], // Số hoá đơn
@@ -885,7 +885,7 @@ function mapPaymentAttachment(itemRec, feeData) {
     itemRec['invoice.id'] = feeData['id'];
     itemRec['vendor.id'] = feeData['vendorId'];
     itemRec['contract.id'] = feeData['contractId'];
-    
+
     if (feeData['totalTax'] === 0) {
         itemRec['deduction.type'] = "KHAUTRU_003"; // Không khấu trừ
     } else if (feeData['totalTax'] > 0) {
@@ -1130,14 +1130,14 @@ function getContractInfo(contractId) {
         var category = String(contractFile["category"] || "");
         contractInfo.category = category;
         contractInfo.categoryName = category === "HD_GT" ? "Hợp đồng" :
-            category === "HD_KMS" ? "Khoản mua sắm" : category;
+                category === "HD_KMS" ? "Khoản mua sắm" : category;
         contractInfo.name = category === "HD_KMS" ?
-            (contractFile["item.name"] || contractFile["name"] || "") :
-            (contractFile["name"] || "");
+                (contractFile["item.name"] || contractFile["name"] || "") :
+                (contractFile["name"] || "");
         contractInfo.startDate = contractFile["start.date"] || null;
         contractInfo.totalValue = category === "HD_KMS" ?
-            (contractFile["total.budget"] || "") :
-            (contractFile["contract.value.after.tax"] || "");
+                (contractFile["total.budget"] || "") :
+                (contractFile["contract.value.after.tax"] || "");
         contractInfo.totalPaidAmount = contractFile["total.paid.amount"] || "";
         contractInfo.remainingAmount = contractFile["remaining.amount"] || "";
         return contractInfo;
@@ -1419,9 +1419,9 @@ function deletePaymentInvoice(input) {
  * - Xóa các bản ghi quan hệ trong esdHTKTpaymentInvoice
  * - Thu thập danh sách vendorId bị ảnh hưởng
  * - Gỡ liên kết hóa đơn trong esdHTKTinvoice (set request.id = null)
- * 
- * @param {string} invoiceId 
- * @param {string} paymentId 
+ *
+ * @param {string} invoiceId
+ * @param {string} paymentId
  * @returns {{ deletedCount: number, affectedVendorIds: Object }}
  */
 /**
@@ -1442,7 +1442,7 @@ function deletePaymentInvoiceRelations(invoiceId, paymentId) {
         while (rcSelect === RC_SUCCESS) {
             var vendorId = String(paymentInvFile["vendor.id"] || "").trim();
             var paymentVendorId = String(paymentInvFile["ref.id"] || "").trim();
-            
+
             if (vendorId) {
                 affectedVendorIds[vendorId] = true;
             }
@@ -1451,7 +1451,7 @@ function deletePaymentInvoiceRelations(invoiceId, paymentId) {
             if (rcDelete === RC_SUCCESS) {
                 deletedCount++;
                 if (paymentVendorId) affectedPaymentVendorIds[paymentVendorId] = true;
-                
+
             }
             rcSelect = paymentInvFile.getNext();
         }
@@ -1471,7 +1471,7 @@ function deletePaymentInvoiceRelations(invoiceId, paymentId) {
 
 /**
  * Giải phóng liên kết hóa đơn gốc (set request.id = null)
- * 
+ *
  * @param {string} invoiceId - Mã hóa đơn cần reset
  * @returns {boolean} true nếu cập nhật thành công hoặc không tìm thấy, false nếu có lỗi
  */
@@ -1505,9 +1505,9 @@ function resetInvoiceRequestId(invoiceId) {
  * - Validate đầu vào
  * - Gọi xóa dữ liệu hóa đơn liên kết
  * - Cập nhật lại số tiền của đề nghị thanh toán (nếu có hóa đơn bị xóa)
- * 
- * @param {string} invoiceId 
- * @param {string} paymentId 
+ *
+ * @param {string} invoiceId
+ * @param {string} paymentId
  * @returns {{ success: boolean, message: string, deletedCount?: number }}
  */
 function executeDeletePaymentInvoice(invoiceId, paymentId) {
@@ -1523,7 +1523,7 @@ function executeDeletePaymentInvoice(invoiceId, paymentId) {
         if (result.deletedCount > 0) {
             if (String(paymentId).split(".")[0].toUpperCase() === "DC") {
                 lib.ESD_HTKT_EXPENSE_VENDOR.refreshExpenseAmountsAfterInvoiceDelete(
-                    paymentId, result.affectedPaymentVendorIds
+                        paymentId, result.affectedPaymentVendorIds
                 );
             } else {
                 refreshPaymentAmountsAfterInvoiceDelete(paymentId, result.affectedVendorIds);
@@ -1697,10 +1697,10 @@ function getAllVendorsByPaymentId(paymentId) {
 
         // Chỉ định các field cần lấy ở bảng esdHTKTpaymentVendor
         f.setFields([
-            "id", 
-            "vendor.id", 
-            "amount", 
-            "refund.amount", 
+            "id",
+            "vendor.id",
+            "amount",
+            "refund.amount",
             "approved.invoice.amount"
         ]);
 
@@ -1736,7 +1736,7 @@ function getAllVendorsByPaymentId(paymentId) {
             rc = f.getNext();
         }
     } catch (e) {
-        print("[getAllVendorsByPaymentId] Lỗi: " + e.toString());
+        // print("[getAllVendorsByPaymentId] Lỗi: " + e.toString());
     } finally {
         try {
             f.doClose();
@@ -1781,7 +1781,8 @@ function getPaymentVendorList(paymentId) {
         approvedInvoiceAmount: 0,
         paidAmount: 0,
         refundAmount: 0,
-        supplierId: "" 
+        supplierId: "",
+        supplierDetails: []
     };
 
     if (vendorList.length === 0) {
@@ -1793,16 +1794,24 @@ function getPaymentVendorList(paymentId) {
     for (var i = 0; i < vendorList.length; i++) {
         var vendor = vendorList[i];
 
+        var currentPaidAmount = Number(vendor.amount) || 0; // Số tiền thanh toán cho vendor này
+
         totals.approvedInvoiceAmount += Number(vendor.approvedInvoiceAmount) || 0;
-        totals.paidAmount += Number(vendor.amount) || 0;
+        totals.paidAmount += currentPaidAmount;
         totals.refundAmount += Number(vendor.refundAmount) || 0;
 
         if (vendor.supplierId) {
             supplierIds.push(vendor.supplierId);
+
+            // BƯỚC 2: PUSH DỮ LIỆU OBJECT VÀO MẢNG ĐỂ ĐẨY SANG SQ2
+            totals.supplierDetails.push({
+                "supplier": vendor.supplierId,
+                "amount": currentPaidAmount
+            });
         }
     }
 
-    // Ghép danh sách supplierId duy nhất (không trùng lặp)
+    // Ghép danh sách supplierId duy nhất
     if (supplierIds.length > 0) {
         totals.supplierId = supplierIds.filter(function(item, pos) {
             return supplierIds.indexOf(item) === pos;
@@ -1844,7 +1853,7 @@ function handleVendorChangeUpdate(record) {
             lib.ESD_HTKT_EXPENSE_VENDOR.syncExpenseTotalAmount(paymentId);
             return;
         }
-        
+
         // Tính lại tổng dữ liệu Vendor của phiếu
         var totals = getPaymentVendorList(paymentId);
 

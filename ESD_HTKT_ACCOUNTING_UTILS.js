@@ -765,7 +765,8 @@ function jobCallIntegrateRecordInQueue() {
     var sortFields = ["created.time"];
     var sortSeqs = [SCFILE_ASC];
     accountingInfoItem.setOrderBy(sortFields, sortSeqs);
-    var result = accountingInfoItem.doSelect(`transaction.id = NULL and status = "${ACCOUNTING_STATUS.IN_QUEUE}"`);
+    // Retry records left in CREATED when the initial integration did not finish.
+    var result = accountingInfoItem.doSelect(`transaction.id = NULL and (status = "${ACCOUNTING_STATUS.IN_QUEUE}" or status = "${ACCOUNTING_STATUS.CREATED}")`);
     var arrItem = [];
     while (result == RC_SUCCESS) {
         //        ['prepayment.id', 'request.id', 'status', 'type', 'created.time'].forEach(k => {

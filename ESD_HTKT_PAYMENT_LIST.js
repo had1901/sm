@@ -327,10 +327,8 @@ function getHTKTPaymentLeadershipAccess(rightsArray) {
  * Phan mien danh sach Thanh toan cho lanh dao DMMS/KTTC.
  *
  * - User TSC: toan bo PS ACTIVE thuoc entity.code=1010098.
- * - User Chi nhanh: dung LV1 hien tai cua user.
- *
- * PAYMENT duoc scope tai NextJS theo created.by -> contacts.lv1.id, vi vay
- * defaultFilter de true va truyen tap LV1 tin cay qua metadata rieng.
+ * - User Chi nhanh: entity.code ung voi LV1 hien tai cua user.
+ * Scope entity duoc truyen qua ca defaultFilter va metadata cho NextJS.
  */
 function buildHTKTPaymentLeadershipLv1Filter(currentUser, hasView, rightsArray, contactInfo) {
     var result = {
@@ -377,9 +375,11 @@ function buildHTKTPaymentLeadershipLv1Filter(currentUser, hasView, rightsArray, 
         return result;
     }
 
-    result.defaultFilter = "true";
+    if (!currentEntityCode) return result;
+    result.defaultFilter = 'entity.code="' + qHTKT(currentEntityCode) + '"';
     result.dataScope = "Chi nhanh - Lanh dao DMMS/KTTC";
-    result.dataScopeUnits = [safeLv1];
+    result.dataScopeField = "entity.code";
+    result.dataScopeUnits = [currentEntityCode];
 
     return result;
 }
@@ -506,18 +506,14 @@ function getHTKTPaymentActivePsCodesByEntityCode(entityCode, psPrefix) {
  *    - Hậu kiểm toàn hệ thống.
  *    - Xem tất cả Trụ sở chính + Chi nhánh.
  *
- * 2. QT_PQDL_04 + LV1 không bắt đầu 0999:
+ * 2. QT_PQDL_04 + entity.code khác 1010098:
  *    - Hậu kiểm Chi nhánh.
- *    - Chỉ xem đúng LV1 của currentUser.
+ *    - Chỉ xem entity.code ứng với LV1 của currentUser.
  *
- * 3. QT_PQDL_04 + LV1 bắt đầu 0999:
- *    - Chỉ hợp lệ khi PS map ACTIVE sang entity.code = 1010098.
- *    - Xem toàn bộ PS ACTIVE bắt đầu 0999 thuộc entity.code = 1010098.
+ * 3. QT_PQDL_04 + entity.code = 1010098:
+ *    - Xem phiếu thuộc entity Trụ sở chính.
  *
- * Lưu ý PAYMENT:
- * - Không ép query vật lý unit.lv1 trên esdHTKTpayment.
- * - Addon NextJS hiện scope PAYMENT theo created.by -> contacts.lv1.id.
- * - Vì vậy SM truyền metadata dataScopeCode/dataScopeField/dataScopeUnits tin cậy.
+ * SM resolve mapping ACTIVE và truyền query entity cùng metadata scope xuống addon.
  *
  * Nếu cấu hình scope/LV1/mapping không hợp lệ => fail-closed.
  */
@@ -568,32 +564,23 @@ function buildHTKTPaymentPostAuditLv1Filter(currentUser, hasView, contactInfo, d
         return result;
     }
 
-    var HEAD_OFFICE_PS_PREFIX = "0999";
     var HEAD_OFFICE_OGL_SEG1 = "1010098";
+    var currentEntityCode = getHTKTPaymentActiveEntityCodeByPsCode(safeLv1);
+    if (!currentEntityCode) return result;
 
-    // CASE 2 - Hậu kiểm Chi nhánh: chỉ đúng LV1 của currentUser.
-    if (safeLv1.indexOf(HEAD_OFFICE_PS_PREFIX) !== 0) {
-        result.defaultFilter = "true";
+    // CASE 2 - Hậu kiểm Chi nhánh: entity của đơn vị người đăng nhập.
+    if (currentEntityCode !== HEAD_OFFICE_OGL_SEG1) {
+        result.defaultFilter = 'entity.code="' + qHTKT(currentEntityCode) + '"';
         result.dataScope = "Khoi/CN/DVSN - Hau kiem";
         result.dataScopeCode = "QT_PQDL_04";
-        result.dataScopeField = "unit.lv1";
-        result.dataScopeUnits = [safeLv1];
+        result.dataScopeField = "entity.code";
+        result.dataScopeUnits = [currentEntityCode];
         return result;
     }
 
     // CASE 3 - Hậu kiểm Trụ sở chính.
-    var currentEntityCode = getHTKTPaymentActiveEntityCodeByPsCode(safeLv1);
-
-    result.defaultFilter = "true";
     result.dataScope = "Tru so chinh - Hau kiem";
     result.dataScopeCode = "QT_PQDL_04";
-    result.dataScopeField = "unit.lv1";
-    result.dataScopeUnits = [];
-
-    if (currentEntityCode !== HEAD_OFFICE_OGL_SEG1) {
-        return result;
-    }
-
     result.defaultFilter = 'entity.code="1010098"';
     result.dataScopeField = "entity.code";
     result.dataScopeUnits = [HEAD_OFFICE_OGL_SEG1];
@@ -1231,8 +1218,8 @@ function renderList() {
      *
      * Scope dữ liệu Hậu kiểm:
      * - QT_PQDL_06: toàn hệ thống.
-     * - QT_PQDL_04 + LV1 != 0999*: đúng Chi nhánh/LV1.
-     * - QT_PQDL_04 + LV1 = 0999* + entity 1010098: toàn Trụ sở chính.
+     * - QT_PQDL_04 + entity khác 1010098: entity Chi nhánh người đăng nhập.
+     * - QT_PQDL_04 + entity 1010098: toàn Trụ sở chính.
      *
      * Các user cũ (DMMS/KTTC/Checker/Approver/ApproverFinal...) vẫn chạy nguyên
      * buildHTKTPaymentCreatedByFilter() đã chốt.
@@ -1277,7 +1264,7 @@ function renderList() {
         /*
          * Gui xuong dung tap LV1 da resolve:
          * - TSC: toan bo PS ACTIVE cua entity 1010098.
-         * - Chi nhanh: dung LV1 hien tai.
+         * - Chi nhanh: entity cua LV1 hien tai.
          */
         dataPermission = {
             scope: dataFilterInfo.dataScopeCode,
@@ -1289,6 +1276,7 @@ function renderList() {
     }
 
     var defaultFilter = dataFilterInfo.defaultFilter;
+    defaultFilter = '(' + defaultFilter + ') AND status ~= "cancelled"';
     var dataScope = dataFilterInfo.dataScope;
     
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
@@ -1305,6 +1293,7 @@ function renderList() {
             operatorName: smLoginUser,
             fullName: contactInfo.fullName,
             branchCode: contactInfo.branchCode,
+            entityCode: getHTKTPaymentActiveEntityCodeByPsCode(contactInfo.lv1),
 
             unit: {
                 lv1: contactInfo.lv1,

@@ -212,10 +212,9 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
     paymentRec['return.reason'] = "";
     paymentRec['unit.lv1'] = contractData['unitLv1'] || contractData['unit.lv1'] || "";
     paymentRec['unit.lv2'] = contractData['unitLv2'] || contractData['unit.lv2'] || "";
-    // Phiếu thuộc Trụ sở chính dùng entity chung để lọc danh sách.
-    if (String(paymentRec['unit.lv1'] || "").trim().indexOf("0999") === 0) {
-        paymentRec['entity.code'] = "1010098";
-    }
+    var unitLv1 = String(paymentRec['unit.lv1'] || "").replace(/^\s+|\s+$/g, "");
+    var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(unitLv1);
+    paymentRec['entity.code'] = entityInfo && entityInfo.entity ? String(entityInfo.entity) : "";
     paymentRec['unit.lv1.name'] = contractData['unitLv1Name'] || contractData['unit.lv1.name'] ||
             htktCreatePayment_getUnitName(paymentRec['unit.lv1']);
     paymentRec['unit.lv2.name'] = contractData['unitLv2Name'] || contractData['unit.lv2.name'] ||
@@ -228,7 +227,7 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
     paymentRec['contract.id'] = contractData['id'];
     paymentRec['contract.name'] = contractData['name'];
     paymentRec['current.phase'] = "start";
-    paymentRec['executor.payment'] = contractData['currentUser'];
+    paymentRec['current.executor'] = contractData['currentUser'];
 
 
     var creatorUser = htktCreatePay_resolveCurrentUser(
@@ -283,59 +282,59 @@ function htktCreatePayment_getUnitName(unitId) {
 }
 
 
-function generateDocumentCode(docType, branchCode) {
-    var fullYear = new Date().getFullYear();
-    var year = ("0" + (fullYear % 100)).slice(-2);
-    // Shared existing SM counter; never reset when the year changes.
-    var numberClass = "esdHTKTpayment";
-    var numberRc = new SCDatum();
-    numberRc.setValue(-1);
-    var nextNumber = new SCDatum();
-    system.functions.rtecall(
-        "getnumber", numberRc, nextNumber, numberClass
-    );
-    // String(SCDatum) includes a native-object label; read its payload instead.
-    var rcText = String(numberRc.getText()).replace(/^\s+|\s+$/g, "");
-    var rawNumber = String(nextNumber.getText()).replace(/^\s+|\s+$/g, "");
-    // SM may render a string datum with surrounding quotes.
-    if (/^"[^"]*"$/.test(rawNumber) || /^'[^']*'$/.test(rawNumber)) {
-        rawNumber = rawNumber.substring(1, rawNumber.length - 1);
-    }
-    // The existing class has a TT prefix.
-    // Padding/length from Sequential Numbers is normalized below to 7 digits.
-    if (rawNumber.indexOf(docType) === 0) {
-        rawNumber = rawNumber.substring(docType.length);
-    }
-    // Never fall back to MAX + 1, which races between concurrent sessions.
-    // Use the output status and payload, not JS truthiness of the bridge return.
-    if (rcText !== "0" || !/^\d+$/.test(rawNumber)) {
-        throw new Error("Không cấp được số phiếu từ Sequential Numbers: " +
-            numberClass + ". Kiểm tra bộ đếm hiện có, Prefix TT, Suffix trống, " +
-            "Increment=1 và không Decrement. rc=" + rcText +
-            ", number=" + rawNumber);
-    }
-    var sequence = Number(rawNumber);
-    if (sequence < 1 || sequence > 9999999) {
-        throw new Error("Số phiếu ngoài phạm vi 0000001..9999999: " + rawNumber);
-    }
-    var paymentId = docType + "." + branchCode + "." + year + "." +
-        ("0000000" + sequence).slice(-7);
-    // Detect a mis-seeded counter. Concurrency safety comes from getnumber.
-    var existing = new SCFile("esdHTKTpayment", SCFILE_READONLY);
-    try {
-        var rc = existing.doSelect('id="' + escapeSmQueryValue(paymentId) + '"');
-        if (rc === RC_SUCCESS) {
-            throw new Error("Bộ đếm " + numberClass + " cấp mã đã tồn tại: " +
-                paymentId + ". Dừng tạo phiếu và đồng bộ bộ đếm với dữ liệu hiện có.");
-        }
-        if (rc !== RC_NO_MORE) {
-            throw new Error("Không kiểm tra được mã phiếu " + paymentId + ". Code: " + rc);
-        }
-    } finally {
-        closeSCFile(existing);
-    }
-    return paymentId;
-}
+//function generateDocumentCode(docType, branchCode) {
+//    var fullYear = new Date().getFullYear();
+//    var year = ("0" + (fullYear % 100)).slice(-2);
+//    // Shared existing SM counter; never reset when the year changes.
+//    var numberClass = "esdHTKTpayment";
+//    var numberRc = new SCDatum();
+//    numberRc.setValue(-1);
+//    var nextNumber = new SCDatum();
+//    system.functions.rtecall(
+//        "getnumber", numberRc, nextNumber, numberClass
+//    );
+//    // String(SCDatum) includes a native-object label; read its payload instead.
+//    var rcText = String(numberRc.getText()).replace(/^\s+|\s+$/g, "");
+//    var rawNumber = String(nextNumber.getText()).replace(/^\s+|\s+$/g, "");
+//    // SM may render a string datum with surrounding quotes.
+//    if (/^"[^"]*"$/.test(rawNumber) || /^'[^']*'$/.test(rawNumber)) {
+//        rawNumber = rawNumber.substring(1, rawNumber.length - 1);
+//    }
+//    // The existing class has a TT prefix.
+//    // Padding/length from Sequential Numbers is normalized below to 7 digits.
+//    if (rawNumber.indexOf(docType) === 0) {
+//        rawNumber = rawNumber.substring(docType.length);
+//    }
+//    // Never fall back to MAX + 1, which races between concurrent sessions.
+//    // Use the output status and payload, not JS truthiness of the bridge return.
+//    if (rcText !== "0" || !/^\d+$/.test(rawNumber)) {
+//        throw new Error("Không cấp được số phiếu từ Sequential Numbers: " +
+//            numberClass + ". Kiểm tra bộ đếm hiện có, Prefix TT, Suffix trống, " +
+//            "Increment=1 và không Decrement. rc=" + rcText +
+//            ", number=" + rawNumber);
+//    }
+//    var sequence = Number(rawNumber);
+//    if (sequence < 1 || sequence > 9999999) {
+//        throw new Error("Số phiếu ngoài phạm vi 0000001..9999999: " + rawNumber);
+//    }
+//    var paymentId = docType + "." + branchCode + "." + year + "." +
+//        ("0000000" + sequence).slice(-7);
+//    // Detect a mis-seeded counter. Concurrency safety comes from getnumber.
+//    var existing = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+//    try {
+//        var rc = existing.doSelect('id="' + escapeSmQueryValue(paymentId) + '"');
+//        if (rc === RC_SUCCESS) {
+//            throw new Error("Bộ đếm " + numberClass + " cấp mã đã tồn tại: " +
+//                paymentId + ". Dừng tạo phiếu và đồng bộ bộ đếm với dữ liệu hiện có.");
+//        }
+//        if (rc !== RC_NO_MORE) {
+//            throw new Error("Không kiểm tra được mã phiếu " + paymentId + ". Code: " + rc);
+//        }
+//    } finally {
+//        closeSCFile(existing);
+//    }
+//    return paymentId;
+//}
 
 function listPurchaseContracts() {
     var result = {
@@ -1085,17 +1084,6 @@ function getNumberField(file, fieldNames) {
     return 0;
 }
 
-function escapeSmQueryValue(value) {
-    return String(value || "")
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, '\\"');
-}
-
-function closeSCFile(file) {
-    try {
-        if (file) file.doClose();
-    } catch (ignore) {}
-}
 
 function mapRowToObject(scFileRecord, fieldMappings) {
     var item = {};
@@ -1516,9 +1504,166 @@ function listFileAttachment(input) {
     input.queryReturnArray = system.functions.denull(dataArray);
 }
 
+function escapeSmQueryValue(value) {
+    return String(value || "")
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"');
+}
+
+function closeSCFile(file) {
+    try {
+        if (file) file.doClose();
+    } catch (ignore) {}
+}
+
 // FILTER
 var escapeQueryValue = function(value) {
     return String(value || "")
         .replace(/\\/g, "\\\\")
         .replace(/"/g, '\\"');
 };
+
+
+
+// test cho sinh ma tu dong 23/10/2026
+
+function generateDocumentCode(docType, branchCode) {
+    var fullYear = new Date().getFullYear();
+    var year = ("0" + (fullYear % 100)).slice(-2);
+    var numberClass = "esdHTKTpayment";
+
+    var maxAttempts = 50;
+    var attempt = 0;
+    var synced = false;
+
+    while (attempt < maxAttempts) {
+        attempt++;
+
+        var sequence = getNextSequenceFromSm(numberClass, docType, year);
+        if (sequence === null) {
+            // Không gọi được getnumber từ SM -> chuyển sang fallback
+            break;
+        }
+
+        var candidateId = docType + "." + branchCode + "." + year + "." +
+            ("0000000" + sequence).slice(-7);
+
+        if (!checkPaymentIdExists(candidateId)) {
+            return candidateId;
+        }
+
+        print("[WARN generateDocumentCode] Bộ đếm " + numberClass + " cấp mã đã tồn tại: " + candidateId + ". Tiến hành đồng bộ bộ đếm...");
+
+        // Khi phát hiện mã đã tồn tại: quét maxSeq thực tế trong DB và đồng bộ vào bảng number của SM
+        if (!synced) {
+            synced = true;
+            var maxExistingSeq = getMaxExistingPaymentSequence(docType, year);
+            if (maxExistingSeq >= sequence) {
+                syncSmNumberTable(numberClass, maxExistingSeq);
+            }
+        }
+    }
+
+    // Fallback an toàn nếu getnumber bị lỗi hoặc sau vòng lặp vẫn đụng mã trùng:
+    var safeSeq = getMaxExistingPaymentSequence(docType, year);
+    var finalPaymentId = "";
+    do {
+        safeSeq++;
+        finalPaymentId = docType + "." + branchCode + "." + year + "." +
+            ("0000000" + safeSeq).slice(-7);
+    } while (checkPaymentIdExists(finalPaymentId));
+
+    // Đồng bộ lại bộ đếm SM về safeSeq để các lần cấp tiếp theo không bị lệch
+    syncSmNumberTable(numberClass, safeSeq);
+
+    return finalPaymentId;
+}
+
+function getNextSequenceFromSm(numberClass, docType, year) {
+    try {
+        
+        // Lấy số thứ tự lớn nhất đang có trong DB của năm nay
+        var maxExistingSeq = getMaxExistingPaymentSequence(docType, year);
+
+        if (maxExistingSeq > 0) {
+            var nextSeq = maxExistingSeq + 1;
+            print("[INFO getNextSequenceFromSm] Năm " + year + " đã có maxSeq = " + maxExistingSeq + ", tự tăng lên thành: " + nextSeq);
+            return nextSeq;
+        }
+
+        // Nếu năm mới hoàn toàn chưa có chứng từ nào -> bắt đầu bằng 1
+        if (maxExistingSeq === 0) {
+            print("[INFO getNextSequenceFromSm] Phát hiện năm mới " + year + " chưa có chứng từ nào, khởi tạo sequence = 1");
+            return 1;
+        }
+
+    } catch (e) {
+        print("[ERROR getNextSequenceFromSm] " + e);
+    }
+    return null;
+}
+
+function checkPaymentIdExists(paymentId) {
+    var existing = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+    try {
+        var rc = existing.doSelect('id="' + escapeSmQueryValue(paymentId) + '"');
+        return rc === RC_SUCCESS;
+    } catch (e) {
+        return false;
+    } finally {
+        closeSCFile(existing);
+    }
+}
+
+function getMaxExistingPaymentSequence(docType, year) {
+    var maxSeq = 0;
+    var file = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+    try {
+        var queryPattern = docType + ".*." + year + ".*";
+        var query = 'id like "' + queryPattern + '"';
+        var rc = file.doSelect(query);
+
+        while (rc == RC_SUCCESS) {
+            var currentId = file.id;
+            if (currentId) {
+                var parts = String(currentId).split(".");
+                if (parts.length >= 2) {
+                    var seqStr = parts[parts.length - 1];
+                    if (/^\d+$/.test(seqStr)) {
+                        var seq = parseInt(seqStr, 10);
+                        if (!isNaN(seq) && seq > maxSeq) {
+                            maxSeq = seq;
+                        }
+                    }
+                }
+            }
+            rc = file.getNext();
+        }
+    } catch (e) {
+        print("[ERROR getMaxExistingPaymentSequence] " + e);
+    } finally {
+        closeSCFile(file);
+    }
+    return maxSeq;
+}
+
+function syncSmNumberTable(numberClass, targetSeq) {
+    try {
+        var numFile = new SCFile("number");
+        if (numFile.doSelect('name="' + escapeSmQueryValue(numberClass) + '"') === RC_SUCCESS) {
+            var currentVal = Number(numFile["number"] || 0);
+            if (isNaN(currentVal) || targetSeq > currentVal) {
+                numFile["number"] = targetSeq;
+                var rcUpdate = numFile.doUpdate();
+                print("[INFO syncSmNumberTable] Đồng bộ bộ đếm " + numberClass + " từ " + currentVal + " lên " + targetSeq + " (rc=" + rcUpdate + ")");
+            }
+        }
+        closeSCFile(numFile);
+    } catch (eSync) {
+        print("[WARN syncSmNumberTable] Không thể cập nhật bảng number: " + eSync);
+    }
+}
+
+
+
+//
