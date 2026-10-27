@@ -1269,11 +1269,15 @@ function expenseImportValidateRow(raw, contractParams, cache) {
     var code = normalizeExpenseVendorValue(raw.contractCode);
     var vendorCode = normalizeExpenseVendorValue(raw.vendorCode);
     var amount = raw.amount;
+    var transactionDescription = normalizeExpenseVendorValue(raw.transactionDescription);
     var contractField = expenseImportDescribeField("Mã HĐ/KMS", code);
     var vendorField = expenseImportDescribeField("MST NCC", vendorCode);
 
     if (!code) throw new Error(contractField + ": chưa nhập giá trị bắt buộc.");
     if (!vendorCode) throw new Error(vendorField + ": chưa nhập giá trị bắt buộc.");
+    if (transactionDescription.length > 255) {
+        throw new Error(expenseImportDescribeField("Nội dung đề nghị", transactionDescription) + ": không được vượt quá 255 ký tự.");
+    }
 
     if (typeof amount !== "number" || !isFinite(amount) || amount <= 0 || amount > 9007199254740991) {
        throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là chữ số lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
@@ -1345,7 +1349,14 @@ function expenseImportValidateRow(raw, contractParams, cache) {
             cache.links[linkKey] = true;
         } finally { closeExpenseVendorFile(link); }
     }
-    return { contractCode: code, vendorId: selected.id, currency: cache.contracts["$" + code].currency, amount: amount, sourceRow: Number(raw.sourceRow) || 0 };
+    return { 
+        contractCode: code, 
+        vendorId: selected.id, 
+        currency: cache.contracts["$" + code].currency, 
+        amount: amount, 
+        transactionDescription: transactionDescription, 
+        sourceRow: Number(raw.sourceRow) || 0 
+    };
 }
 
 function expenseImportSetItem(item, itemId, paymentId, row, description) {
@@ -1359,7 +1370,8 @@ function expenseImportSetItem(item, itemId, paymentId, row, description) {
     item["total.invoice"] = 0;
     item["ogl.sync.status"] = false;
     item["vendor.site.id"] = "";
-    item["transaction.des"] = normalizeExpenseVendorValue(description);
+    // ưu tiên nội dung Excel; để trống thì lấy Ghi chú của phiếu.
+    item["transaction.des"] = normalizeExpenseVendorValue(row.transactionDescription) || normalizeExpenseVendorValue(description);
 }
 
 function expenseImportRefreshTotals(payment, paymentId) {
