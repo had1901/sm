@@ -14,8 +14,7 @@ vars.$showSyncVendorOgl = false;
 vars.$canEditSite = false;
 vars.$vendorSiteOptValue = [];
 vars.$vendorSiteOptDisp = [];
-vars.$canEditObj = false;
-// Read-only của riêng trường Số tiền dùng: not $canEditAmount.
+vars.$canEditObj = false; 
 vars.$canEditAmount = false;
 arrVendors = []
 
@@ -29,10 +28,9 @@ vars.$isExpense = isExpense;
 
 if (isExpense) {
     lib.ESD_HTKT_EXPENSE_VENDOR.loadPaymentVendorInfo(vars.$L_file);
-    vars.$canEditAmount = vars.$canEditObj &&
-        !lib.ESD_HTKT_EXPENSE_VENDOR.hasExpenseVendorInvoices(vars.$L_file);
-    
+    vars.$canEditAmount = vars.$canEditObj && !lib.ESD_HTKT_EXPENSE_VENDOR.hasExpenseVendorInvoices(vars.$L_file);
     var contractInfo = lib.ESD_HTKT_PAYMENT_VENDOR.getContractInfo(contractId);
+    
     vars.$contractId = contractInfo.id;
     vars.$contractName = contractInfo.name;
     vars.$contractCategoryCode = contractInfo.category;
