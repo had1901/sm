@@ -210,6 +210,15 @@ function run() {
                 result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.getAccountingErrorExecutorOptions(input);
                 break;
             //Du chi
+            case "listExpenseContracts": // Danh sách HĐ/KMS theo hạng mục trên phiếu Dự chi: HHDV lấy S2, XDCB lấy S4.
+                result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseContracts(input);
+                break;
+            case "listExpenseXdcbContracts":  // Danh sách HĐ S4 Đang thực hiện theo phạm vi được xem
+                result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseXdcbContracts(input);
+                break;
+            case "getExpenseXdcbContract": // Chi tiết một HĐ S4 theo contractId (field id)
+                result = lib.ESD_HTKT_EXPENSE_CONTRACT.getExpenseXdcbContract(input);
+                break;
             case "getExpenceList":
                 result = lib.ESD_HTKT_EXPENSE_CREATE_REQUEST.getList(input);
                 break;

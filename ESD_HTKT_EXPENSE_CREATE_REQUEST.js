@@ -30,6 +30,12 @@ function createExpenseRequest(input) {
             return { success: false, message: "Thiếu dữ liệu dự chi." };
         }
 
+        var contractCategory = String(expenseData.contractCategory || "HHDV").trim().toUpperCase();
+        if (contractCategory !== "HHDV" && contractCategory !== "XDCB") {
+            return { success: false, message: "Hạng mục Dự chi không hợp lệ." };
+        }
+        expenseData.contractCategory = contractCategory;
+
         var currentUser = String(expenseData['currentUser'] || "").replace(/^\s+|\s+$/g, "");
         if (!currentUser) {
             return {
@@ -97,6 +103,7 @@ function createExpenseRequest(input) {
 function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['id'] = expenseId;
     expenseRec['transaction.type'] = "Dự chi";
+    expenseRec['original.contract.category'] = expenseData.contractCategory || "HHDV";
 
     expenseRec['department'] =
             expenseData['unitLv3'] ||
