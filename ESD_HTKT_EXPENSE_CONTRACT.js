@@ -153,7 +153,7 @@ function listExpenseXdcbContracts(input) {
         contractFile.setFields([
             "id", "contract.name", "contract.amount", "currency",
             "signed.date", "effective.date", "expire.date", "status", "responsible.officer",
-            "repair.id", "construction.id", "vendor.name", "tender.package.id"
+            "repair.id", "construction.id", "type.budget", "vendor.name", "tax.code", "vendor.address", "tender.package.id"
         ]);
         var orderFields = [sortField];
         var orderSequences = [direction === "desc" ? SCFILE_DSC : SCFILE_ASC];
@@ -291,7 +291,7 @@ function expenseContractSelectionRole(paymentId) {
     } finally { expenseContractClose(payment); }
 }
 
-/** Dùng ID S4 làm mã HĐ và khóa liên kết, trả kèm gói thầu để lấy NCC. */
+/** Dùng ID S4 làm mã HĐ; trả phân loại và NCC trên HĐ để resolver chọn đúng nguồn NCC. */
 function expenseContractRow(record) {
     var repairId = expenseContractText(record["repair.id"]);
     return {
@@ -308,7 +308,10 @@ function expenseContractRow(record) {
         projectType: repairId ? "REPAIR" : "CONSTRUCTION",
         repairId: repairId,
         constructionId: expenseContractText(record["construction.id"]),
+        budgetType: expenseContractText(record["type.budget"]),
         vendorName: expenseContractText(record["vendor.name"]),
+        vendorTaxCode: expenseContractText(record["tax.code"]),
+        vendorAddress: expenseContractText(record["vendor.address"]),
         tenderPackageId: expenseContractText(record["tender.package.id"]),
         source: "S4"
     };

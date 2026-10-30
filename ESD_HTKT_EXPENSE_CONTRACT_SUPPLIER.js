@@ -1,7 +1,7 @@
 /**
  * ScriptLibrary: ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER
  * Nguồn HĐ/NCC và site cho Dự chi. Chưa nối entrypoint Thanh toán/Tạm ứng.
- * ID Contractor dùng trên droplist; vendor.id/site.id của món luôn là ID S6.
+ * Droplist dùng ID Contractor hoặc MST của NCC trên HĐ rút gọn; vendor.id/site.id của món luôn là ID S6.
  */
 
 /** Đọc hạng mục và người xử lý từ phiếu cha. */
@@ -27,7 +27,26 @@ function getExpenseSupplierContext(record, actor, requireEdit) {
         canSync: canEdit && phase === "initial_kttc", actor: expenseSupplierText(actor) };
 }
 
-/** Đọc HĐ S4 đủ điều kiện và có gói thầu trước khi thêm/lưu/import món. */
+/** Phân nguồn từ HĐ đã đọc trên server: sửa chữa under500 lấy trên HĐ, còn lại lấy qua gói thầu. */
+function getExpenseXdcbSupplierSource(contract) {
+    // Nhận cả DTO API và record đọc trực tiếp khi mở form.
+    var repairId = expenseSupplierText(contract.repairId || contract["repair.id"]);
+    var constructionId = expenseSupplierText(contract.constructionId || contract["construction.id"]);
+    if (!!repairId === !!constructionId) throw new Error("HĐ XDCB phải thuộc đúng một công trình sửa chữa hoặc dự án xây mới/cải tạo.");
+    if (repairId) {
+        var budgetType = expenseSupplierText(contract.budgetType || contract["type.budget"]).toLowerCase();
+        // Thầu rút gọn không tạo gói thầu; không suy ra nhánh bằng giá trị hợp đồng.
+        if (budgetType === "under500") return "CONTRACT";
+        if (budgetType !== "over500") throw new Error("HĐ sửa chữa XDCB chưa có phân loại type.budget under500/over500 hợp lệ.");
+    }
+    // Sửa chữa over500 và mọi dự án xây mới/cải tạo đều bắt buộc có gói thầu.
+    if (!expenseSupplierText(contract.tenderPackageId || contract["tender.package.id"])) {
+        throw new Error("HĐ XDCB chưa có liên kết gói thầu.");
+    }
+    return "PACKAGE";
+}
+
+/** Đọc HĐ S4 đủ điều kiện và kiểm tra nguồn NCC trước khi thêm/lưu/import món. */
 function getExpenseXdcbSelection(contractId, actor, paymentId) {
     var result = lib.ESD_HTKT_EXPENSE_CONTRACT.getExpenseXdcbContract({ details: {
         contractId: expenseSupplierText(contractId), currentUser: actor, paymentId: expenseSupplierText(paymentId)
@@ -37,14 +56,22 @@ function getExpenseXdcbSelection(contractId, actor, paymentId) {
     }
     var contract = result.data;
     if (!expenseSupplierText(contract.currency)) throw new Error("HĐ XDCB chưa có loại tiền.");
-    if (!expenseSupplierText(contract.tenderPackageId)) throw new Error("HĐ XDCB chưa có liên kết gói thầu.");
+    getExpenseXdcbSupplierSource(contract);
     return contract;
 }
 
-/** Lấy NCC đúng gói thầu; không dùng thông tin NCC snapshot trên HĐ. */
+/** Trả cùng cấu trúc NCC cho hai nguồn: một NCC trên HĐ rút gọn hoặc danh sách NCC gói thầu. */
 function getExpenseXdcbSuppliers(contract) {
-    var packageId = expenseSupplierText(contract.tenderPackageId);
-    if (!packageId) throw new Error("HĐ XDCB chưa có liên kết gói thầu.");
+    if (getExpenseXdcbSupplierSource(contract) === "CONTRACT") {
+        var tax = expenseSupplierText(contract.vendorTaxCode || contract["tax.code"]);
+        var name = expenseSupplierText(contract.vendorName || contract["vendor.name"]);
+        if (!tax || !name) throw new Error("NCC trên HĐ sửa chữa rút gọn thiếu MST hoặc tên.");
+        // Không có bản ghi Contractor: MST chỉ là khóa droplist, không ghi vào supplier.id/vendor.id S6.
+        return [{ "supplier.id": tax, "supplier.name": name, "tax.code": tax,
+            "address": expenseSupplierText(contract.vendorAddress || contract["vendor.address"]), "source": "S4" }];
+    }
+    var packageId = expenseSupplierText(contract.tenderPackageId || contract["tender.package.id"]);
+    // Nhánh qua gói thầu chỉ đọc Contractor; thiếu NCC phải báo lỗi, không lấy tên/MST snapshot trên HĐ.
     var file = new SCFile("esdjoinXDCBtenderPackageContractor", SCFILE_READONLY);
     var rows = [];
     var seen = {};
@@ -69,7 +96,7 @@ function getExpenseXdcbSuppliers(contract) {
     } finally { expenseSupplierClose(file); }
 }
 
-/** Kiểm tra lựa chọn/MST thực sự thuộc danh sách NCC gói thầu của HĐ. */
+/** Kiểm tra lựa chọn/MST thuộc đúng nguồn NCC của HĐ, dùng chung cho chọn, lưu, import và đồng bộ. */
 function resolveExpenseXdcbSupplier(contract, supplierId, taxCode) {
     var rows = getExpenseXdcbSuppliers(contract);
     var key = expenseSupplierText(supplierId);
@@ -77,7 +104,7 @@ function resolveExpenseXdcbSupplier(contract, supplierId, taxCode) {
     for (var i = 0; i < rows.length; i++) {
         if ((!key || rows[i]["supplier.id"] === key) && rows[i]["tax.code"] === tax) return rows[i];
     }
-    throw new Error("NCC/MST đã chọn không thuộc gói thầu của HĐ XDCB.");
+    throw new Error("NCC/MST đã chọn không thuộc nguồn NCC của HĐ XDCB.");
 }
 
 /** Đọc NCC S6 đã lưu; supplier.id vẫn giữ ý nghĩa liên kết danh mục S2. */
@@ -183,8 +210,10 @@ function loadExpenseSupplierScreen(record) {
     if (context.category !== "XDCB") throw new Error("Hàm nạp NCC S4 chỉ áp dụng cho Dự chi XDCB.");
     var contractId = expenseSupplierText(record["contract.id"] || record.contract_id);
     var contract = expenseSupplierReadOne("esdXDCBrepairProjectCtr", 'id="' + expenseSupplierQuote(contractId) + '"',
-        ["id", "tender.package.id", "currency"], true);
-    var options = getExpenseXdcbSuppliers({ tenderPackageId: contract["tender.package.id"] });
+        ["id", "repair.id", "construction.id", "type.budget", "tender.package.id", "currency",
+            "vendor.name", "tax.code", "vendor.address"], true);
+    // Nạp đủ phân loại cả khi xem món đã lưu; resolver không mặc định mọi HĐ đều có gói thầu.
+    var options = getExpenseXdcbSuppliers(contract);
     var draft = getExpenseSupplierScreenDraft(record, context);
     var draftSupplier = null;
     var savedId = expenseSupplierText(record["vendor.id"] || record.vendor_id);
