@@ -925,6 +925,106 @@ for (const changed of ['item', 'contract', 'payment', 'actor', 'phase', 'saved v
   });
 }
 
+test('XDCB view calls the S4 supplier loader directly even when EXPENSE_VENDOR still has the legacy S2 loader', () => {
+  const h = harness();
+  const record = h.item({ 'vendor.id': '', amount: 2000, 'transaction.des': 'Nội dung chưa lưu' });
+  h.context.vars.$L_file = record;
+  h.context.lib.ESD_HTKT_PAYMENT_WF = { canEditInCurrenPhase: () => true };
+  let legacyLoads = 0;
+  h.context.lib.ESD_HTKT_EXPENSE_VENDOR = {
+    hasExpenseVendorInvoices: () => false,
+    loadPaymentVendorInfo() {
+      legacyLoads++;
+      Object.assign(h.context.vars, { $supplierId: '', $supplierName: '', $taxCode: '', $canEditObj: true });
+    },
+  };
+  const screen = fs.readFileSync(path.join(root, 'esdHTKTpaymentVendor.view.js'), 'utf8');
+  h.run(screen);
+  h.context.vars.$supplierId = tax + 'THAU-1';
+  h.run(fs.readFileSync(path.join(root, 'esdHTKTpaymentVendor.view_fill_data.js'), 'utf8'));
+  assert.equal(h.context.vars.$supplierName, 'NCC S4');
+  h.run(screen);
+  assert.equal(h.context.vars.$supplierId, tax + 'THAU-1');
+  assert.equal(h.context.vars.$supplierName, 'NCC S4');
+  assert.equal(h.context.vars.$taxCode, tax);
+  assert.equal(h.context.arrVendors[0]['supplier.id'], tax + 'THAU-1');
+  assert.equal(legacyLoads, 0);
+  assert.equal(record.amount, 2000);
+  assert.equal(record['transaction.des'], 'Nội dung chưa lưu');
+  assert.equal(record['vendor.id'], '');
+  assert.equal(h.calls.writes.length, 0);
+  assert.equal(h.calls.lookup.length, 0);
+  assert.equal(h.calls.create.length, 0);
+});
+
+for (const savedVendor of ['', 'V1']) {
+  for (const exitValue of ['', undefined, 'nosave']) {
+  test('XDCB view Cancel unsaved Back restores supplier after RAD local draft is unavailable: ' + (savedVendor || 'unsaved vendor') + ', exit=' + JSON.stringify(exitValue), () => {
+    const h = harness();
+    if (savedVendor) h.db.esdHTKTvendor.push(h.vendor());
+    const record = h.item({ 'vendor.id': savedVendor });
+    const source = { id: 'NEW-THAU-1', 'tender.package.id': 'THAU-1',
+      'tax.code': '0098765432', name: 'NCC vừa chọn', address: 'Địa chỉ mới' };
+    h.db.esdjoinXDCBtenderPackageContractor.push(source);
+    h.context.vars.$L_file = record;
+    h.context.lib.ESD_HTKT_PAYMENT_WF = { canEditInCurrenPhase: () => true };
+    const screen = fs.readFileSync(path.join(root, 'esdHTKTpaymentVendor.view.js'), 'utf8');
+    h.run(screen);
+    h.context.vars.$supplierId = source.id;
+    h.run(fs.readFileSync(path.join(root, 'esdHTKTpaymentVendor.view_fill_data.js'), 'utf8'));
+    record.amount = 2000;
+    record['transaction.des'] = 'Nội dung chưa lưu';
+    const backup = JSON.parse(h.context.vars['$expense.xdcb.supplier.cancel.draft']);
+    assert.deepEqual(Object.keys(backup).sort(), ['key', 'supplierId']);
+    h.context.vars['$L.expense.xdcb.supplier.draft'] = null;
+    h.context.vars.$proceed = 'no';
+    h.context.vars['$L.exit'] = exitValue;
+    source.name = 'Tên cập nhật từ S4';
+    h.run(screen);
+    assert.equal(h.context.vars.$supplierId, source.id);
+    assert.equal(h.context.vars.$G_supplier_id, source.id);
+    assert.equal(h.context.vars.$supplierName, source.name);
+    assert.equal(h.context.vars.$taxCode, source['tax.code']);
+    assert.equal(record.amount, 2000);
+    assert.equal(record['transaction.des'], 'Nội dung chưa lưu');
+    assert.equal(record['vendor.id'], savedVendor);
+    assert.ok(h.context.vars['$L.expense.xdcb.supplier.draft']);
+    assert.equal(h.calls.writes.length, 0);
+    assert.equal(h.calls.lookup.length, 0);
+    assert.equal(h.calls.create.length, 0);
+  });
+  }
+}
+
+for (const proceedValue of ['yes', '', undefined]) {
+  test('XDCB view reopening the same item does not restore a previous unsaved Back selection: ' + JSON.stringify(proceedValue), () => {
+    const h = harness(); h.db.esdHTKTvendor.push(h.vendor());
+    h.db.esdjoinXDCBtenderPackageContractor.push({ id: 'NEW-THAU-1', 'tender.package.id': 'THAU-1',
+      'tax.code': '0098765432', name: 'NCC chưa lưu' });
+    const record = h.item(); h.context.selectExpenseSupplier(record, 'NEW-THAU-1');
+    delete h.context.vars['$L.expense.xdcb.supplier.draft'];
+    h.context.vars.$proceed = proceedValue;
+    if (proceedValue === 'yes') h.context.vars['$L.exit'] = 'exit';
+    h.context.loadExpenseSupplierScreen(record);
+    assert.equal(h.context.vars.$supplierId, tax + 'THAU-1');
+    assert.equal(h.context.vars['$expense.xdcb.supplier.cancel.draft'], '');
+    assert.equal(h.calls.writes.length, 0);
+  });
+}
+
+test('XDCB view Cancel unsaved Back still rejects a removed supplier and clears both drafts', () => {
+  const h = harness(); const record = h.item({ 'vendor.id': '' });
+  h.context.selectExpenseSupplier(record, tax + 'THAU-1');
+  delete h.context.vars['$L.expense.xdcb.supplier.draft'];
+  h.context.vars.$proceed = 'no'; h.context.vars['$L.exit'] = 'nosave';
+  h.db.esdjoinXDCBtenderPackageContractor[0].id = 'REPLACED-THAU-1';
+  h.context.loadExpenseSupplierScreen(record);
+  assert.equal(h.context.vars.$supplierId, '');
+  assert.equal(h.context.vars['$L.expense.xdcb.supplier.draft'], '');
+  assert.equal(h.context.vars['$expense.xdcb.supplier.cancel.draft'], '');
+  assert.equal(h.calls.writes.length, 0);
+});
+
 test('XDCB redisplay reloads supplier details from S4 and rejects removed selections', () => {
   const h = harness(); const record = h.item({ 'vendor.id': '' });
   h.db.esdjoinXDCBtenderPackageContractor.push({ id: 'NEW-THAU-1', 'tender.package.id': 'THAU-1',
@@ -945,6 +1045,7 @@ test('XDCB Save clears the local draft and the next display uses the saved vendo
   assert.ok(h.context.vars['$L.expense.xdcb.supplier.draft']);
   assert.equal(h.context.saveExpenseXdcbDetails(record).success, true);
   assert.equal(h.context.vars['$L.expense.xdcb.supplier.draft'], '');
+  assert.equal(h.context.vars['$expense.xdcb.supplier.cancel.draft'], '');
   h.context.vars.$supplierId = 'STALE'; h.context.vars.$amount = 999;
   h.context.loadExpenseSupplierScreen(record);
   assert.equal(h.context.vars.$supplierId, tax + 'THAU-1'); assert.equal(h.context.vars.$amount, 500);

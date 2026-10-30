@@ -151,15 +151,26 @@ function expenseSupplierScreenDraftKey(record, context) {
 /** Xóa bản nháp của màn XDCB hiện tại; không ghi dữ liệu xuống bảng. */
 function clearExpenseSupplierScreenDraft() {
     vars["$L.expense.xdcb.supplier.draft"] = "";
+    vars["$expense.xdcb.supplier.cancel.draft"] = "";
 }
 
-/** Chỉ khôi phục bản nháp trong cùng form còn quyền sửa; biến $L được SM dọn khi thoát ứng dụng. */
+/** Giữ lựa chọn cùng form; chỉ dùng bản dự phòng theo thread khi người dùng Hủy popup Quay lại. */
 function getExpenseSupplierScreenDraft(record, context) {
     var raw = vars["$L.expense.xdcb.supplier.draft"];
-    if (!raw) return null;
+    // Log SM xác nhận bấm Không trả $proceed="no"; $L.exit đã rỗng khi DS chạy lại.
+    var cancelledBack = expenseSupplierText(vars.$proceed).toLowerCase() === "no";
+    if (!raw && cancelledBack) raw = vars["$expense.xdcb.supplier.cancel.draft"];
+    if (!raw) {
+        // Mở form mới không được dùng lại lựa chọn chưa lưu của lần mở trước, kể cả cùng mã món.
+        vars["$expense.xdcb.supplier.cancel.draft"] = "";
+        return null;
+    }
     try {
         var draft = JSON.parse(String(raw));
-        if (context.canEdit && draft.key && draft.key === expenseSupplierScreenDraftKey(record, context)) return draft;
+        if (context.canEdit && draft.key && draft.key === expenseSupplierScreenDraftKey(record, context)) {
+            vars["$L.expense.xdcb.supplier.draft"] = String(raw);
+            return draft;
+        }
     } catch (draftError) { /* Dữ liệu tạm không hợp lệ không được dùng thay lựa chọn trên form. */ }
     clearExpenseSupplierScreenDraft();
     return null;
@@ -250,9 +261,12 @@ function selectExpenseSupplier(record, supplierId) {
             if (!expenseSupplierText(record["transaction.des"])) record["transaction.des"] = context.payment.description || "";
             vars.$G_description = record["transaction.des"];
             var draftKey = expenseSupplierScreenDraftKey(record, context);
-            if (draftKey) vars["$L.expense.xdcb.supplier.draft"] = JSON.stringify({
-                key: draftKey, supplierId: options[i]["supplier.id"]
-            });
+            if (draftKey) {
+                var draftValue = JSON.stringify({ key: draftKey, supplierId: options[i]["supplier.id"] });
+                vars["$L.expense.xdcb.supplier.draft"] = draftValue;
+                // Biến theo thread giữ được ID qua popup RAD; không lưu tên/MST hoặc số tiền.
+                vars["$expense.xdcb.supplier.cancel.draft"] = draftValue;
+            }
             return options[i];
         }
     }

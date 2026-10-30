@@ -27,20 +27,21 @@ vars.$isPayment = isPayment;
 vars.$isExpense = isExpense;
 
 if (isExpense) {
-    // Loader tự điền arrVendors/vars như luồng cũ; không gán đè danh sách bằng return của SL.
-    lib.ESD_HTKT_EXPENSE_VENDOR.loadPaymentVendorInfo(vars.$L_file);
-    vars.$canEditAmount = vars.$canEditObj && !lib.ESD_HTKT_EXPENSE_VENDOR.hasExpenseVendorInvoices(vars.$L_file);
     var expenseContractContext = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(vars.$L_file, "", false);
     var contractInfo;
     if (expenseContractContext.category === "XDCB") {
+        // Gọi thẳng loader S4 để DS không đi qua loader S2 cũ; bind danh sách trong scope của DS.
+        arrVendors = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadExpenseSupplierScreen(vars.$L_file);
         // XDCB lấy HĐ S4 bằng ID và hiển thị cùng mã đã lưu trong contract.id của món.
         contractInfo = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseContractInfo(vars.$L_file);
         vars.$contractId = contractInfo.id;
     } else {
-        // HHDV giữ nguyên getter HĐ S2 và cách điền mã như trước tích hợp.
+        // HHDV giữ loader/getter S2 cũ; loader tự điền biến và có thể không trả về mảng.
+        lib.ESD_HTKT_EXPENSE_VENDOR.loadPaymentVendorInfo(vars.$L_file);
         contractInfo = lib.ESD_HTKT_PAYMENT_VENDOR.getContractInfo(contractId);
         vars.$contractId = contractInfo.id;
     }
+    vars.$canEditAmount = vars.$canEditObj && !lib.ESD_HTKT_EXPENSE_VENDOR.hasExpenseVendorInvoices(vars.$L_file);
     vars.$contractName = contractInfo.name;
     vars.$contractCategoryCode = contractInfo.category;
     vars.$contractCategory = contractInfo.categoryName;
