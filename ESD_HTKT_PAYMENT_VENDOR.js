@@ -214,7 +214,7 @@ function getPaymentRemainingAmount(paymentId) {
             ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
             ' LEFT JOIN esdHTKTpayment hp ON (hpv.payment.id = hp.id)' +
             ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
-            ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id)';
+            ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)';
 
     var sqlWhere = ' WHERE hp.id = "' + paymentId + '"';
 
@@ -914,12 +914,9 @@ function deletePaymentVendor(input) {
         return { status: "error", message: "Thiếu vendorId hoặc paymentId" };
     }
 
-
-    // 1. Xóa bản ghi trong bảng esdHTKTpaymentVendor
-
+    // 1. XÓA BẢN GHI TRONG BẢNG esdHTKTpaymentVendor
     var vendorFile = new SCFile("esdHTKTpaymentVendor");
     var vendorQuery = "vendor.id=\"" + vendorId + "\" and payment.id=\"" + paymentId + "\"";
-
 
     if (vendorFile.doSelect(vendorQuery) === RC_SUCCESS) {
         var rcDeleteVendor = vendorFile.doDelete();
@@ -928,9 +925,114 @@ function deletePaymentVendor(input) {
         }
     }
 
+    // 2. XÓA HÓA ĐƠN LIÊN KẾT VÀ GIẢI PHÓNG HÓA ĐƠN (CHỈ CỦA VENDOR BỊ XÓA)
+    try {
+        var taxId = "";
+        var vFile = new SCFile("esdHTKTvendor", SCFILE_READONLY);
+        if (vFile.doSelect('id="' + vendorId + '"') === RC_SUCCESS) {
+            taxId = vFile["vendor.number"];
+        }
+
+        if (taxId) {
+            var payInvFile = new SCFile("esdHTKTpaymentInvoice");
+            var payInvQuery = 'payment.id="' + paymentId + '"';
+
+            var idsToDelete = [];
+            var invoiceIdsToFree = [];
+
+            if (payInvFile.doSelect(payInvQuery) === RC_SUCCESS) {
+                do {
+                    var invoiceId = payInvFile["invoice.id"];
+                    var payInvId = payInvFile["id"];
+
+                    if (invoiceId) {
+                        var invFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
+                        if (invFile.doSelect('id="' + invoiceId + '"') === RC_SUCCESS) {
+                            var invoiceTaxId = invFile["seller.tax.code"];
+                            if (invoiceTaxId === taxId) {
+                                idsToDelete.push(payInvId);
+                                invoiceIdsToFree.push(invoiceId);
+                            }
+                        }
+                        try { invFile.doClose(); } catch (e) {}
+                    }
+                } while (payInvFile.getNext() === RC_SUCCESS);
+            }
+            try { payInvFile.doClose(); } catch (e) {}
+
+            for (var k = 0; k < idsToDelete.length; k++) {
+                var delPayInv = new SCFile("esdHTKTpaymentInvoice");
+                if (delPayInv.doSelect('id="' + idsToDelete[k] + '"') == RC_SUCCESS) {
+                    delPayInv.doDelete();
+                }
+            }
+
+            for (var m = 0; m < invoiceIdsToFree.length; m++) {
+                var updateInv = new SCFile("esdHTKTinvoice");
+                if (updateInv.doSelect('id="' + invoiceIdsToFree[m] + '"') == RC_SUCCESS) {
+                    updateInv["request.id"] = null;
+                    updateInv.doUpdate();
+                }
+            }
+        }
+    } catch(e) {
+        print("Lỗi khi xử lý xóa Invoice qua invoice.id: " + e);
+    }
+
+    // 3. TÍNH TOÁN LẠI TỔNG TIỀN CỦA CÁC NCC CÒN LẠI
+    var totalAmountPaid = 0;
+    var totalInvoiceAmount = 0;
+
+    // Hàm hỗ trợ parse chuỗi tiền tệ an toàn
+    function parseMoney(rawValue) {
+        if (rawValue !== null && rawValue !== undefined && rawValue !== "") {
+            var cleanVal = String(rawValue).replace(/,/g, '').trim();
+            var numVal = parseFloat(cleanVal);
+            return isNaN(numVal) ? 0 : numVal;
+        }
+        return 0;
+    }
+
+    try {
+        var remainingVendorFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+        var remainingQuery = 'payment.id="' + paymentId + '"';
+
+        if (remainingVendorFile.doSelect(remainingQuery) === RC_SUCCESS) {
+            do {
+                totalAmountPaid += parseMoney(remainingVendorFile["amount"]);
+                totalInvoiceAmount += parseMoney(remainingVendorFile["approved.invoice.amount"]);
+            } while (remainingVendorFile.getNext() === RC_SUCCESS);
+        }
+    } catch(e) {
+        print("Lỗi khi tính lại tổng tiền: " + e);
+    }
+
+    // 4. CẬP NHẬT VÀO PHIẾU THANH TOÁN (GÁN NULL NẾU = 0 ĐỂ XÓA TRẮNG UI)
+    var paymentFile = new SCFile("esdHTKTpayment");
+    var paymentQuery = 'id="' + paymentId + '"';
+
+    if (paymentFile.doSelect(paymentQuery) === RC_SUCCESS) {
+        
+        // 1. Tiền đề nghị TT (Lưu vào total.amount.paid)
+        if (totalAmountPaid === 0) {
+            paymentFile["total.amount.paid"] = null; 
+        } else {
+            paymentFile["total.amount.paid"] = totalAmountPaid.toString();
+        }
+
+        // 2. Tiền hóa đơn (Lưu vào approved.invoice.amount)
+        if (totalInvoiceAmount === 0) {
+            paymentFile["approved.invoice.amount"] = null;
+        } else {
+            paymentFile["approved.invoice.amount"] = totalInvoiceAmount.toString();
+        }
+
+        paymentFile.doUpdate();
+    }
+
     return {
         status: "success",
-        message: "Xóa và cập nhật dữ liệu thành công"
+        message: "Xóa và cập nhật dữ liệu thành công."
     };
 }
 

@@ -4,7 +4,7 @@
  * Module        : HTKT - Đề nghị thanh toán
  * Version       : 1.0.1
  * Chức năng:
- * - Tải danh sách người duyệt hợp lệ (Reviewer, Approver, Kế toán trưởng, Ban Giám đốc, v.v.).
+ * - Tải danh sách người duyệt hợp lệ (Reviewer, Approver, Kế toán trưởng, Ban Giám đốc, v.v.). 
  * - Áp dụng ma trận phân quyền phê duyệt dựa trên đơn vị người tạo, hạn mức số tiền và quy trình.
  * - Hỗ trợ tải dữ liệu động cho các Combobox chọn người phê duyệt trên giao diện đề nghị thanh toán.
  * -----------------------------------------------------------------------------
@@ -14,6 +14,127 @@ function getPaymentApprovalFields() {
     return ["user.checker.kttc", "user.checker.dmms", "user.approver.dmms",
         "user.approver.kttc", "user.checker.final", "user.approver.final"
     ];
+}
+
+// Dự chi và Thanh toán dùng chung entity esdHTKTpayment. Chỉ paymentId
+// quyết định bộ functional rights dùng cho tái phân công.
+function isDuChiPaymentApprovalRecord(recordOrId) {
+    var id = recordOrId && typeof recordOrId === "object" ?
+            String(recordOrId.id || "").trim() :
+            String(recordOrId || "").trim();
+    return /^DC\.[A-Za-z0-9._-]+$/.test(id);
+}
+
+function getPaymentApprovalRightPrefix(recordOrId) {
+    return isDuChiPaymentApprovalRecord(recordOrId) ? "0040040004" : "0040040003";
+}
+
+// Mã nhóm TT/DC có 10 ký tự; mã quyền đầy đủ có 16 ký tự.
+// Bổ sung hai số 0 trước đuôi 0003-0008 cho cả hai nhóm.
+function getPaymentApprovalRightBase(rightPrefix) {
+    var prefix = String(rightPrefix || "0040040003").trim();
+    return prefix === "0040040003" || prefix === "0040040004" ? prefix + "00" : prefix;
+}
+
+// Dự chi dùng cùng entity nhưng SCFile có thể trả Object NULL cho note.
+// Giữ nguyên syncPaymentApprovalFromDatabase cho Thanh toán.
+function syncDuChiApprovalFromDatabase(expense) {
+    var expenseId = String(expense && expense.id || "").trim();
+    if (!isDuChiPaymentApprovalRecord(expenseId)) return expense;
+    var stored = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+    try {
+        var fields = getPaymentApprovalFields().concat([
+            "require.check.level1", "require.check.level2"
+        ]);
+        stored.setFields(fields.concat(["id", "transaction.type"]));
+        if (stored.doSelect('id="' + escapeSmQueryValue(expenseId) + '"') !== RC_SUCCESS) {
+            throw new Error("Không tải được thông tin phê duyệt Dự chi đã lưu.");
+        }
+        if (!isDuChiApprovalRecordConsistent(stored)) {
+            throw new Error("Mã phiếu và loại giao dịch Dự chi không khớp.");
+        }
+        for (var i = 0; i < fields.length; i++) expense[fields[i]] = stored[fields[i]];
+        return expense;
+    } finally {
+        stored.doClose();
+    }
+}
+
+function isDuChiApprovalRecordConsistent(record) {
+    return isDuChiPaymentApprovalRecord(record) &&
+        String(record["transaction.type"] || "").trim().toLowerCase() === "dự chi";
+}
+
+function isDuChiApprovalCreation(record) {
+    var phase = readPaymentApprovalValue(record, "current.phase").toLowerCase();
+    var role = readPaymentApprovalValue(record, "initial.role").toLowerCase();
+    var status = readPaymentApprovalValue(record, "status").toLowerCase();
+    return !phase || phase === "start" ||
+        status === "dmms_created" || status === "kttc_created" ||
+        status === "tạo mới" || status === "tao moi" ||
+        (role === "dmms" && phase === "initial_dmms") ||
+        (role === "kttc" && phase === "initial_kttc");
+}
+
+function isDuChiApprovalFieldCompleted(phase, field) {
+    var order = {
+        start: 0, initial_dmms: 10, initial_kttc: 20, check_dmms: 30,
+        approval_dmms: 40, approval_kttc: 50, check_final: 60,
+        approval_final: 70, end: 80
+    };
+    var fieldPhase = {
+        "user.checker.kttc": 20, "user.checker.dmms": 30,
+        "user.approver.dmms": 40, "user.approver.kttc": 50,
+        "user.checker.final": 60, "user.approver.final": 70
+    };
+    var current = order[String(phase || "").trim().toLowerCase()];
+    return typeof current === "number" && current > fieldPhase[field];
+}
+
+function getDuChiApprovalAccess(payment, currentUser, resolvedIdentity) {
+    var phase = readPaymentApprovalValue(payment, "current.phase").toLowerCase();
+    var role = readPaymentApprovalValue(payment, "initial.role").toLowerCase();
+    var status = readPaymentApprovalValue(payment, "status").toLowerCase();
+    var actor = String(currentUser || "").trim().toLowerCase();
+    var creator = readPaymentApprovalValue(payment, "created.by").toLowerCase();
+    var checkerKttc = readPaymentApprovalValue(payment, "user.checker.kttc").toLowerCase();
+    var isDmmsCreator = !!actor && actor === creator && role === "dmms";
+    var legacyClosed = phase === "end" || status === "cancelled";
+    var canEditLevel1 = !legacyClosed && phase === "initial_dmms" && isDmmsCreator;
+    var canEditLevel2 = !legacyClosed && phase === "initial_kttc" && !!actor &&
+        ((actor === creator && role === "kttc") || actor === checkerKttc);
+    var leader = getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, "0040040004");
+    // Không fallback theo người được assign: quyền TT hoặc actor trên hồ sơ
+    // không tự cấp quyền tái phân công DC.
+    var isApprovalDmms = leader.isApprovalDmms === true;
+    var isApprovalKttc = leader.isApprovalKttc === true;
+    var closed = legacyClosed || status === "approved" || status === "accounted";
+    var canDmmsReassign = !closed && !isDuChiApprovalCreation(payment) && isApprovalDmms;
+    var canKttcReassign = !closed && !isDuChiApprovalCreation(payment) && isApprovalKttc;
+    var fieldAccess = {
+        "require.check.level1": canEditLevel1,
+        "require.check.level2": canEditLevel2,
+        "user.checker.kttc": canEditLevel1 || (canKttcReassign && role === "dmms"),
+        "user.checker.dmms": canEditLevel1 || (canDmmsReassign && role === "dmms"),
+        "user.approver.dmms": canEditLevel1 || (canDmmsReassign && role === "dmms"),
+        "user.approver.kttc": canEditLevel2 || canKttcReassign,
+        "user.checker.final": canEditLevel2 || canKttcReassign,
+        "user.approver.final": canEditLevel2 || canKttcReassign
+    };
+    return {
+        isDmmsCreator: isDmmsCreator,
+        showLevel1: role === "dmms",
+        showLevel2: role === "kttc" || isApprovalKttc ||
+            (role === "dmms" && !isDmmsCreator &&
+                ["initial_kttc", "check_dmms", "approval_dmms", "approval_kttc",
+                    "check_final", "approval_final", "end"].indexOf(phase) >= 0),
+        canEditLevel1: canEditLevel1,
+        canEditLevel2: canEditLevel2,
+        isApprovalDmms: isApprovalDmms,
+        isApprovalKttc: isApprovalKttc,
+        canViewEarly: isApprovalDmms || isApprovalKttc,
+        fieldAccess: fieldAccess
+    };
 }
 
 // Gọi ở đầu Rule Set của nút Lưu/Workflow để form SM chọn lại chính record mới nhất.
@@ -59,9 +180,10 @@ function syncPaymentApprovalFromDatabase(payment) {
 /**
  * Lấy Functional Rights của user dùng riêng cho logic tái phân công (Thanh toán).
  */
-function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity) {
-    var RIGHT_APPROVE_1 = "0040040003000005";
-    var RIGHT_APPROVE_2 = "0040040003000006";
+function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, rightPrefix) {
+    var prefix = getPaymentApprovalRightBase(rightPrefix);
+    var RIGHT_APPROVE_1 = prefix + "0005";
+    var RIGHT_APPROVE_2 = prefix + "0006";
 
     var rightMap = {};
     var queriedIdentities = [];
@@ -197,11 +319,11 @@ function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity) {
         } catch (eCloseContact) {}
     }
 
-    /* print(
+    print(
             "[PAY_APR][ROLE] u=" + contactName +
             " r5=" + String(rightMap[RIGHT_APPROVE_1] === true) +
             " r6=" + String(rightMap[RIGHT_APPROVE_2] === true)
-    ); */
+    );
 
     return {
         isApprovalDmms: rightMap[RIGHT_APPROVE_1] === true,
@@ -222,7 +344,10 @@ function readPaymentApprovalValue(payment, field) {
             value == null ? "" : value
     ).trim();
 }
-function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity) {
+function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightPrefix) {
+    if (isDuChiPaymentApprovalRecord(payment)) {
+        return getDuChiApprovalAccess(payment, currentUser, resolvedIdentity);
+    }
     var phase = readPaymentApprovalValue(payment, "current.phase").toLowerCase();
     var role = readPaymentApprovalValue(payment, "initial.role").toLowerCase();
     var creator = readPaymentApprovalValue(payment, "created.by").toLowerCase();
@@ -253,7 +378,11 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity) {
             status === "approved" ||
             status === "accounted";
 
-    var leaderAccess = getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity);
+    var leaderAccess = getPaymentReassignmentRoleAccess(
+            currentUser,
+            resolvedIdentity,
+            rightPrefix || getPaymentApprovalRightPrefix(payment)
+    );
 
     /*
      * Xác định quyền lãnh đạo theo 2 nguồn:
@@ -421,7 +550,7 @@ function resolvePaymentApprovalContactId(currentUser) {
     }
 }
 
-function getPaymentApprovalInitData(payment, currentUser) {
+function getPaymentApprovalInitData(payment, currentUser, rightPrefix) {
     var fields = getPaymentApprovalFields();
     var values = {};
     var selectedOptions = {};
@@ -464,7 +593,12 @@ function getPaymentApprovalInitData(payment, currentUser) {
         status: String(payment.status || ""),
         approvalValues: values,
         approvalSelectedOptions: selectedOptions,
-        approvalAccess: getPaymentApprovalAccess(payment, currentUser)
+        approvalAccess: getPaymentApprovalAccess(
+                payment,
+                currentUser,
+                null,
+                rightPrefix || getPaymentApprovalRightPrefix(payment)
+        )
     };
 }
 
@@ -491,6 +625,39 @@ function getPaymentApprovalData(details) {
                 ) !== RC_SUCCESS
         ) {
             throw new Error("Không tìm thấy phiếu thanh toán.");
+        }
+        if (isDuChiPaymentApprovalRecord(paymentId) && !isDuChiApprovalRecordConsistent(payment)) {
+            throw new Error("Mã phiếu và loại giao dịch Dự chi không khớp.");
+        }
+        if (isDuChiPaymentApprovalRecord(paymentId)) {
+            var actor = currentUser.toLowerCase();
+            var relatedFields = ["created.by"].concat(getPaymentApprovalFields());
+            var related = false;
+            for (var relatedIndex = 0; relatedIndex < relatedFields.length; relatedIndex++) {
+                if (readPaymentApprovalValue(payment, relatedFields[relatedIndex]).toLowerCase() === actor) {
+                    related = true;
+                    break;
+                }
+            }
+            if (!related) {
+                var dcAccess = getDuChiApprovalAccess(payment, currentUser, {});
+                if (!dcAccess.canViewEarly) {
+                    return { success: false, code: "PAYMENT_APPROVAL_FORBIDDEN",
+                        message: "Bạn không có quyền xem thông tin phê duyệt Dự chi." };
+                }
+                var scopeField = dcAccess.isApprovalKttc ?
+                        "user.approver.kttc" : "user.approver.dmms";
+                var scopeResult = loadPaymentApprovalComboBoxesInternal(payment, scopeField, {
+                    currentUser: resolvePaymentApprovalContactId(currentUser),
+                    page: 1, pageSize: 1, keyword: "",
+                    rightPrefix: "0040040004", scopeOnly: true
+                });
+                if (!scopeResult.success || !scopeResult.currentUserScope ||
+                        !scopeResult.currentUserScope.canAccessTargetLv1) {
+                    return { success: false, code: "PAYMENT_APPROVAL_SCOPE_DENIED",
+                        message: "Bạn không có quyền dữ liệu đối với hồ sơ Dự chi." };
+                }
+            }
         }
 
         return {
@@ -519,7 +686,12 @@ function getPaymentApprovalData(details) {
 }
 
 function paymentApprovalFieldEditable(payment, currentUser, field) {
-    var access = getPaymentApprovalAccess(payment, currentUser);
+    var access = getPaymentApprovalAccess(
+            payment,
+            currentUser,
+            null,
+            getPaymentApprovalRightPrefix(payment)
+    );
 
     if (access.fieldAccess && typeof access.fieldAccess[field] !== "undefined") {
         return access.fieldAccess[field] === true;
@@ -614,7 +786,11 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
             return;
         }
 
-        var leadership = getPaymentReassignmentRoleAccess(safeCurrentUser);
+        var leadership = getPaymentReassignmentRoleAccess(
+                safeCurrentUser,
+                null,
+                getPaymentApprovalRightPrefix(safePaymentId)
+        );
 
         if (
                 !leadership ||
@@ -712,16 +888,44 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
         } catch (eMail) {
         }
     } catch (e) {
-        /* print(
+        print(
                 "[PAY_APR][REASSIGN_HISTORY] Không thể ghi activity: " +
                 String(e && e.message ? e.message : e)
-        ); */
+        );
     } finally {
         try {
             if (payment) {
                 payment.doClose();
             }
         } catch (eClosePayment) {}
+    }
+}
+
+function snapshotPaymentForSla(payment) {
+    var names = [
+        "id", "transaction.type", "initial.role", "current.phase", "status",
+        "created.by", "current.executor", "require.check.level1", "require.check.level2",
+        "user.checker.kttc", "user.checker.dmms", "user.approver.dmms",
+        "user.approver.kttc", "user.checker.final", "user.approver.final",
+        "sysmodcount", "sysmodtime", "sysmoduser"
+    ];
+    var result = {}, i;
+    for (i = 0; i < names.length; i++) result[names[i]] = payment[names[i]];
+    return result;
+}
+
+function notifySlaPaymentReassigned(beforeRecord, payment) {
+    try {
+        var afterRecord = snapshotPaymentForSla(payment);
+        var result = lib.ESD_HTKT_SLA_ENGINE.onWorkflowChanged(beforeRecord, afterRecord);
+        print("[PAY_APR][SLA_REASSIGN] SUCCESS | id=" + String(afterRecord.id || "") +
+                " | result=" + JSON.stringify(result));
+        return true;
+    } catch (error) {
+        // payment.doUpdate() đã commit; không báo save thất bại và khiến client gửi lại.
+        print("[PAY_APR][SLA_REASSIGN] ERROR | id=" + String(beforeRecord.id || "") +
+                " | message=" + String(error && error.message ? error.message : error));
+        return false;
     }
 }
 
@@ -750,21 +954,36 @@ function runPaymentApprovalApi(details, save) {
         if (payment.doSelect('id="' + escapeSmQueryValue(paymentId) + '"') !== RC_SUCCESS) {
             throw new Error("Không tìm thấy phiếu thanh toán.");
         }
+        var isDuChi = isDuChiPaymentApprovalRecord(paymentId);
+        if (isDuChi && !isDuChiApprovalRecordConsistent(payment)) {
+            throw new Error("Mã phiếu và loại giao dịch Dự chi không khớp.");
+        }
         if (timingStart) timingRecord = new Date().getTime();
         var resolvedIdentity = {};
-        var apiAccess = getPaymentApprovalAccess(payment, currentUser, resolvedIdentity);
+        var rightPrefix = getPaymentApprovalRightPrefix(paymentId);
+        var apiAccess = getPaymentApprovalAccess(
+                payment,
+                currentUser,
+                resolvedIdentity,
+                rightPrefix
+        );
         if (timingStart) timingAccess = new Date().getTime();
         var apiEditable =
                 apiAccess &&
                 apiAccess.fieldAccess &&
                 apiAccess.fieldAccess[field] === true;
+        if (isDuChi && !isCheckbox &&
+                isDuChiApprovalFieldCompleted(readPaymentApprovalValue(payment, "current.phase"), field)) {
+            apiEditable = false;
+        }
 
-        /* print(
+        print(
                 "[PAY_APR][API] u=" + currentUser +
                 " field=" + field +
+                " prefix=" + rightPrefix +
                 " kttc=" + String(apiAccess && apiAccess.isApprovalKttc === true) +
                 " editable=" + String(apiEditable)
-        ); */
+        );
 
         if (!apiEditable) {
             return {
@@ -805,8 +1024,9 @@ function runPaymentApprovalApi(details, save) {
                 page: page,
                 pageSize: pageSize,
                 keyword: String(details.keyword || "").trim(),
-                selectedId: ""
-            });
+                    selectedId: "",
+                    rightPrefix: rightPrefix
+                });
             if (timingStart) timingOptions = new Date().getTime();
             if (!loaded.success) {
                 return {
@@ -847,7 +1067,40 @@ function runPaymentApprovalApi(details, save) {
         var previousApprovalValue = isCheckbox ?
                 "" :
                 readPaymentApprovalValue(payment, field);
+        // KTTC tiếp nhận được chọn lại người xử lý cho các bước KTTC tại
+        // initial_kttc, kể cả hồ sơ do ĐMMS khởi tạo đã có giá trị dự kiến.
+        var initialKttcSelection = isDuChi && apiAccess.canEditLevel2 === true &&
+                readPaymentApprovalValue(payment, "current.phase").toLowerCase() === "initial_kttc" &&
+                (field === "user.approver.kttc" || field === "user.checker.final" ||
+                        field === "user.approver.final");
 
+        var isSlaReassignment = false;
+
+        if (isDuChi && !isCheckbox && previousApprovalValue &&
+                previousApprovalValue !== value && !isDuChiApprovalCreation(payment) &&
+                !initialKttcSelection) {
+            var dcRights = getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, "0040040004");
+            var dmmsField = field === "user.checker.dmms" || field === "user.approver.dmms";
+            var kttcField = field === "user.checker.kttc" ||
+                    field === "user.approver.kttc" ||
+                    field === "user.checker.final" ||
+                    field === "user.approver.final";
+            var dcRole = readPaymentApprovalValue(payment, "initial.role").toLowerCase();
+            var permitted = (dmmsField && dcRole === "dmms" && dcRights.isApprovalDmms === true) ||
+                    (kttcField && dcRights.isApprovalKttc === true);
+            if (!permitted) {
+                return { success: false, code: "PAYMENT_APPROVAL_FORBIDDEN",
+                    message: "Bạn không có quyền tái phân công Dự chi." };
+            }
+            var dcReason = String(details.reason || "").trim();
+            if (!dcReason || dcReason.length > 60) {
+                return { success: false, code: "PAYMENT_APPROVAL_REASON_REQUIRED",
+                    message: "Vui lòng nhập lý do tái phân công tối đa 60 ký tự." };
+            }
+            isSlaReassignment = true;
+        }
+
+        var slaBeforeRecord = isSlaReassignment ? snapshotPaymentForSla(payment) : null;
         payment[field] = value;
         var clearedField = "";
         if (isCheckbox && !value) {
@@ -856,7 +1109,10 @@ function runPaymentApprovalApi(details, save) {
         }
         if (payment.doUpdate() !== RC_SUCCESS) throw new Error("Không lưu được thông tin phê duyệt.");
 
-        if (!isCheckbox) {
+        var slaUpdated = true;
+        if (isSlaReassignment) slaUpdated = notifySlaPaymentReassigned(slaBeforeRecord, payment);
+
+        if (!isCheckbox && !initialKttcSelection) {
             createPaymentReassignmentHistory(
                     paymentId,
                     field,
@@ -872,7 +1128,8 @@ function runPaymentApprovalApi(details, save) {
             data: {
                 field: field,
                 value: value,
-                clearedField: clearedField
+                clearedField: clearedField,
+                slaUpdated: slaUpdated
             }
         };
     } catch (error) {
@@ -881,14 +1138,14 @@ function runPaymentApprovalApi(details, save) {
         try {
             if (timingStart) {
                 var timingEnd = new Date().getTime();
-                /* print(
+                print(
                         "[PAY_APR][TIMING] field=" + String(details.field || "") +
                         " record=" + (timingRecord ? timingRecord - timingStart : -1) +
                         " access=" + (timingRecord && timingAccess ? timingAccess - timingRecord : -1) +
                         " identity=" + (timingAccess && timingIdentity ? timingIdentity - timingAccess : -1) +
                         " options=" + (timingIdentity && timingOptions ? timingOptions - timingIdentity : -1) +
                         " total=" + (timingEnd - timingStart) + "ms"
-                ); */
+                );
             }
         } catch (timingError) {}
         if (payment) payment.doClose();
@@ -1346,12 +1603,15 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
     var HTKT_SUB_MODULE = "00401";
     var ALLOW_GLOBAL_SCOPE_IN_COMBO = false;
 
-    var RIGHT_ACCOUNTING_INPUT = "0040040003000003";
-    var RIGHT_CHECK_1 = "0040040003000004";
-    var RIGHT_APPROVE_1 = "0040040003000005";
-    var RIGHT_APPROVE_2 = "0040040003000006";
-    var RIGHT_CHECK_2 = "0040040003000007";
-    var RIGHT_APPROVE_3 = "0040040003000008";
+    var rightPrefix = String(apiOptions && apiOptions.rightPrefix || "").trim() ||
+            getPaymentApprovalRightPrefix(paymentFile);
+    var rightBase = getPaymentApprovalRightBase(rightPrefix);
+    var RIGHT_ACCOUNTING_INPUT = rightBase + "0003";
+    var RIGHT_CHECK_1 = rightBase + "0004";
+    var RIGHT_APPROVE_1 = rightBase + "0005";
+    var RIGHT_APPROVE_2 = rightBase + "0006";
+    var RIGHT_CHECK_2 = rightBase + "0007";
+    var RIGHT_APPROVE_3 = rightBase + "0008";
 
     var configs = [{
         key: "kttc",
@@ -1499,6 +1759,9 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
                 output.targetLv1 + (apiOptions ? ". " + currentUserScope.message : "");
         return output;
     }
+
+    // Chỉ dùng cho kiểm tra quyền xem sớm của Dự chi. Không cần tải candidate.
+    if (apiOptions && apiOptions.scopeOnly) return output;
 
     // Nhánh save chỉ kiểm tra cán bộ được chọn, không tải toàn bộ candidate/label/phân trang.
     if (apiOptions && apiOptions.validationOnly) {
@@ -1709,12 +1972,12 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
                     readContactData(contactIds.ids, selectedOnly);
             if (candidateStartedAt) {
                 try {
-                    /* print(
+                    print(
                             "[PAY_APR][LIST_TIMING] field=" + config.saveField +
                             " candidates=" + (candidateFinishedAt - candidateStartedAt) + "ms" +
                             " labels=" + (new Date().getTime() - candidateFinishedAt) + "ms" +
                             " pool=" + contactIds.ids.length
-                    ); */
+                    );
                 } catch (timingError) {}
             }
             if (selectedOnly && selectedId && !comboData.ids.length) {

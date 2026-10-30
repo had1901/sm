@@ -526,7 +526,7 @@ function validateFromCbKttc() {
         );
     }
     //////////////////
-    // Validate số tiền hoàn ứng của tất cả nhà cung cấp có khớp nhau không
+    // Validate số tiền hoàn ứng và số tiền phải trả của tất cả nhà cung cấp có khớp nhau không
     var refundMatchResult = validateAllVendorsRefundMatch(paymentId);
     if (refundMatchResult.success !== true) {
         errorMss.push(refundMatchResult.error);
@@ -746,6 +746,14 @@ function validateVendorAndPaymentDetails(record) {
         errorMss.push("Số tiền hoàn ứng lần này là bắt buộc.");
     } else if (refundAmount < 0) {
         errorMss.push("Số tiền hoàn ứng lần này phải lớn hơn 0.");
+    }
+
+    if (!isNaN(approvedInvoiceAmount) && !isNaN(payableaAmount) && !isNaN(amountField)) {
+        if (approvedInvoiceAmount === 0 && payableaAmount !== amountField) {
+            errorMss.push("Khi Giá trị hóa đơn chấp nhận bằng 0, Số tiền cấn trừ phải trả phải bằng Số tiền đề nghị thanh toán.");
+        } else if (approvedInvoiceAmount > 0 && payableaAmount > amountField) {
+            errorMss.push("Khi Giá trị hóa đơn chấp nhận lớn hơn 0, Số tiền cấn trừ phải trả phải nhỏ hơn hoặc bằng Số tiền đề nghị thanh toán.");
+        }
     }
 
     var paymentId = String(record["payment.id"] || record.payment_id || "").trim();
@@ -1709,40 +1717,37 @@ function requestCorrection(record) {
 ///START:SSAX01/////////////////////////////////////////////////////////////
 // --- CÁC HÀM HỖ TRỢ KIỂM TRA TẠM ỨNG TRÊN PHIẾU BỔ SUNG ---
 
-function checkRefundAmountMatch(paymentId, vendorId) {
+function checkRefundAmountMatch(paymentId, vendorId, headerRefundAmount) {
     if (!paymentId || !vendorId) {
         return {
             headerRefundAmount: 0,
             totalListRefundAmount: 0,
+            totalListPayableAmount: 0,
             isMatch: false
         };
     }
 
-    var headerRefundAmount = 0;
-    var paymentVendorFile = null;
-    try {
-        paymentVendorFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
-        var queryPv = 'payment.id = "' + escapeSmQueryValue(paymentId) + '" AND vendor.id = "' + escapeSmQueryValue(vendorId) + '"';
-        var rcPv = paymentVendorFile.doSelect(queryPv);
-        if (rcPv == RC_SUCCESS) {
-            headerRefundAmount = Number(paymentVendorFile["refund.amount"] || 0);
-        }
-    } catch (e) {
-        // print("[DEBUG checkRefundAmountMatch] Error querying paymentVendor: " + e);
-    } finally {
-        if (paymentVendorFile) {
-            try { paymentVendorFile.doClose(); } catch (e) {}
-        }
-    }
+    headerRefundAmount = Number(headerRefundAmount || 0);
 
     var totalListRefundAmount = 0;
+    var totalListPayableAmount = 0;
     var entryFile = null;
     try {
         entryFile = new SCFile("esdHTKTpaymentEntry", SCFILE_READONLY);
-        var queryEntry = 'payment.id = "' + escapeSmQueryValue(paymentId) + '" AND vendor.id = "' + escapeSmQueryValue(vendorId) + '" AND entry.type = "PREPAYMENT"';
+        var queryEntry = 'payment.id = "' + escapeSmQueryValue(paymentId) +
+                '" AND vendor.id = "' + escapeSmQueryValue(vendorId) +
+                '" AND (entry.type = "PREPAYMENT" OR (entry.type = "PAYABLE" AND account.type = "DEBIT"))';
         var rcEntry = entryFile.doSelect(queryEntry);
         while (rcEntry == RC_SUCCESS) {
-            totalListRefundAmount += Number(entryFile["amount"] || 0);
+            var entryAmount = Number(entryFile["amount"] || 0);
+            var entryType = String(entryFile["entry.type"] || "").trim();
+            var accountType = String(entryFile["account.type"] || "").trim();
+
+            if (entryType === "PREPAYMENT") {
+                totalListRefundAmount += entryAmount;
+            } else if (entryType === "PAYABLE" && accountType === "DEBIT") {
+                totalListPayableAmount += entryAmount;
+            }
             rcEntry = entryFile.getNext();
         }
     } catch (e2) {
@@ -1760,6 +1765,7 @@ function checkRefundAmountMatch(paymentId, vendorId) {
     return {
         headerRefundAmount: headerRefundAmount,
         totalListRefundAmount: totalListRefundAmount,
+        totalListPayableAmount: totalListPayableAmount,
         isMatch: isMatch
     };
 }
@@ -1774,7 +1780,7 @@ function validateAllVendorsRefundMatch(paymentId) {
     try {
         pvFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
 
-        var select = "SELECT pv.vendor.id, v.vendor.number";
+        var select = "SELECT pv.vendor.id, pv.refund.amount, pv.payable.amount, v.vendor.number";
         var mapping = " FROM esdHTKTpaymentVendor pv JOIN esdHTKTvendor v ON (pv.vendor.id = v.id)";
         var control = ' WHERE pv.payment.id = "' + escapeSmQueryValue(paymentId) + '"';
 
@@ -1786,11 +1792,30 @@ function validateAllVendorsRefundMatch(paymentId) {
             var vendorNumber = String(pvFile["v.vendor.number"] || vendorId).trim();
 
             if (vendorId) {
-                var checkResult = checkRefundAmountMatch(paymentId, vendorId);
+                var checkResult = checkRefundAmountMatch(paymentId, vendorId, pvFile["refund.amount"]);
                 if (!checkResult.isMatch) {
                     return {
                         success: false,
                         error: "Số tiền hoàn ứng lần này của nhà cung cấp " + vendorNumber + " không khớp với tổng số tiền hoàn ứng lần này trong danh sách công nợ (Trên phiếu: " + checkResult.headerRefundAmount + ", Tổng trên danh sách: " + checkResult.totalListRefundAmount + ")."
+                    };
+                }
+
+                var payableAmount = Number(String(pvFile["payable.amount"] || 0).replace(/,/g, "").trim());
+                var totalPayableAmount = Number(String(checkResult.totalListPayableAmount || 0).replace(/,/g, "").trim());
+
+                if (!isFinite(payableAmount) || !isFinite(totalPayableAmount)) {
+                    return {
+                        success: false,
+                        error: "Số tiền phải trả của nhà cung cấp " + vendorNumber + " hoặc tổng số tiền thanh toán lần này trong danh sách công nợ không hợp lệ."
+                    };
+                }
+
+                var intPayableAmount = Math.round(payableAmount * 100000);
+                var intTotalPayableAmount = Math.round(totalPayableAmount * 100000);
+                if (intPayableAmount !== intTotalPayableAmount) {
+                    return {
+                        success: false,
+                        error: "Số tiền cấn trừ của nhà cung cấp " + vendorNumber + " không khớp với tổng số tiền thanh toán lần này trong danh sách công nợ."
                     };
                 }
             }
@@ -1800,7 +1825,7 @@ function validateAllVendorsRefundMatch(paymentId) {
     } catch (e) {
         return {
             success: false,
-            error: "Lỗi kiểm tra số tiền hoàn ứng của nhà cung cấp: " + e
+            error: "Lỗi kiểm tra số tiền hoàn ứng và số tiền phải trả của nhà cung cấp: " + e
         };
     } finally {
         if (pvFile) {

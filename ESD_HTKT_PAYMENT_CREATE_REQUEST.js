@@ -69,11 +69,11 @@ function createPaymentRequest(input) {
         if (contractId) {
             try {
                 var currentContractAmount = String(
-                    contractData['totalValue'] ||
-                    contractData['total.budget'] ||
-                    contractData['contract.value.after.tax'] ||
-                    contractData['contract.amount'] ||
-                    "0"
+                        contractData['totalValue'] ||
+                        contractData['total.budget'] ||
+                        contractData['contract.value.after.tax'] ||
+                        contractData['contract.amount'] ||
+                        "0"
                 );
                 var remainingContractValue = calculateContractRemainingValue(contractId, currentContractAmount);
                 var remainingRefundValue = calculateContractRemainingRefund(contractId);
@@ -134,7 +134,7 @@ function createPaymentRequest(input) {
 
         var returnCode;
         var previousSkipAutoPaymentActivity = htktCreatePay_normalizeValue(
-            vars["$L.skipAutoPaymentActivity"]
+                vars["$L.skipAutoPaymentActivity"]
         );
 
         try {
@@ -152,13 +152,13 @@ function createPaymentRequest(input) {
              * Lưu lịch sử với operator là user thật.
              */
             createActivity(
-                "activityHTKTpayment",
-                'Thêm mới Đề nghị Thanh toán: Mã đề nghị: "' +
-                paymentRec["id"] +
-                '"',
-                paymentRec["id"],
-                "Thêm mới",
-                currentUser
+                    "activityHTKTpayment",
+                    'Thêm mới Đề nghị Thanh toán: Mã đề nghị: "' +
+                    paymentRec["id"] +
+                    '"',
+                    paymentRec["id"],
+                    "Thêm mới",
+                    currentUser
             );
 
             //Đồng bộ giá trị Tạm ứng/Thanh toán giữa Squad 6 và Squad 2
@@ -194,10 +194,10 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
     // 4. Map riêng biệt chi tiết từng trường một từ JSON vào Record
     paymentRec['transaction.type'] = "Thanh toán";
     paymentRec['department'] =
-        contractData['unitLv3'] ||
-        contractData['unitLv2'] ||
-        contractData['unitLv1'] ||
-        "";
+            contractData['unitLv3'] ||
+            contractData['unitLv2'] ||
+            contractData['unitLv1'] ||
+            "";
 
     paymentRec['description'] = "";
 
@@ -231,7 +231,7 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
 
 
     var creatorUser = htktCreatePay_resolveCurrentUser(
-        contractData
+            contractData
     );
 
     if (!creatorUser) {
@@ -248,9 +248,9 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
         paymentRec['initial.role'] = "dmms";
     } else {
         throw new Error(
-            "Người tạo " +
-            creatorUser +
-            " chưa có quyền phù hợp để lập phiếu thanh toán. Cần quyền lập đề nghị thanh toán; nếu là KTTC cần thêm quyền nhập liệu hạch toán."
+                "Người tạo " +
+                creatorUser +
+                " chưa có quyền phù hợp để lập phiếu thanh toán. Cần quyền lập đề nghị thanh toán; nếu là KTTC cần thêm quyền nhập liệu hạch toán."
         );
     }
 
@@ -268,12 +268,12 @@ function htktCreatePayment_getUnitName(unitId) {
         unitFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
         unitFile.setFields(["unit.id", "unit.name"]);
         var rc = unitFile.doSelect(
-            'unit.id="' + escapeSmQueryValue(normalizedUnitId) + '"'
+                'unit.id="' + escapeSmQueryValue(normalizedUnitId) + '"'
         );
 
         return rc === RC_SUCCESS
-            ? String(unitFile["unit.name"] || "").replace(/^\s+|\s+$/g, "")
-            : "";
+                ? String(unitFile["unit.name"] || "").replace(/^\s+|\s+$/g, "")
+                : "";
     } catch (error) {
         return "";
     } finally {
@@ -508,7 +508,7 @@ function listPurchaseContracts(input) {
     var conditions = [];
 
     conditions.push("(((category=\"HD_GT\" or category=\"HD_GT_TTMS\") and contract.value.after.tax > 0) or ((category=\"HD_KMS\" or category=\"HD_KMS_TTMS\") and total.budget > 0))");
-    
+
 
     var role = params.initialRole || (input ? input.initialRole : null);
     if (role) {
@@ -529,7 +529,7 @@ function listPurchaseContracts(input) {
 
     // 1. Trường hợp QT_PQDL_06: Hậu kiểm toàn hệ thống -> Xem tất cả (không filter unit.lv1)
     if (scope === "QT_PQDL_06") {
-        print("QT_PQDL_06");
+        // print("QT_PQDL_06");
     } else if (scope === "QT_PQDL_04") {
         if (cleanUnitLv1.indexOf("0999") === 0) {
             var isMappedToEntity = false;
@@ -578,7 +578,7 @@ function listPurchaseContracts(input) {
     if (params.contractId) {
         conditions.push('id="' + escapeSmQueryValue(String(params.contractId).trim()) + '"');
     }
-    
+
     if (keywordFilter) {
         conditions.push('tolower(id) like "*' + escapeSmQueryValue(keywordFilter) + '*"');
     }
@@ -916,9 +916,9 @@ function calculateContractRemainingValue(contractId, currentContractAmount) {
         remainingContractValue = lib.ESD_HTKT_Utils.subtractStringsManual(remainingContractValue, totalPayment);
 
         if (
-            remainingContractValue &&
-            (remainingContractValue.charAt(0) === "-" ||
-                lib.ESD_HTKT_Utils.compareMoneyStrings(remainingContractValue, "0") < 0)
+                remainingContractValue &&
+                (remainingContractValue.charAt(0) === "-" ||
+                        lib.ESD_HTKT_Utils.compareMoneyStrings(remainingContractValue, "0") < 0)
         ) {
             remainingContractValue = "0";
         }
@@ -933,24 +933,24 @@ function calculateContractRemainingRefund(contractId) {
     if (!contractId) return 0;
 
     var query =
-        "SELECT " +
-        "ai.request.id AS requestId, " +
-        "ai.prepayment.id AS prepaymentId, " +
-        "ai.vendor.id AS vendorId, " +
-        "ai.amount AS advance_amount, " +
-        "pe.amount AS payment_entry_amount, " +
-        "pe.payment.id AS entry_payment_id, " +
-        "aip.status AS ogl_status " +
-        "FROM esdHTKTaccountingInformation ai " +
-        "LEFT JOIN esdHTKTpaymentEntry pe " +
-        'ON (ai.prepayment.id = pe.ref.id AND pe.entry.type = "PREPAYMENT" AND pe.vendor.id = ai.vendor.id) ' +
-        "LEFT JOIN esdHTKTaccountingInformation aip " +
-        "ON (pe.accounting.request.id = aip.request.id) " +
-        'WHERE ai.sub.type = "TAM_UNG" ' +
-        'AND ai.contract.id = "' + escapeSmQueryValue(contractId) + '" ' +
-        'AND ai.status = "COMPLETED" ' +
-        'AND ai.type = "AP" ' +
-        'ORDER BY ai.checked.time DESC';
+            "SELECT " +
+            "ai.request.id AS requestId, " +
+            "ai.prepayment.id AS prepaymentId, " +
+            "ai.vendor.id AS vendorId, " +
+            "ai.amount AS advance_amount, " +
+            "pe.amount AS payment_entry_amount, " +
+            "pe.payment.id AS entry_payment_id, " +
+            "aip.status AS ogl_status " +
+            "FROM esdHTKTaccountingInformation ai " +
+            "LEFT JOIN esdHTKTpaymentEntry pe " +
+            'ON (ai.prepayment.id = pe.ref.id AND pe.entry.type = "PREPAYMENT" AND pe.vendor.id = ai.vendor.id) ' +
+            "LEFT JOIN esdHTKTaccountingInformation aip " +
+            "ON (pe.accounting.request.id = aip.request.id) " +
+            'WHERE ai.sub.type = "TAM_UNG" ' +
+            'AND ai.contract.id = "' + escapeSmQueryValue(contractId) + '" ' +
+            'AND ai.status = "COMPLETED" ' +
+            'AND ai.type = "AP" ' +
+            'ORDER BY ai.checked.time DESC';
 
     var resultMap = {};
     var resultOrder = [];
@@ -1012,19 +1012,19 @@ function calculateContractRemainingPayable(contractId) {
     if (!contractId) return 0;
 
     var query =
-        "SELECT " +
-        "ai.request.id AS requestId, " +
-        "ai.prepayment.id AS prepaymentId, " +
-        "ai.vendor.id AS vendorId, " +
-        "pe.amount AS payable_amount " +
-        "FROM esdHTKTaccountingInformation ai " +
-        "JOIN esdHTKTpaymentEntry pe " +
-        'ON (ai.prepayment.id = pe.payment.id AND pe.entry.type = "PAYABLE" AND pe.account.type = "ASSET" AND pe.vendor.id = ai.vendor.id) ' +
-        'WHERE ai.sub.type = "THANH_TOAN" ' +
-        'AND ai.contract.id = "' + escapeSmQueryValue(contractId) + '" ' +
-        'AND ai.status = "COMPLETED" ' +
-        'AND ai.type = "AP" ' +
-        'ORDER BY ai.checked.time DESC';
+            "SELECT " +
+            "ai.request.id AS requestId, " +
+            "ai.prepayment.id AS prepaymentId, " +
+            "ai.vendor.id AS vendorId, " +
+            "pe.amount AS payable_amount " +
+            "FROM esdHTKTaccountingInformation ai " +
+            "JOIN esdHTKTpaymentEntry pe " +
+            'ON (ai.prepayment.id = pe.payment.id AND pe.entry.type = "PAYABLE" AND pe.account.type = "ASSET" AND pe.vendor.id = ai.vendor.id) ' +
+            'WHERE ai.sub.type = "THANH_TOAN" ' +
+            'AND ai.contract.id = "' + escapeSmQueryValue(contractId) + '" ' +
+            'AND ai.status = "COMPLETED" ' +
+            'AND ai.type = "AP" ' +
+            'ORDER BY ai.checked.time DESC';
 
     var totalRemainingPayable = 0;
     var file = null;
@@ -1042,11 +1042,11 @@ function calculateContractRemainingPayable(contractId) {
             var paidAmount = 0;
             if (prepaymentId) {
                 var queryPaid =
-                    "SELECT amount FROM esdHTKTpaymentEntry " +
-                    'WHERE entry.type = "PAYABLE" ' +
-                    'AND account.type = "DEBIT" ' +
-                    'AND ref.id = "' + escapeSmQueryValue(prepaymentId) + '"' +
-                    (vendorId ? ' AND vendor.id = "' + escapeSmQueryValue(vendorId) + '"' : '');
+                        "SELECT amount FROM esdHTKTpaymentEntry " +
+                        'WHERE entry.type = "PAYABLE" ' +
+                        'AND account.type = "DEBIT" ' +
+                        'AND ref.id = "' + escapeSmQueryValue(prepaymentId) + '"' +
+                        (vendorId ? ' AND vendor.id = "' + escapeSmQueryValue(vendorId) + '"' : '');
 
                 var debitFile = new SCFile("esdHTKTpaymentEntry", SCFILE_READONLY);
                 if (debitFile.doSelect(queryPaid) === RC_SUCCESS) {
@@ -1142,22 +1142,22 @@ function htktCreatePay_detectInitialRoleByRights(contactId) {
      */
 
     if (
-        htktCreatePay_hasAllRights(rights, [
-            RIGHT_VIEW_INVOICE,
-            RIGHT_VIEW_PAYMENT,
-            RIGHT_CREATE_PAYMENT,
-            RIGHT_ACCOUNTING_INPUT
-        ])
+            htktCreatePay_hasAllRights(rights, [
+                RIGHT_VIEW_INVOICE,
+                RIGHT_VIEW_PAYMENT,
+                RIGHT_CREATE_PAYMENT,
+                RIGHT_ACCOUNTING_INPUT
+            ])
     ) {
         return "kttc";
     }
 
     if (
-        htktCreatePay_hasAllRights(rights, [
-            RIGHT_VIEW_INVOICE,
-            RIGHT_VIEW_PAYMENT,
-            RIGHT_CREATE_PAYMENT
-        ])
+            htktCreatePay_hasAllRights(rights, [
+                RIGHT_VIEW_INVOICE,
+                RIGHT_VIEW_PAYMENT,
+                RIGHT_CREATE_PAYMENT
+            ])
     ) {
         return "dmms";
     }
@@ -1168,7 +1168,7 @@ function htktCreatePay_detectInitialRoleByRights(contactId) {
 function htktCreatePay_getRights(contactId) {
     try {
         return htktCreatePay_normalizeArray(
-            lib.ESD_PERMS_RIGHTS.permsRight(contactId) || []
+                lib.ESD_PERMS_RIGHTS.permsRight(contactId) || []
         );
     } catch (e) {
         return [];
@@ -1198,17 +1198,17 @@ function htktCreatePay_resolveCurrentUser(source) {
     source = source || {};
 
     return htktCreatePay_normalizeValue(
-        source["currentUser"] ||
-        source["current_user"] ||
-        source["user"] ||
-        source["contactId"] ||
-        source["contact_id"] ||
-        source["contact.id"] ||
-        source["contact.name"] ||
-        source["createdBy"] ||
-        source["created.by"] ||
-        source["created_by"] ||
-        ""
+            source["currentUser"] ||
+            source["current_user"] ||
+            source["user"] ||
+            source["contactId"] ||
+            source["contact_id"] ||
+            source["contact.id"] ||
+            source["contact.name"] ||
+            source["createdBy"] ||
+            source["created.by"] ||
+            source["created_by"] ||
+            ""
     );
 }
 
@@ -1426,18 +1426,18 @@ function listFileAttachment(input) {
 
     // Danh sách các cột cần lấy từ alias t (bảng esdHDtlks)
     var selectFields = "t.id, t.id.activity.vj, t.name, t.status, t.created.by, t.created.at, t.sysmodtime, t.sysmoduser, " +
-        "t.sizeKb, t.parent.id, t.attach.type, t.note, t.executor, t.document.type, t.attach.id, " +
-        "t.table, t.doc.id, t.document.source, t.document.date, t.category, t.step.status, t.transaction.id, " +
-        "t.function, t.original.id ";
+            "t.sizeKb, t.parent.id, t.attach.type, t.note, t.executor, t.document.type, t.attach.id, " +
+            "t.table, t.doc.id, t.document.source, t.document.date, t.category, t.step.status, t.transaction.id, " +
+            "t.function, t.original.id ";
 
     // ==========================================
     // LUỒNG 1: DIGITIZATION (c JOIN d JOIN t)
     // ==========================================
     var querySQL1 = "SELECT " + selectFields +
-        "FROM esdHDcontract c " +
-        "JOIN esdHDdigitization d ON (c.id = d.id.contract) " +
-        "JOIN esdHDtlks t ON (d.id = t.parent.id) " +
-        "WHERE true" + baseWhereClause;
+            "FROM esdHDcontract c " +
+            "JOIN esdHDdigitization d ON (c.id = d.id.contract) " +
+            "JOIN esdHDtlks t ON (d.id = t.parent.id) " +
+            "WHERE true" + baseWhereClause;
 
     var f1 = new SCFile('esdHDtlks', SCFILE_READONLY);
     try {
@@ -1460,7 +1460,7 @@ function listFileAttachment(input) {
             rc1 = f1.getNext();
         }
     } catch (e) {
-        print("[ERROR listFileAttachment] Lỗi Luồng 1 (Digitization): " + e);
+        // print("[ERROR listFileAttachment] Lỗi Luồng 1 (Digitization): " + e);
     } finally {
         try { if (f1) f1.doClose(); } catch (e) {}
     }
@@ -1469,10 +1469,10 @@ function listFileAttachment(input) {
     // LUỒNG 2: ATTACHMENT (c JOIN a JOIN t)
     // ==========================================
     var querySQL2 = "SELECT " + selectFields +
-        "FROM esdHDcontract c " +
-        "JOIN esdHDattachment a ON (c.id = a.parent.id) " +
-        "JOIN esdHDtlks t ON (t.original.id = a.id) " +
-        "WHERE true" + baseWhereClause;
+            "FROM esdHDcontract c " +
+            "JOIN esdHDattachment a ON (c.id = a.parent.id) " +
+            "JOIN esdHDtlks t ON (t.original.id = a.id) " +
+            "WHERE true" + baseWhereClause;
 
     var f2 = new SCFile('esdHDtlks', SCFILE_READONLY);
     try {
@@ -1495,7 +1495,7 @@ function listFileAttachment(input) {
             rc2 = f2.getNext();
         }
     } catch (e) {
-        print("[ERROR listFileAttachment] Lỗi Luồng 2 (Attachment): " + e);
+        // print("[ERROR listFileAttachment] Lỗi Luồng 2 (Attachment): " + e);
     } finally {
         try { if (f2) f2.doClose(); } catch (e) {}
     }
@@ -1506,8 +1506,8 @@ function listFileAttachment(input) {
 
 function escapeSmQueryValue(value) {
     return String(value || "")
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, '\\"');
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"');
 }
 
 function closeSCFile(file) {
@@ -1519,8 +1519,8 @@ function closeSCFile(file) {
 // FILTER
 var escapeQueryValue = function(value) {
     return String(value || "")
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, '\\"');
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"');
 };
 
 
@@ -1546,13 +1546,13 @@ function generateDocumentCode(docType, branchCode) {
         }
 
         var candidateId = docType + "." + branchCode + "." + year + "." +
-            ("0000000" + sequence).slice(-7);
+                ("0000000" + sequence).slice(-7);
 
         if (!checkPaymentIdExists(candidateId)) {
             return candidateId;
         }
 
-        print("[WARN generateDocumentCode] Bộ đếm " + numberClass + " cấp mã đã tồn tại: " + candidateId + ". Tiến hành đồng bộ bộ đếm...");
+        // print("[WARN generateDocumentCode] Bộ đếm " + numberClass + " cấp mã đã tồn tại: " + candidateId + ". Tiến hành đồng bộ bộ đếm...");
 
         // Khi phát hiện mã đã tồn tại: quét maxSeq thực tế trong DB và đồng bộ vào bảng number của SM
         if (!synced) {
@@ -1570,7 +1570,7 @@ function generateDocumentCode(docType, branchCode) {
     do {
         safeSeq++;
         finalPaymentId = docType + "." + branchCode + "." + year + "." +
-            ("0000000" + safeSeq).slice(-7);
+                ("0000000" + safeSeq).slice(-7);
     } while (checkPaymentIdExists(finalPaymentId));
 
     // Đồng bộ lại bộ đếm SM về safeSeq để các lần cấp tiếp theo không bị lệch
@@ -1581,24 +1581,24 @@ function generateDocumentCode(docType, branchCode) {
 
 function getNextSequenceFromSm(numberClass, docType, year) {
     try {
-        
+
         // Lấy số thứ tự lớn nhất đang có trong DB của năm nay
         var maxExistingSeq = getMaxExistingPaymentSequence(docType, year);
 
         if (maxExistingSeq > 0) {
             var nextSeq = maxExistingSeq + 1;
-            print("[INFO getNextSequenceFromSm] Năm " + year + " đã có maxSeq = " + maxExistingSeq + ", tự tăng lên thành: " + nextSeq);
+            // print("[INFO getNextSequenceFromSm] Năm " + year + " đã có maxSeq = " + maxExistingSeq + ", tự tăng lên thành: " + nextSeq);
             return nextSeq;
         }
 
         // Nếu năm mới hoàn toàn chưa có chứng từ nào -> bắt đầu bằng 1
         if (maxExistingSeq === 0) {
-            print("[INFO getNextSequenceFromSm] Phát hiện năm mới " + year + " chưa có chứng từ nào, khởi tạo sequence = 1");
+            // print("[INFO getNextSequenceFromSm] Phát hiện năm mới " + year + " chưa có chứng từ nào, khởi tạo sequence = 1");
             return 1;
         }
 
     } catch (e) {
-        print("[ERROR getNextSequenceFromSm] " + e);
+        // print("[ERROR getNextSequenceFromSm] " + e);
     }
     return null;
 }
@@ -1640,7 +1640,7 @@ function getMaxExistingPaymentSequence(docType, year) {
             rc = file.getNext();
         }
     } catch (e) {
-        print("[ERROR getMaxExistingPaymentSequence] " + e);
+        // print("[ERROR getMaxExistingPaymentSequence] " + e);
     } finally {
         closeSCFile(file);
     }
@@ -1655,12 +1655,12 @@ function syncSmNumberTable(numberClass, targetSeq) {
             if (isNaN(currentVal) || targetSeq > currentVal) {
                 numFile["number"] = targetSeq;
                 var rcUpdate = numFile.doUpdate();
-                print("[INFO syncSmNumberTable] Đồng bộ bộ đếm " + numberClass + " từ " + currentVal + " lên " + targetSeq + " (rc=" + rcUpdate + ")");
+                // print("[INFO syncSmNumberTable] Đồng bộ bộ đếm " + numberClass + " từ " + currentVal + " lên " + targetSeq + " (rc=" + rcUpdate + ")");
             }
         }
         closeSCFile(numFile);
     } catch (eSync) {
-        print("[WARN syncSmNumberTable] Không thể cập nhật bảng number: " + eSync);
+        // print("[WARN syncSmNumberTable] Không thể cập nhật bảng number: " + eSync);
     }
 }
 
