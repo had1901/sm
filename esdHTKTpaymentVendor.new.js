@@ -32,8 +32,14 @@ if (!paymentId && vars.$L_file && vars.$L_file.payment_id != null) {
 vars.$L_file['payment.id'] = paymentId;
 vars.$L_file['contract.id'] = contractId;
 
-// Chỉ thực hiện truy vấn nếu có paymentId
-if (paymentId || vars.$L_file['payment.id']) {
+
+// Chỉ Dự chi XDCB dùng nguồn S4; các nguồn/luồng còn lại giữ loader cũ.
+//if (String(paymentId || "").indexOf("DC.") === 0 &&
+//    lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(vars.$L_file, "", false).category === "XDCB") {
+//  // Bind ở Display Screen để callback không phụ thuộc global scope của ScriptLibrary.
+//  arrVendors = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadExpenseSupplierScreen(vars.$L_file);
+//} else  
+if (paymentId || vars.$L_file['payment.id']) { // Chỉ thực hiện truy vấn nếu có paymentId
   var usedSupplierIds = {};
   var paymentVendorFile = new SCFile("esdHTKTpaymentVendor");
   var paymentVendorQuery = 'payment.id="' + paymentId + '"';
