@@ -152,6 +152,22 @@ test('server pagination and eligible records', () => {
   const files = h.state.files.filter(file => file.table === 'esdXDCBrepairProjectCtr');
   assert.equal(files[0].query, files[1].query); assert.equal(files[1].start, 6); assert.equal(files[1].count, 5); h.clean();
 });
+test('contract read projects direct supplier fields and budget type without changing running-status filtering', () => {
+  const row = { ...fixtures[0], 'repair.id': 'REPAIR-1', 'construction.id': '', 'type.budget': 'under500',
+    'tender.package.id': '', 'vendor.name': 'NCC trực tiếp', 'tax.code': '0012345678', 'vendor.address': 'Địa chỉ HĐ' };
+  const h = setup({ rows: [row] });
+  const result = h.list({});
+  assert.equal(result.success, true); assert.equal(result.totalCount, 1);
+  assert.equal(result.data[0].budgetType, 'under500');
+  assert.equal(result.data[0].vendorTaxCode, '0012345678');
+  assert.equal(result.data[0].vendorAddress, 'Địa chỉ HĐ');
+  assert.equal(result.data[0].tenderPackageId, '');
+  assert.equal(result.data[0].projectType, 'REPAIR');
+  h.clean();
+  const completed = setup({ rows: [{ ...row, status: 'Hoàn thành' }] });
+  assert.equal(completed.list({}).totalCount, 0); completed.clean();
+});
+
 for (const [params, total] of [[{ projectType: 'REPAIR' }, 7], [{ projectType: 'CONSTRUCTION' }, 7],
   [{ effectiveDateFrom: '2026-10-27', effectiveDateTo: '2026-10-27' }, 14], [{ contractId: 'S4-03' }, 1],
   [{ contractCode: 'S4-03' }, 1], [{ keyword: 's4-03' }, 1], [{ keyword: 'HD-03' }, 0],
@@ -304,12 +320,14 @@ test('dispatcher isolates DC actions from TT', () => {
 
 (async () => {
   const module = { exports: {} }; const calls = []; let securityFails = false;
-  const code = ts.transpileModule(fs.readFileSync(path.join(root, 'src/services/HachToanKeToan/DuChi/ThongTinMonDuChi/xdcbContracts.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+  const code = ts.transpileModule(fs.readFileSync(path.join(root, 'src/services/HachToanKeToan/DuChi/server.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
   new Function('require', 'module', 'exports', code)(name => {
     if (name === '@/services/common') return { callCustomAPIHTKT: async (action, payload) => {
       calls.push({ action, payload }); return { success: true, data: action === 'getExpenseXdcbContract' ? { id: payload.contractId, source: 'S4' } : [], totalCount: 0, contractCategory: 'XDCB' };
     } };
     if (name.includes('essSecurityContext')) return { requireEssSecurityContext: async () => { if (securityFails) throw new Error('NO_SESSION'); return { currentUser: 'SERVER_ACTOR' }; } };
+    if (name === '@/services/AxiosClient' || name === '@/services/phanhexaydungcoban/services' || name === '@/lib/sm/signedLink') return {};
+    if (name === '@/types/enum') return { ViewTypeEnum: { EXPAND: 'expand' } };
     throw new Error(name);
   }, module, module.exports);
   const server = module.exports;

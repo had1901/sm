@@ -15,13 +15,14 @@ function harness(options = {}) {
     'contract.category': 'HHDV', 'current.phase': 'initial_kttc', 'initial.role': 'kttc',
     'created.by': actor, 'user.checker.kttc': actor, 'unit.lv1': 'U1', 'unit.lv2': 'U2', description: 'Dự chi', ...options.parent };
   const contracts = [
-    { id: 'Ctr-1', contractCode: 'HD/S4-1', tenderPackageId: 'THAU-1', currency: 'VND' },
-    { id: 'Ctr-2', contractCode: 'HD/S4-2', tenderPackageId: 'THAU-2', currency: 'USD' },
+    { id: 'Ctr-1', contractCode: 'HD/S4-1', constructionId: 'P1', budgetType: 'over500', tenderPackageId: 'THAU-1', currency: 'VND' },
+    { id: 'Ctr-2', contractCode: 'HD/S4-2', constructionId: 'P2', budgetType: 'over500', tenderPackageId: 'THAU-2', currency: 'USD' },
   ];
   const db = {
     esdHTKTpayment: [parent],
     esdXDCBrepairProjectCtr: contracts.map(c => ({ id: c.id, 'contract.code': c.contractCode,
-      'contract.name': 'HĐ ' + c.id, 'contract.amount': 500, 'tender.package.id': c.tenderPackageId, currency: c.currency })),
+      'contract.name': 'HĐ ' + c.id, 'contract.amount': 500, 'tender.package.id': c.tenderPackageId, currency: c.currency,
+      'repair.id': c.repairId, 'construction.id': c.constructionId, 'type.budget': c.budgetType })),
     esdjoinXDCBtenderPackageContractor: contracts.map((c, i) => ({ id: tax + 'THAU-' + (i + 1),
       'tender.package.id': c.tenderPackageId, 'tax.code': tax, name: 'NCC S4', address: 'Hà Nội' })),
     esdHTKTvendor: [], esdHTKTvendorSite: [], esdHTKTpaymentVendor: [], esdHTKTpaymentInvoice: [],
@@ -183,6 +184,127 @@ function harness(options = {}) {
   const run = code => vm.runInContext(code, context);
   return { context, db, calls, state, contracts, item, vendor, site, run };
 }
+
+/** Đưa một HĐ fixture sang nhánh sửa chữa rút gọn, đồng bộ DTO và record nguồn thực tế. */
+function directContract(h, overrides = {}) {
+  const contract = Object.assign(h.contracts[0], { repairId: 'REPAIR-1', constructionId: '', budgetType: 'under500',
+    tenderPackageId: '', vendorName: 'NCC trên HĐ', vendorTaxCode: tax, vendorAddress: 'Địa chỉ trên HĐ' }, overrides);
+  Object.assign(h.db.esdXDCBrepairProjectCtr[0], { 'repair.id': contract.repairId, 'construction.id': contract.constructionId,
+    'type.budget': contract.budgetType, 'tender.package.id': contract.tenderPackageId,
+    'vendor.name': contract.vendorName, 'tax.code': contract.vendorTaxCode, 'vendor.address': contract.vendorAddress });
+  return contract;
+}
+
+test('S4 under500 reads one supplier directly from the contract without a package or Contractor query', () => {
+  const h = harness(); directContract(h);
+  const contract = h.context.getExpenseXdcbSelection('Ctr-1', actor, 'DC.TEST');
+  const suppliers = h.context.getExpenseXdcbSuppliers(contract);
+  assert.equal(suppliers.length, 1);
+  assert.equal(suppliers[0]['supplier.id'], tax);
+  assert.equal(suppliers[0]['supplier.name'], 'NCC trên HĐ');
+  assert.equal(suppliers[0]['tax.code'], tax);
+  assert.equal(suppliers[0].address, 'Địa chỉ trên HĐ');
+  assert.equal(h.context.resolveExpenseXdcbSupplier(contract, tax, tax)['supplier.id'], tax);
+  assert.ok(h.calls.queries.every(call => call.table !== 'esdjoinXDCBtenderPackageContractor'));
+  assert.equal(h.calls.writes.length, 0);
+});
+
+test('S4 under500 source is decided by budget type even if an unrelated package is present', () => {
+  const h = harness(); const contract = directContract(h, { tenderPackageId: 'THAU-1', contractAmount: 900000000 });
+  const supplier = h.context.getExpenseXdcbSuppliers(contract)[0];
+  assert.equal(supplier['supplier.id'], tax);
+  assert.equal(supplier['supplier.name'], 'NCC trên HĐ');
+  assert.equal(h.calls.queries.length, 0);
+});
+
+for (const variant of ['missing classification', 'unknown classification', 'neither project', 'both projects', 'missing tax', 'missing name']) {
+  test('S4 direct supplier rejects invalid source without falling back to Contractor: ' + variant, () => {
+    const h = harness(); const contract = directContract(h, { tenderPackageId: 'THAU-1' });
+    if (variant === 'missing classification') contract.budgetType = '';
+    if (variant === 'unknown classification') contract.budgetType = 'UNKNOWN';
+    if (variant === 'neither project') contract.repairId = '';
+    if (variant === 'both projects') contract.constructionId = 'P1';
+    if (variant === 'missing tax') contract.vendorTaxCode = '';
+    if (variant === 'missing name') contract.vendorName = '';
+    assert.throws(() => h.context.getExpenseXdcbSuppliers(contract));
+    assert.equal(h.calls.queries.length, 0);
+    assert.equal(h.calls.writes.length, 0);
+  });
+}
+
+test('S4 repair over500 uses package suppliers even when contract amount is below 500 million', () => {
+  const h = harness(); const contract = directContract(h, { budgetType: 'over500', tenderPackageId: 'THAU-1', contractAmount: 12000000 });
+  assert.equal(h.context.getExpenseXdcbSuppliers(contract)[0]['supplier.name'], 'NCC S4');
+  h.db.esdjoinXDCBtenderPackageContractor = [];
+  assert.throws(() => h.context.getExpenseXdcbSuppliers(contract), /chưa có NCC/);
+});
+
+test('S4 construction always uses package suppliers and never the direct contract snapshot', () => {
+  const h = harness(); const contract = directContract(h, { repairId: '', constructionId: 'P1', budgetType: 'under500', tenderPackageId: 'THAU-1' });
+  assert.equal(h.context.getExpenseXdcbSuppliers(contract)[0]['supplier.id'], tax + 'THAU-1');
+  contract.tenderPackageId = '';
+  assert.throws(() => h.context.getExpenseXdcbSuppliers(contract), /chưa có liên kết gói thầu/);
+});
+
+test('S4 direct supplier can be selected, restored after Cancel, saved and synced with the shared S6 vendor/site flow', () => {
+  const h = harness(); directContract(h); h.db.esdHTKTvendor.push(h.vendor());
+  const record = h.item({ 'vendor.id': '', amount: 2000, 'transaction.des': 'Nội dung đang nhập' });
+  h.context.vars.$L_file = record;
+  h.context.lib.ESD_HTKT_PAYMENT_WF = { canEditInCurrenPhase: () => true };
+  const screen = fs.readFileSync(path.join(root, 'esdHTKTpaymentVendor.view.js'), 'utf8');
+  h.run(screen);
+  h.context.vars.$supplierId = tax;
+  h.run(fs.readFileSync(path.join(root, 'esdHTKTpaymentVendor.view_fill_data.js'), 'utf8'));
+  assert.equal(h.context.vars.$taxCode, tax);
+  assert.equal(h.calls.writes.length, 0);
+  h.context.vars['$L.expense.xdcb.supplier.draft'] = null;
+  h.context.vars.$proceed = 'no'; h.context.vars['$L.exit'] = '';
+  h.run(screen);
+  assert.equal(h.context.vars.$supplierId, tax);
+  assert.equal(h.context.vars.$supplierName, 'NCC trên HĐ');
+  h.run(fs.readFileSync(path.join(root, 'esdHTKTpaymentVendor.view_save_for_expense.js'), 'utf8'));
+  assert.equal(h.context.vars.$G_hasError, false, h.context.vars.$G_errMsg);
+  assert.equal(record['vendor.id'], 'V1');
+  assert.equal(record.amount, 2000);
+  assert.equal(record['transaction.des'], 'Nội dung đang nhập');
+  assert.equal(h.db.esdHTKTvendor[0]['supplier.id'], 'S2-KEEP');
+  assert.equal(h.db.esdHTKTvendorSite.length, 1);
+  assert.equal(h.db.esdHTKTvendorSite[0]['ogl.site.code'], xdcbCode);
+  assert.equal(record['ogl.sync.status'], true);
+  assert.ok(h.calls.queries.every(call => call.table !== 'esdjoinXDCBtenderPackageContractor'));
+});
+
+test('S4 under500 manual item creation does not require a package', () => {
+  const h = harness(); directContract(h);
+  const result = h.context.createPaymentVendor({ details: JSON.stringify({ paymentId: 'DC.TEST', currentUser: actor, contracts: [{ id: 'Ctr-1' }] }) });
+  assert.equal(result.success, true, result.message);
+  assert.equal(h.db.esdHTKTpaymentVendor.length, 1);
+  assert.equal(h.db.esdHTKTpaymentVendor[0]['contract.id'], 'Ctr-1');
+  assert.equal(h.db.esdHTKTvendor.length, 0);
+});
+
+test('S4 under500 Excel import validates direct supplier tax and saves a new S6 master', () => {
+  const h = harness(); directContract(h);
+  const result = h.context.importExpenseVendors({ details: JSON.stringify({ paymentId: 'DC.TEST', currentUser: actor,
+    rows: [{ contractCode: 'Ctr-1', vendorCode: tax, amount: 100, transactionDescription: 'Nhập rút gọn', sourceRow: 2 }] }) });
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(h.db.esdHTKTvendor.length, 1);
+  assert.equal(h.db.esdHTKTvendor[0]['vendor.number'], tax);
+  assert.equal(h.db.esdHTKTvendor[0].address, 'Địa chỉ trên HĐ');
+  assert.equal(h.db.esdHTKTvendor[0]['supplier.id'], undefined);
+  assert.equal(h.db.esdHTKTpaymentVendor[0]['vendor.id'], h.db.esdHTKTvendor[0].id);
+  assert.equal(h.db.esdHTKTpaymentVendor[0]['transaction.des'], 'Nhập rút gọn');
+  assert.ok(h.calls.queries.every(call => call.table !== 'esdjoinXDCBtenderPackageContractor'));
+});
+
+test('S4 direct supplier rejects a wrong selection or tax before saving/syncing', () => {
+  const h = harness(); const contract = directContract(h);
+  assert.throws(() => h.context.resolveExpenseXdcbSupplier(contract, tax + 'THAU-1', tax), /không thuộc nguồn NCC/);
+  assert.throws(() => h.context.resolveExpenseXdcbSupplier(contract, tax, 'WRONG'), /không thuộc nguồn NCC/);
+  h.db.esdHTKTvendor.push(h.vendor({ 'vendor.number': 'WRONG' }));
+  assert.equal(h.context.syncExpenseXdcbVendorToOgl(h.item(), '', '', actor).success, false);
+  assert.equal(h.calls.lookup.length, 0); assert.equal(h.calls.create.length, 0); assert.equal(h.calls.writes.length, 0);
+});
 
 test('S4 package selection keeps tax text and permits the same NCC across contracts/items', () => {
   const h = harness();

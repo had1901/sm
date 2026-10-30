@@ -37,7 +37,7 @@ Theo chốt ngày 29/10, S4 dùng `id` làm cả mã HĐ hiển thị/tìm kiế
 
 Phạm vi HĐ đã thống nhất theo S2 sau khi người dùng chốt: ĐMMS lọc `responsible.officer`; scope 06 không lọc đơn vị; scope 04 ở hội sở xử lý mapping entity `1010098` rồi lọc `0999*` hoặc giữ `1=1` khi không có mapping; còn lại dùng LV1 của hồ sơ đăng nhập. Thay thế cách lọc S4 trước đó theo danh sách LV1/LV2/LV3 của Data Permission. `paymentId` được truyền qua picker/thêm món/DO/Save/import/OGL để lấy đúng vai trò từ phiếu, tại bước KTTC dùng vai trò KTTC như S2. Các quyền thao tác và phase S6 giữ nguyên. Chi tiết và giới hạn tại mục Phân quyền và phase trong [duchi-s4-supplier-implementation.md](duchi-s4-supplier-implementation.md); cần UAT bằng tài khoản/đơn vị thật.
 
-Nút Tiếp tục XDCB đã mở. Backend kiểm tra HĐ/gói/NCC và hạng mục đã lưu thay cho guard chặn toàn bộ; nhánh HHDV giữ nguồn S2. OGL XDCB dùng resolver site riêng, không đổi helper OGL mặc định của TT/TU. Bút toán/workflow và writer tiến độ S4 chưa thay đổi trong bước này.
+Nút Tiếp tục XDCB đã mở. Backend kiểm tra HĐ/nguồn NCC và hạng mục đã lưu thay cho guard chặn toàn bộ; nhánh HHDV giữ nguồn S2. Theo cập nhật 30/10/2026, DTO HĐ trả thêm `budgetType`, `vendorTaxCode`, `vendorAddress`: sửa chữa `under500` lấy NCC trực tiếp trên HĐ, sửa chữa `over500` và xây mới/cải tạo lấy qua gói thầu. OGL XDCB dùng resolver site riêng, không đổi helper OGL mặc định của TT/TU. Bút toán/workflow và writer tiến độ S4 chưa thay đổi trong bước này.
 
 ## Kiểm tra REST thực tế
 
