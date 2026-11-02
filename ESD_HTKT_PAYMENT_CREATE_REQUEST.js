@@ -68,14 +68,7 @@ function createPaymentRequest(input) {
 
         if (contractId) {
             try {
-                var currentContractAmount = String(
-                        contractData['totalValue'] ||
-                        contractData['total.budget'] ||
-                        contractData['contract.value.after.tax'] ||
-                        contractData['contract.amount'] ||
-                        "0"
-                );
-                var remainingContractValue = calculateContractRemainingValue(contractId, currentContractAmount);
+                var remainingContractValue = calculateContractRemainingValue(contractId);
                 var remainingRefundValue = calculateContractRemainingRefund(contractId);
                 var remainingPayableValue = calculateContractRemainingPayable(contractId);
 
@@ -664,6 +657,11 @@ function listPurchaseContracts(input) {
                 itemData.totalValue = itemData["contract.value.after.tax"] || itemData.totalValue || "0";
             }
 
+            // Fallback remaining.amount về "0" nếu query ra rỗng
+            if (!itemData["remaining.amount"] || String(itemData["remaining.amount"]).trim() === "") {
+                itemData["remaining.amount"] = "0";
+            }
+
             // Không tính/lọc số dư tại đây để tránh query lồng theo từng hợp đồng.
             dataArray.push(itemData);
 
@@ -872,137 +870,52 @@ function mapRowToObject(scFileRecord, fieldMappings) {
 
 // Các hàm calculate chỉ dùng để kiểm tra số dư khi createPaymentRequest.
 // listPurchaseContracts không gọi chúng để tránh query lồng theo từng hợp đồng.
-function calculateContractRemainingValue(contractId, currentContractAmount) {
-    if (!contractId) return String(currentContractAmount || "0");
+function calculateContractRemainingValue(contractId) {
+    if (!contractId) return "0";
 
+    var contractFile = null;
     try {
-        // 1. TỔNG GIÁ TRỊ ĐÃ TẠM ỨNG
-        var totalPrepayment = "0";
-        var prepaymentFile = new SCFile("esdHTKTprepayment", SCFILE_READONLY);
-        var sqlPrepayment = 'contract.id="' + contractId + '" and (status="approved" or status="accounted")';
-
-        if (prepaymentFile.doSelect(sqlPrepayment) === RC_SUCCESS) {
-            do {
-                var prepaymentVendorFile = new SCFile("esdHTKTprepaymentVendor", SCFILE_READONLY);
-                if (prepaymentVendorFile.doSelect('prepayment.id="' + prepaymentFile.id + '"') === RC_SUCCESS) {
-                    do {
-                        // Đảm bảo amount không bị rỗng/null để thư viện cộng chuỗi không báo lỗi
-                        var vendorAmt = prepaymentVendorFile.amount ? String(prepaymentVendorFile.amount) : "0";
-                        totalPrepayment = lib.ESD_HTKT_Utils.addStringsManual(totalPrepayment, vendorAmt);
-
-                    } while (prepaymentVendorFile.getNext() === RC_SUCCESS);
-                }
-                prepaymentVendorFile.doClose();
-
-            } while (prepaymentFile.getNext() === RC_SUCCESS);
+        contractFile = new SCFile("esdHDcontract", SCFILE_READONLY);
+        contractFile.setFields(["remaining.amount"]);
+        if (contractFile.doSelect('id="' + escapeSmQueryValue(contractId) + '"') === RC_SUCCESS) {
+            var remVal = contractFile["remaining.amount"];
+            if (remVal !== null && remVal !== undefined && String(remVal).trim() !== "") {
+                var numRem = Number(remVal);
+                return !isNaN(numRem) && numRem > 0 ? String(numRem) : "0";
+            }
         }
-        prepaymentFile.doClose();
-
-        // 2. TỔNG GIÁ TRỊ ĐÃ THANH TOÁN (ĐNTT có trạng thái = "Đã duyệt" hoặc "Đã hạch toán")
-        var totalPayment = "0";
-        var paymentFile = new SCFile("esdHTKTpayment", SCFILE_READONLY);
-        var sqlPayment = 'contract.id="' + contractId + '" and (status="approved" or status="accounted")';
-
-        if (paymentFile.doSelect(sqlPayment) === RC_SUCCESS) {
-            do {
-                var paidAmt = paymentFile["total.amount.paid"] ? String(paymentFile["total.amount.paid"]) : "0";
-                totalPayment = lib.ESD_HTKT_Utils.addStringsManual(totalPayment, paidAmt);
-            } while (paymentFile.getNext() === RC_SUCCESS);
-        }
-        paymentFile.doClose();
-
-        // 3. GIÁ TRỊ HĐ/KMS CÒN LẠI
-        var remainingContractValue = lib.ESD_HTKT_Utils.subtractStringsManual(String(currentContractAmount || "0"), totalPrepayment);
-        remainingContractValue = lib.ESD_HTKT_Utils.subtractStringsManual(remainingContractValue, totalPayment);
-
-        if (
-                remainingContractValue &&
-                (remainingContractValue.charAt(0) === "-" ||
-                        lib.ESD_HTKT_Utils.compareMoneyStrings(remainingContractValue, "0") < 0)
-        ) {
-            remainingContractValue = "0";
-        }
-
-        return remainingContractValue;
     } catch (e) {
-        return String(currentContractAmount || "0");
+        // print("[DEBUG calculateContractRemainingValue] Error: " + e);
+    } finally {
+        closeSCFile(contractFile);
     }
+
+    return "0";
 }
 
 function calculateContractRemainingRefund(contractId) {
     if (!contractId) return 0;
 
-    var query =
-            "SELECT " +
-            "ai.request.id AS requestId, " +
-            "ai.prepayment.id AS prepaymentId, " +
-            "ai.vendor.id AS vendorId, " +
-            "ai.amount AS advance_amount, " +
-            "pe.amount AS payment_entry_amount, " +
-            "pe.payment.id AS entry_payment_id, " +
-            "aip.status AS ogl_status " +
-            "FROM esdHTKTaccountingInformation ai " +
-            "LEFT JOIN esdHTKTpaymentEntry pe " +
-            'ON (ai.prepayment.id = pe.ref.id AND pe.entry.type = "PREPAYMENT" AND pe.vendor.id = ai.vendor.id) ' +
-            "LEFT JOIN esdHTKTaccountingInformation aip " +
-            "ON (pe.accounting.request.id = aip.request.id) " +
-            'WHERE ai.sub.type = "TAM_UNG" ' +
-            'AND ai.contract.id = "' + escapeSmQueryValue(contractId) + '" ' +
-            'AND ai.status = "COMPLETED" ' +
-            'AND ai.type = "AP" ' +
-            'ORDER BY ai.checked.time DESC';
-
-    var resultMap = {};
-    var resultOrder = [];
-    var file = null;
-
+    var debtFile = null;
+    var totalRemainingRefund = 0;
     try {
-        file = new SCFile("esdHTKTaccountingInformation", SCFILE_READONLY);
-        var rc = file.doSelect(query);
+        debtFile = new SCFile("esdHTKTreportVendorDebt", SCFILE_READONLY);
+        debtFile.setFields(["total.advance.amount", "total.refund.amount"]);
+        var rc = debtFile.doSelect('contract.id="' + escapeSmQueryValue(contractId) + '"');
 
-        while (rc == RC_SUCCESS) {
-            var accountingInformationId = String(file["requestId"] || "").trim();
-            var prepaymentId = String(file["prepaymentId"] || "").trim();
-            var vendorId = String(file["vendorId"] || "").trim();
-            var advanceAmount = getNumberField(file, ["advance_amount", "ai.amount", "amount"]);
-            var paymentEntryAmount = getNumberField(file, ["payment_entry_amount", "pe.amount"]);
-            var oglStatus = String(file["aip.status"] || "").trim().toLowerCase();
-
-            var key = accountingInformationId + "|" + prepaymentId + "|" + vendorId;
-
-            if (!resultMap[key]) {
-                resultMap[key] = {
-                    advance_amount: advanceAmount,
-                    refunded_amount: 0,
-                    other_pending_amount: 0
-                };
-                resultOrder.push(key);
+        while (rc === RC_SUCCESS) {
+            var advance = Number(debtFile["total.advance.amount"] || 0);
+            var refund = Number(debtFile["total.refund.amount"] || 0);
+            var rem = advance - refund;
+            if (rem > 0) {
+                totalRemainingRefund += rem;
             }
-
-            var item = resultMap[key];
-            if (paymentEntryAmount > 0) {
-                if (oglStatus === "completed") {
-                    item.refunded_amount += paymentEntryAmount;
-                } else if (oglStatus !== "rejected" && oglStatus !== "cancelled" && oglStatus !== "failed") {
-                    item.other_pending_amount += paymentEntryAmount;
-                }
-            }
-
-            rc = file.getNext();
+            rc = debtFile.getNext();
         }
     } catch (e) {
         // print("[DEBUG calculateContractRemainingRefund] Error: " + e);
     } finally {
-        closeSCFile(file);
-    }
-
-    var totalRemainingRefund = 0;
-    for (var i = 0; i < resultOrder.length; i++) {
-        var resItem = resultMap[resultOrder[i]];
-        var rem = resItem.advance_amount - resItem.refunded_amount - resItem.other_pending_amount;
-        if (rem > 0) {
-            totalRemainingRefund += rem;
-        }
+        closeSCFile(debtFile);
     }
 
     return totalRemainingRefund;

@@ -71,7 +71,54 @@ var HTKT_WF_DSM_STATUS = {
  * 2. CÁC HÀM KIỂM TRA QUYỀN HẠN & TRẠNG THÁI (PERMISSION & ACTION CHECKS)
  * ============================================================================= */
 
+/* HẬU KIỂM không được thao tác các action workflow của hồ sơ Thanh toán. */
+function isPostAuditOperator() {
+    try {
+        var currentUser = "";
+
+        if (vars.$lo_operator) {
+            currentUser = vars.$lo_operator["contact.name"] ||
+                    vars.$lo_operator["contact"] ||
+                    vars.$lo_operator["name"] ||
+                    "";
+        }
+
+        currentUser = String(
+                currentUser ||
+                vars["$lo.contact.name"] ||
+                vars["$lo.user.name"] ||
+                htktWfCurrentUser() ||
+                ""
+        ).trim();
+
+        if (!currentUser) return false;
+
+        var rights = lib.ESD_PERMS_RIGHTS.permsRight(currentUser) || [];
+        if (rights && rights.toArray) rights = rights.toArray();
+
+        for (var i = 0; i < rights.length; i++) {
+            if (String(rights[i] || "").trim() === "0040040003000010") {
+                return true;
+            }
+        }
+    } catch (ePostAudit) {
+        // Fail closed for the action itself; do not grant extra access.
+    }
+
+    return false;
+}
+
+function checkShowCancel(record) {
+    return isPostAuditOperator() ? "F" : "T";
+}
+
+function checkShowPrint(record) {
+    return isPostAuditOperator() ? "F" : "T";
+}
+
 function checkShowApproval(record) {
+    if (isPostAuditOperator()) return "F";
+
     var currentUser = vars.$lo_operator["contact.name"];
     if ((record["created.by"] == currentUser && record["initial.role"] == "kttc") ||
             record["user.checker.kttc"] == currentUser) {
@@ -81,6 +128,8 @@ function checkShowApproval(record) {
 }
 
 function checkCanSave(record) {
+    if (isPostAuditOperator()) return "F";
+
     var currentUser = vars.$lo_operator["contact.name"];
     if ((record["created.by"] == currentUser && record["initial.role"] == "kttc" && record["current.phase"] == "initial_kttc") ||
             (record["created.by"] == currentUser && record["initial.role"] == "dmms" && record["current.phase"] == "initial_dmms") ||
@@ -92,6 +141,8 @@ function checkCanSave(record) {
 }
 
 function checkCanReturn(record) {
+    if (isPostAuditOperator()) return "F";
+
     var fieldCheck = null;
     var currentPhase = record.current_phase || record["current.phase"];
     var currentUser = vars.$lo_operator["contact.name"];
@@ -306,6 +357,10 @@ function createApprovalHistory(record) {
 }
 
 function cancelRequest(record) {
+    if (isPostAuditOperator()) {
+        throw new Error("Cán bộ Hậu kiểm không được thực hiện thao tác này.");
+    }
+
     // Chỉ bổ sung vào action Xóa lớn của Workflow; không đụng nút xóa NCC/hóa đơn.
     var paymentIdForUnlink = String(record["id"] || record.id || "").trim();
     if (!paymentIdForUnlink) {
@@ -350,6 +405,10 @@ function getReturnToUpdatePhase(record) {
 }
 
 function returnToUpdate(record, documentsAlreadyDeleted) {
+    if (isPostAuditOperator()) {
+        throw new Error("Cán bộ Hậu kiểm không được thực hiện thao tác này.");
+    }
+
     if (documentsAlreadyDeleted !== true) {
         var deleteResult = deleteDocumentsBeforeReturn(record);
         if (!deleteResult || deleteResult.success !== true) {
@@ -1203,6 +1262,8 @@ function isSignaturePhase(record) {
 
 // Kiểm tra quyền hiển thị Workflow Action Test ký.
 function checkCanSign(record) {
+    if (isPostAuditOperator()) return "F";
+
     var actorResult = validateLatestWorkflowActor(record);
 
     if (!actorResult || actorResult.success !== true) {
@@ -1331,6 +1392,13 @@ function getWorkflowConfig() {
 
 /* Trình phiếu: validate cũ -> sinh/upload PDF -> gọi nguyên updateNextStatus() */
 function submitForApproval(record) {
+    if (isPostAuditOperator()) {
+        return htktWfFail(
+                "POST_AUDIT_ACTION_NOT_ALLOWED",
+                "Cán bộ Hậu kiểm không được thực hiện thao tác này."
+        );
+    }
+
     var phase = htktWfPhase(record);
     if (!htktWfIsSubmissionPhaseValue(phase)) {
         return htktWfFail("INVALID_SUBMISSION_PHASE", "Chỉ được sinh bản trình ký tại bước Trình phê duyệt.", "currentPhase=" + phase);
@@ -1655,6 +1723,13 @@ function invalidateDocumentsBeforeReturn(record) {
 
 /* Xóa cứng ECM trước, sau đó mới gọi nguyên returnToUpdate() cũ. */
 function requestCorrection(record) {
+    if (isPostAuditOperator()) {
+        return htktWfFail(
+                "POST_AUDIT_ACTION_NOT_ALLOWED",
+                "Cán bộ Hậu kiểm không được thực hiện thao tác này."
+        );
+    }
+
     var phase = htktWfPhase(record);
 
     try {

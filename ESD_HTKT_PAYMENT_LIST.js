@@ -1152,6 +1152,8 @@ function getPaymentListFilterOptions(input) {
 }
 
 function renderList() {
+    var isFromHK = vars["$L.isFromHK"] ;
+
     var currentUser = vars['$lo.contact.name'];
 
     var smLoginUser = system.user.name;
@@ -1313,6 +1315,7 @@ function renderList() {
             dataScopeUnits: dataFilterInfo.dataScopeUnits,
             dataPermissionSubModule: DATA_PERMISSION_SUB_MODULE,
             dataPermission: dataPermission,
+            isFromHK: isFromHK,
 
             // Phân quyền chức năng hóa đơn
             rights: rightsArray,

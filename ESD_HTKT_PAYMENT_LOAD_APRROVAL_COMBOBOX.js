@@ -36,28 +36,12 @@ function getPaymentApprovalRightBase(rightPrefix) {
     return prefix === "0040040003" || prefix === "0040040004" ? prefix + "00" : prefix;
 }
 
-// Dự chi dùng cùng entity nhưng SCFile có thể trả Object NULL cho note.
-// Giữ nguyên syncPaymentApprovalFromDatabase cho Thanh toán.
+// Dùng cùng cách tải lại bản ghi đang mở như Thanh toán.
+// Giữ entry point riêng cho các Rule Set Dự chi đã cấu hình trên SM.
 function syncDuChiApprovalFromDatabase(expense) {
     var expenseId = String(expense && expense.id || "").trim();
     if (!isDuChiPaymentApprovalRecord(expenseId)) return expense;
-    var stored = new SCFile("esdHTKTpayment", SCFILE_READONLY);
-    try {
-        var fields = getPaymentApprovalFields().concat([
-            "require.check.level1", "require.check.level2"
-        ]);
-        stored.setFields(fields.concat(["id", "transaction.type"]));
-        if (stored.doSelect('id="' + escapeSmQueryValue(expenseId) + '"') !== RC_SUCCESS) {
-            throw new Error("Không tải được thông tin phê duyệt Dự chi đã lưu.");
-        }
-        if (!isDuChiApprovalRecordConsistent(stored)) {
-            throw new Error("Mã phiếu và loại giao dịch Dự chi không khớp.");
-        }
-        for (var i = 0; i < fields.length; i++) expense[fields[i]] = stored[fields[i]];
-        return expense;
-    } finally {
-        stored.doClose();
-    }
+    return syncPaymentApprovalFromDatabase(expense);
 }
 
 function isDuChiApprovalRecordConsistent(record) {
