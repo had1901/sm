@@ -209,6 +209,9 @@ function run() {
             case "getAccountingErrorExecutorOptions":
                 result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.getAccountingErrorExecutorOptions(input);
                 break;
+            case "listPaymentXdcbContracts": // Chỉ đọc HĐ S4 cho popup Thanh toán, áp quyền/phạm vi Thanh toán.
+                result = lib.ESD_HTKT_EXPENSE_CONTRACT.listPaymentXdcbContracts(input);
+                break;
             //Du chi
             case "listExpenseContracts": // Danh sách HĐ/KMS theo hạng mục trên phiếu Dự chi: HHDV lấy S2, XDCB lấy S4.
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseContracts(input);

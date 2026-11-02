@@ -1,7 +1,7 @@
 /**
  * ScriptLibrary: ESD_HTKT_EXPENSE_CONTRACT
- * Đọc HĐ S4 theo quyền Dự chi; cung cấp khóa gói thầu cho resolver NCC.
- * API này không thay đổi listPurchaseContracts của Thanh toán/Tạm ứng.
+ * Đọc HĐ S4 theo quyền của từng luồng; cung cấp khóa gói thầu cho resolver NCC Dự chi.
+ * Nhánh đọc Thanh toán độc lập, không thay đổi listPurchaseContracts của S2/Tạm ứng.
  */
 
 /** Nguồn HĐ được xác định từ phiếu đã lưu, không lấy từ lựa chọn phía client. */
@@ -81,13 +81,89 @@ function listExpenseContracts(input) {
     }
 }
 
-/** Lọc, đếm và phân trang HĐ S4 đủ điều kiện trong phạm vi người dùng. */
+/** Dự chi: xác định phạm vi bằng quyền Dự chi rồi đọc HĐ S4 đủ điều kiện. */
 function listExpenseXdcbContracts(input) {
+    try {
+        var params = expenseContractParams(input);
+        return expenseContractReadXdcb(params, expenseContractScope(params.currentUser, params.paymentId));
+    } catch (error) {
+        return { 
+            success: false, 
+            data: [], 
+            totalCount: 0, 
+            returnedCount: 0, 
+            hasMore: false,
+            errorCode: error.expenseContractCode || "EXPENSE_CONTRACT_READ_FAILED", 
+            message: String(error.message || error) 
+        };
+    }
+}
+
+/** Thanh toán: chỉ đọc HĐ S4 bằng quyền tạo Thanh toán, không tạo phiếu/NCC hay dùng quyền Dự chi. */
+function listPaymentXdcbContracts(input) {
+    try {
+        var params = expenseContractParams(input);
+        var scopeQuery = expenseContractScope(params.currentUser, null, "PAYMENT");
+        var category = expenseContractText(params.category);
+        if (category && category !== "HD_GT") {
+            throw expenseContractError("XDCB_CATEGORY_UNSUPPORTED", "Nguồn XDCB hiện chỉ hỗ trợ Hợp đồng.");
+        }
+        var sortMap = { 
+            id: "id", 
+            category: "id", 
+            name: "name", 
+            currency: "currency", 
+            "created.at": "effectiveDate",
+            totalValue: "contractAmount", 
+            status: "status", 
+            "executor.id": "responsibleOfficer" 
+        };
+        var sort = expenseContractText(params.sortField);
+        if (sort && !Object.prototype.hasOwnProperty.call(sortMap, sort)) {
+            throw expenseContractError("INVALID_SORT_FIELD", "Cột sắp xếp HĐ XDCB không hợp lệ.");
+        }
+        var result = expenseContractReadXdcb({
+            start: params.start, 
+            count: params.count, 
+            keyword: params.keyword,
+            effectiveDateFrom: expenseContractText(params.createdAtFrom).substring(0, 10),
+            effectiveDateTo: expenseContractText(params.createdAtTo).substring(0, 10),
+            sortField: sort ? sortMap[sort] : "id", 
+            sortOrder: Number(params.sortOrder) === -1 ? "desc" : "asc"
+        }, scopeQuery);
+        if (result.success) {
+            for (var i = 0; i < result.data.length; i++) {
+                var row = result.data[i];
+                // Popup cũ nhận cùng cấu trúc S2, nhưng mã và khóa HĐ S4 luôn là field id.
+                row.category = "HD_GT";
+                row.totalValue = row.contractAmount;
+                row["created.at"] = row.effectiveDate;
+                row["start.date"] = row.effectiveDate;
+                row["expected.end.date"] = row.expireDate;
+                row["contract.no"] = row.id;
+                row["executor.id"] = row.responsibleOfficer;
+            }
+        }
+        result.contractCategory = "XDCB";
+        return result;
+    } catch (error) {
+        return { 
+            success: false, 
+            data: [], 
+            totalCount: 0, 
+            returnedCount: 0, 
+            hasMore: false,
+            errorCode: error.expenseContractCode || "PAYMENT_CONTRACT_READ_FAILED", 
+            message: String(error.message || error) 
+        };
+    }
+}
+
+/** Đếm/lọc/phân trang S4 dùng chung; scopeQuery đã được entrypoint kiểm tra theo đúng loại phiếu. */
+function expenseContractReadXdcb(params, scopeQuery) {
     var countFile = null;
     var contractFile = null;
     try {
-        var params = expenseContractParams(input);
-        var scopeQuery = expenseContractScope(params.currentUser, params.paymentId);
         var start = expenseContractPageNumber(params.start, 1);
         var count = Math.min(expenseContractPageNumber(params.count, 10), 100);
         var projectType = expenseContractText(params.projectType);
@@ -130,8 +206,14 @@ function listExpenseXdcbContracts(input) {
         if (dateTo) conditions.push('effective.date < "' + expenseContractNextDate(dateTo) + ' 00:00:00"');
 
         var sortFields = {
-            id: "id", contractCode: "id", name: "contract.name",
-            contractAmount: "contract.amount", effectiveDate: "effective.date", status: "status", responsibleOfficer: "responsible.officer"
+            id: "id", 
+            contractCode: "id", 
+            name: "contract.name",
+            contractAmount: "contract.amount", 
+            effectiveDate: "effective.date", 
+            status: "status", 
+            responsibleOfficer: "responsible.officer", 
+            currency: "currency"
         };
         var requestedSort = expenseContractText(params.sortField) || "id";
         var sortField = sortFields[requestedSort];
@@ -214,8 +296,8 @@ function getExpenseXdcbContract(input) {
     }
 }
 
-/** Áp dụng phạm vi HĐ như S2, ánh xạ executor.id/unit.lv1 sang field S4. */
-function expenseContractScope(currentUser, paymentId) {
+/** Ánh xạ phạm vi S2 sang S4; mặc định quyền Dự chi, chỉ entrypoint Thanh toán truyền PAYMENT. */
+function expenseContractScope(currentUser, paymentId, selectionType) {
     var actor = expenseContractText(currentUser);
     if (!actor) throw expenseContractError("MISSING_ACTOR", "Không xác định được người thực hiện.");
     var contact = null;
@@ -238,7 +320,8 @@ function expenseContractScope(currentUser, paymentId) {
         expenseContractClose(contact);
     }
     var rights = expenseContractArray(lib.ESD_PERMS_RIGHTS.permsRight(contactId));
-    if (rights.indexOf("0040040004000001") < 0) {
+    var isPayment = selectionType === "PAYMENT";
+    if (!isPayment && rights.indexOf("0040040004000001") < 0) {
         throw expenseContractError("EXPENSE_VIEW_DENIED", "Không có quyền xem dữ liệu Dự chi.");
     }
     var permission = lib.ESD_PERMS_RIGHTS.getUnitByDataPermissions(contactId, "00401") || {};
@@ -247,7 +330,12 @@ function expenseContractScope(currentUser, paymentId) {
         throw expenseContractError("CONTRACT_SCOPE_EMPTY", "Hồ sơ người thực hiện chưa có đơn vị cấp 1 để kiểm tra phạm vi HĐ XDCB.");
     }
     var conditions = [];
-    var role = expenseContractSelectionRole(paymentId);
+    // Nhánh Thanh toán lấy vai trò từ quyền thật trên SM, không nhận initialRole/scope/unit từ client.
+    var role = isPayment ? lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.htktCreatePay_detectInitialRoleByRights(contactId) :
+            expenseContractSelectionRole(paymentId);
+    if (isPayment && (!role || rights.indexOf("0040040003000001") < 0 || rights.indexOf("0040040003000010") >= 0)) {
+        throw expenseContractError("PAYMENT_CREATE_DENIED", "Không có quyền chọn HĐ để tạo phiếu Thanh toán.");
+    }
     if (role === "dmms") {
         conditions.push('responsible.officer="' + expenseContractQuote(contactId) + '"');
     }
