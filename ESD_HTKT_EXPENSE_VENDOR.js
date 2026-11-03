@@ -484,25 +484,42 @@ function getExpenseVendorOglStatus(vendorId) {
  * Giữ site đã kiểm tra tồn tại; nếu chưa có thì tìm site mặc định theo cùng danh sách của Save.
  */
 function getExpenseVendorOglSite(vendorId, siteId, branchCode, contractCategory) {
+    // 1. Luồng XDCB giữ nguyên
     if (contractCategory === "XDCB") {
         var xdcbConfig = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB");
         var xdcbSite = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSite(vendorId, branchCode, xdcbConfig.siteCode);
         if (!xdcbSite) throw new Error("Không tìm thấy site XDCB hợp lệ của NCC tại chi nhánh phiếu.");
         return normalizeExpenseVendorValue(xdcbSite.id);
     }
+    
+    // 2. Nếu đã có site hợp lệ rồi thì giữ nguyên
     if (siteId) return siteId;
 
-    var defaultSite = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
-    if (!defaultSite || !defaultSite.siteCode) throw new Error("Chưa cấu hình site OGL mặc định.");
+    // 3. Lấy danh sách site của NCC
     var vendorSites = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vendorId, branchCode);
-    for (var i = 0; vendorSites && i < vendorSites.length; i++) {
-        var vendorSite = vendorSites[i];
-        if (normalizeExpenseVendorValue(vendorSite["ogl.site.code"]) === normalizeExpenseVendorValue(defaultSite.siteCode)) {
-            var selectedId = normalizeExpenseVendorValue(vendorSite["id"]);
-            if (selectedId) return selectedId;
+    if (!vendorSites || vendorSites.length === 0) {
+        throw new Error("Không tìm thấy site OGL nào của NCC " + vendorId + " tại chi nhánh " + branchCode + ".");
+    }
+
+    var defaultSite = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+    var matchedSiteId = null;
+
+    // 3.1 Cố gắng tìm site khớp cấu hình mặc định
+    if (defaultSite && defaultSite.siteCode) {
+        for (var i = 0; i < vendorSites.length; i++) {
+            if (normalizeExpenseVendorValue(vendorSites[i]["ogl.site.code"]) === normalizeExpenseVendorValue(defaultSite.siteCode)) {
+                matchedSiteId = normalizeExpenseVendorValue(vendorSites[i]["id"]);
+                break;
+            }
         }
     }
-    throw new Error("Không tìm thấy site OGL mặc định của NCC " + vendorId + " tại chi nhánh " + branchCode + ".");
+
+    // 3.2 AUTO-FILL (Cách 2): Nếu khớp default thì lấy, KHÔNG khớp thì lấy luôn site ĐẦU TIÊN
+    if (matchedSiteId) {
+        return matchedSiteId;
+    } else {
+        return normalizeExpenseVendorValue(vendorSites[0]["id"]);
+    }
 }
 
 /**
