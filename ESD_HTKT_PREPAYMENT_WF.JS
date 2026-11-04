@@ -28,6 +28,7 @@ var WF_CONFIG = {
     SERVICE_NAME: "ESD_HTKT_PREPAYMENT_WF",
     SERVICE_VERSION: "2.1.0"
 };
+var HTKT_SLA_RETURN_CONTEXT_VARIABLE = "$L.htkt.sla.prepayment.return.contexts";
 
 var NEXT_PHASE_MAP = {
     "initial_dmms": "dmms_initiated",
@@ -43,11 +44,13 @@ var STATUS_MAP = {
     "dmms_created": "Tạo mới",
     "kttc_created": "Tạo mới",
     "dmms_initiated": "Chờ KTTC xử lý",
-    "kttc_checked": "Chờ phê duyệt",
-    "dmms_checked": "Chờ phê duyệt",
-    "dmms_approved": "Chờ phê duyệt",
-    "kttc_approved": "Chờ phê duyệt",
-    "checked": "Chờ phê duyệt",
+    "kttc_checked": "Chờ KTTC rà soát",
+    "dmms_checked": "Chờ DMMS rà soát",
+    "dmms_approved": "Chờ DMMS phê duyệt",
+    "kttc_approved": "Chờ KTTC phê duyệt",
+    // `checked` là trạng thái sau Rà soát 2; phase `check_final` vẫn phải
+    // được ưu tiên ở lớp hiển thị để hiện "Chờ cấp có thẩm quyền phê duyệt".
+    "checked": "Chờ KTTC rà soát",
     "approved": "Đã phê duyệt",
     "cancelled": "Đã xóa",
     "request_edit": "Chờ chỉnh sửa",
@@ -78,20 +81,108 @@ var HTKT_WF_DSM_STATUS = {
  * 2. CÁC HÀM KIỂM TRA QUYỀN HẠN & TRẠNG THÁI (PERMISSION & ACTION CHECKS)
  * ============================================================================= */
 
+/*
+ * HẬU KIỂM không được thao tác các action workflow của hồ sơ.
+ * Chỉ bổ sung lớp phủ quyết theo right riêng của module; các điều kiện
+ * phase/actor hiện hữu bên dưới được giữ nguyên cho mọi role khác.
+ */
+function isPostAuditContext(record) {
+    try {
+        if (String(vars["$L.isFromHK"] || "").trim().toLowerCase() === "true") {
+            return true;
+        }
+
+        var contextCandidates = [
+            record && record.menuContext,
+            record && record["menu.context"],
+            vars["$L.menuContext"],
+            vars["$G.menuContext"],
+            vars["$G.HTKT_PREPAYMENT_MENU_CONTEXT"],
+            vars["$G.HD.Back"],
+            vars["$L.wizard.name"],
+            vars["$L.format"]
+        ];
+
+        for (var contextIndex = 0; contextIndex < contextCandidates.length; contextIndex++) {
+            var context = String(contextCandidates[contextIndex] || "").trim().toLowerCase();
+            if (context === "post_audit" ||
+                    context.indexOf("post audit") >= 0 ||
+                    context.indexOf("postaudit") >= 0) {
+                return true;
+            }
+        }
+    } catch (ePostAuditContext) {}
+
+    return false;
+}
+
+function isPostAuditOperator(record) {
+    if (!isPostAuditContext(record)) return false;
+
+    try {
+        var currentUser = "";
+
+        if (vars.$lo_operator) {
+            currentUser = vars.$lo_operator["contact.name"] ||
+                    vars.$lo_operator["contact"] ||
+                    vars.$lo_operator["name"] ||
+                    "";
+        }
+
+        currentUser = String(
+                currentUser ||
+                vars["$lo.contact.name"] ||
+                vars["$lo.user.name"] ||
+                htktWfCurrentUser() ||
+                ""
+        ).trim();
+
+        if (!currentUser) return false;
+
+        var rights = lib.ESD_PERMS_RIGHTS.permsRight(currentUser) || [];
+
+        if (rights && rights.toArray) rights = rights.toArray();
+
+        for (var i = 0; i < rights.length; i++) {
+            if (String(rights[i] || "").trim() === "0040040002000010") {
+                return true;
+            }
+        }
+    } catch (ePostAudit) {
+        // Không mở rộng quyền khi không đọc được rights.
+    }
+
+    return false;
+}
+
+/* Condition hiển thị option "Phiếu In" trên esdHTKTprepayment.view. */
+function checkShowPrint(record) {
+    return isPostAuditOperator(record) ? "F" : "T";
+}
+
+/* Condition hiển thị option "Xóa" trên esdHTKTprepayment.view. */
+function checkShowCancel(record) {
+    return isPostAuditOperator(record) ? "F" : "T";
+}
+
 function checkShowApproval(record) {
+    if (isPostAuditOperator(record)) return "F";
+
     var currentUser = vars.$lo_operator["contact.name"];
-    if ((record["created.by"] == currentUser && record["initial.role"] == "kttc") ||
-            record["user.checker.kttc"] == currentUser) {
+    if ((htktWfSameUser(record["created.by"], currentUser) && record["initial.role"] == "kttc") ||
+            htktWfSameUser(record["user.checker.kttc"], currentUser)) {
         return "T";
     }
     return "F";
 }
 
 function checkCanSave(record) {
+    if (isPostAuditOperator(record)) return "F";
+
     var currentUser = vars.$lo_operator["contact.name"];
-    if ((record["created.by"] == currentUser && record["initial.role"] == "kttc" && record["current.phase"] == "initial_kttc") ||
-            (record["created.by"] == currentUser && record["initial.role"] == "dmms" && record["current.phase"] == "initial_dmms") ||
-            (record["user.checker.kttc"] == currentUser && record["current.phase"] == "initial_kttc")
+    if ((htktWfSameUser(record["created.by"], currentUser) && record["initial.role"] == "kttc" && record["current.phase"] == "initial_kttc") ||
+            (htktWfSameUser(record["created.by"], currentUser) && record["initial.role"] == "dmms" && record["current.phase"] == "initial_dmms") ||
+            (htktWfSameUser(record["user.checker.kttc"], currentUser) && record["current.phase"] == "initial_kttc")
     ) {
         return "T";
     }
@@ -99,6 +190,8 @@ function checkCanSave(record) {
 }
 
 function checkCanReturn(record) {
+    if (isPostAuditOperator(record)) return "F";
+
     var fieldCheck = null;
     var currentPhase = record.current_phase || record["current.phase"];
     var currentUser = vars.$lo_operator["contact.name"];
@@ -133,14 +226,18 @@ function checkCanReturn(record) {
 }
 
 function canEditInCurrenPhase(record) {
+    // Màn hình hậu kiểm luôn chỉ xem, kể cả người dùng đồng thời có quyền
+    // khởi tạo KTTC/DMMS và hồ sơ đang ở phase initial_*.
+    if (isPostAuditContext(record)) return false;
+
     var currentUser = vars.$lo_operator["contact.name"];
     var currentPhase = record.current_phase || record["current.phase"];
 
     switch (currentPhase) {
         case "initial_dmms":
-            return record["created.by"] == currentUser && record["initial.role"] == "dmms";
+            return htktWfSameUser(record["created.by"], currentUser) && record["initial.role"] == "dmms";
         case "initial_kttc":
-            return record["created.by"] == currentUser && record["initial.role"] == "kttc";
+            return htktWfSameUser(record["created.by"], currentUser) && record["initial.role"] == "kttc";
         case "check_dmms":
         case "approval_dmms":
         case "approval_kttc":
@@ -319,6 +416,10 @@ function createApprovalHistory(record) {
 }
 
 function cancelRequest(record) {
+    if (isPostAuditOperator(record)) {
+        throw new Error("Cán bộ Hậu kiểm không được thực hiện thao tác này.");
+    }
+
     // Bo sung duy nhat cho nut Xoa lon tren Workflow SM: go lien ket hoa don.
     var cancelPrepaymentId = String(record["id"] || record.id || "").trim();
     if (!cancelPrepaymentId) {
@@ -363,7 +464,121 @@ function getReturnToUpdatePhase(record) {
     return "";
 }
 
+function htktWfSlaReturnContexts() {
+    var raw = vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE];
+    if (!raw) return {};
+    var contexts = JSON.parse(String(raw));
+    if (!contexts || Object.prototype.toString.call(contexts) !== "[object Object]") {
+        throw new Error("SLA_INVALID_RETURN_CONTEXT");
+    }
+    return contexts;
+}
+
+/** Capture before mutating the live SM record. No Tracking/Segment writes here. */
+function htktWfPrepareReturnSla(record, returnPhase) {
+    if (String(record.status || "") === "request_edit") return;
+    var engine = lib.ESD_HTKT_SLA_ENGINE;
+    if (!engine || typeof engine.snapshot !== "function" || typeof engine.onWorkflowChanged !== "function") {
+        throw new Error("Thiếu ESD_HTKT_SLA_ENGINE để ghi SLA khi trả sửa.");
+    }
+    var before = engine.snapshot(record);
+    if (!before || !before.id || before["transaction.type"] !== "Tạm ứng") {
+        throw new Error("SLA_INVALID_PREPAYMENT_RETURN");
+    }
+    var contexts = htktWfSlaReturnContexts();
+    var key = "$" + before.id;
+    if (contexts[key] && contexts[key].state !== "DONE") {
+        // A native save may fail before the completion hook runs. Retrying the
+        // same unsaved return keeps its original snapshot and performs no SLA IO.
+        if (contexts[key].state === "PENDING" &&
+                JSON.stringify(contexts[key].before) === JSON.stringify(before)) return;
+        throw new Error("SLA_RETURN_NOT_COMPLETED: " + before.id);
+    }
+    var after = JSON.parse(JSON.stringify(before));
+    after["current.phase"] = returnPhase;
+    after.status = "request_edit";
+    contexts[key] = { before: before, after: after, state: "PENDING" };
+    vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+}
+
+/** Native Return Process: call AFTER the request_edit record is saved successfully.
+ * Read back the committed record; a failed/unfinished native save must not open SLA.
+ * The context also lets the phase hook and the Process share one RETURN delivery.
+ */
+function completeReturnSlaAfterSave(record) {
+    var id = String(record && record.id || "").trim();
+    if (!id) throw new Error("SLA_MISSING_PAYMENT");
+    if (String(record.status || "") !== "request_edit") {
+        return { success: true, skipped: true, reason: "NOT_RETURN" };
+    }
+    var contexts = htktWfSlaReturnContexts();
+    var key = "$" + id;
+    var context = contexts[key];
+    if (!context || !context.before || !context.after) {
+        throw new Error("SLA_RETURN_CONTEXT_MISSING: " + id);
+    }
+    if (context.state === "DONE") {
+        return { success: true, skipped: true, reason: "RETURN_ALREADY_APPLIED" };
+    }
+    if (context.state !== "PENDING") {
+        throw new Error("SLA_RETURN_RECONCILIATION_REQUIRED: " + id);
+    }
+    var saved = null;
+    try {
+        saved = new SCFile("esdHTKTprepayment", SCFILE_READONLY);
+        var queryId = id.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        if (saved.doSelect('id="' + queryId + '"') !== RC_SUCCESS) {
+            throw new Error("SLA_RETURN_PAYMENT_NOT_FOUND: " + id);
+        }
+        var engine = lib.ESD_HTKT_SLA_ENGINE;
+        var committed = engine.snapshot(saved);
+        for (var field in context.after) if (Object.prototype.hasOwnProperty.call(context.after, field)) {
+            // Native workflow may recalculate this derived display field on save.
+            if (field === "current.executor") continue;
+            if (committed[field] !== context.after[field]) {
+                throw new Error("SLA_RETURN_NOT_COMMITTED: " + id + " field=" + field);
+            }
+        }
+        // A failed SLA write can leave a partial plan. Do not automatically replay
+        // it through a second native hook; retain the context for reconciliation.
+        context.state = "APPLYING";
+        vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+        var result;
+        try {
+            result = engine.onWorkflowChanged(context.before, saved);
+            if (!result || result.success !== true) throw new Error("SLA_RETURN_WRITE_FAILED");
+        } catch (slaError) {
+            context.state = "FAILED";
+            context.error = String(slaError.message || slaError);
+            vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+            throw new Error("Phiếu đã lưu trả sửa nhưng ghi SLA thất bại. Cần đối soát trước khi gọi lại. " + context.error);
+        }
+        context.state = "DONE";
+        vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+        return result;
+    } finally {
+        try { if (saved) saved.doClose(); } catch (closeError) {}
+    }
+}
+
+/** Replace the phase Rule Set's direct engine call with this entry point.
+ * TRANSITION uses the native before/after records; RETURN uses the saved snapshot.
+ */
+function onSlaWorkflowChanged(oldRecord, record) {
+    if (record && String(record.status || "") === "request_edit") {
+        return completeReturnSlaAfterSave(record);
+    }
+    var id = String(record && record.id || "").trim();
+    var context = htktWfSlaReturnContexts()["$" + id];
+    if (context && context.state !== "DONE") throw new Error("SLA_RETURN_NOT_COMPLETED: " + id);
+    return lib.ESD_HTKT_SLA_ENGINE.onWorkflowChanged(oldRecord, record);
+}
+
 function returnToUpdate(record, documentsAlreadyDeleted) {
+    if (isPostAuditOperator(record)) {
+        throw new Error("Cán bộ Hậu kiểm không được thực hiện thao tác này.");
+    }
+
     var returnPhase = getReturnToUpdatePhase(record);
     if (!returnPhase) {
         throw new Error("Không xác định được initial.role để trả phiếu về chỉnh sửa.");
@@ -379,6 +594,8 @@ function returnToUpdate(record, documentsAlreadyDeleted) {
             );
         }
     }
+
+    htktWfPrepareReturnSla(record, returnPhase);
 
     // 1. Cập nhật trạng thái phiếu
     record["current.phase"] = returnPhase;
@@ -1551,6 +1768,8 @@ function validateLatestWorkflowActor(record) {
 
 // trưởng thêm: Kiểm tra quyền hiển thị Workflow Action Test ký.
 function checkCanSign(record) {
+    if (isPostAuditOperator(record)) return "F";
+
     var actorResult = validateCurrentActor(record);
 
     if (!actorResult || actorResult.success !== true) {
@@ -1597,6 +1816,13 @@ function getWorkflowConfig() {
 
 /* Trình phiếu: validate cũ -> sinh/upload PDF -> gọi nguyên updateNextStatus() */
 function submitForApproval(record) {
+    if (isPostAuditOperator(record)) {
+        return htktWfFail(
+                "POST_AUDIT_ACTION_NOT_ALLOWED",
+                "Cán bộ Hậu kiểm không được thực hiện thao tác này."
+        );
+    }
+
     var phase = htktWfPhase(record);
     if (!htktWfIsSubmissionPhaseValue(phase)) {
         return htktWfFail("INVALID_SUBMISSION_PHASE", "Chỉ được sinh bản trình ký tại bước Trình phê duyệt.", "currentPhase=" + phase);
@@ -1919,6 +2145,13 @@ function invalidateDocumentsBeforeReturn(record) {
 
 /* Xóa cứng ECM trước, sau đó mới gọi nguyên returnToUpdate() cũ. */
 function requestCorrection(record) {
+    if (isPostAuditOperator(record)) {
+        return htktWfFail(
+                "POST_AUDIT_ACTION_NOT_ALLOWED",
+                "Cán bộ Hậu kiểm không được thực hiện thao tác này."
+        );
+    }
+
     var phase = htktWfPhase(record);
 
     try {
