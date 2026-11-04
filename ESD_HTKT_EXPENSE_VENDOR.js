@@ -322,6 +322,7 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
     var paymentFile = null;
     var itemFile = null;
     var data = { total: 0, synced: 0, skipped: 0, failed: 0, items: [] };
+    var expensePerformance = expensePerformanceCreate(checkOnly ? "ogl.checkOnly" : "ogl.sync", paymentId, 0);
 
     if (!paymentId || !currentUser) {
         return { success: false, message: "Thiếu mã phiếu Dự chi hoặc người thực hiện." };
@@ -353,7 +354,9 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
             return { success: false, message: "Không có quyền đồng bộ OGL tại bước hiện tại của phiếu Dự chi." };
         }
 
-        var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(paymentFile["unit.lv1"]);
+        var entityInfo = expensePerformanceMeasure(expensePerformance, "entity.map", function() {
+            return lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(paymentFile["unit.lv1"]);
+        });
         if (!entityInfo || !entityInfo.entity || !entityInfo.oglBranchCode) {
             return { success: false, message: "Không xác định được entity/mã chi nhánh OGL của phiếu Dự chi." };
         }
@@ -364,7 +367,9 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
         itemFile = checkOnly
                 ? new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY)
                 : new SCFile("esdHTKTpaymentVendor");
-        var itemRc = itemFile.doSelect('payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
+        var itemRc = expensePerformanceMeasure(expensePerformance, "items.select", function() {
+            return itemFile.doSelect('payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
+        });
         while (itemRc === RC_SUCCESS) {
             var itemId = normalizeExpenseVendorValue(itemFile["id"]);
             var wasSynced = isExpenseVendorOglSynced(itemFile["ogl.sync.status"]);
@@ -373,9 +378,13 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
             try {
                 var vendorId = normalizeExpenseVendorValue(itemFile["vendor.id"]);
                 var siteId = normalizeExpenseVendorValue(itemFile["vendor.site.id"]);
-                getExpenseVendorOglStatus(vendorId);
-                var hasSelectedSite = siteId && lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vendorId, branchCode)
-                        .some(function(site) { return normalizeExpenseVendorValue(site["id"]) === siteId; });
+                expensePerformanceMeasure(expensePerformance, "vendor.precheck", function() {
+                    return getExpenseVendorOglStatus(vendorId);
+                });
+                var hasSelectedSite = siteId && expensePerformanceMeasure(expensePerformance, "site.checkSelected", function() {
+                    return lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vendorId, branchCode)
+                            .some(function(site) { return normalizeExpenseVendorValue(site["id"]) === siteId; });
+                });
                 if (contractCategory === "XDCB") {
                     lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.validateExpenseXdcbItem(itemFile, currentUser);
                     var xdcbConfig = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB");
@@ -400,23 +409,31 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
                     // Chỉ tin khi nó thực sự xác nhận đồng bộ trên record và master NCC.
                     itemFile["ogl.sync.status"] = false;
                     // Gọi tuần tự cùng hàm đồng bộ NCC/site mà Thanh toán đang dùng.
-                    var syncResult = contractCategory === "XDCB"
-                            ? lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.syncExpenseXdcbVendorToOgl(itemFile, branchCode, entityInfo.entity, currentUser)
-                            : lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(itemFile, branchCode, entityInfo.entity, syncUser);
+                    var syncResult = expensePerformanceMeasure(expensePerformance, "vendorSite.syncHelper", function() {
+                        return contractCategory === "XDCB"
+                                ? lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.syncExpenseXdcbVendorToOgl(itemFile, branchCode, entityInfo.entity, currentUser)
+                                : lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(itemFile, branchCode, entityInfo.entity, syncUser);
+                    });
                     if (!syncResult || syncResult.success !== true) {
                         throw new Error(syncResult && (syncResult.message || syncResult.error) || "Đồng bộ NCC/site OGL thất bại.");
                     }
-                    if (!isExpenseVendorOglSynced(itemFile["ogl.sync.status"]) || !getExpenseVendorOglStatus(vendorId)) {
+                    if (!isExpenseVendorOglSynced(itemFile["ogl.sync.status"]) || !expensePerformanceMeasure(expensePerformance, "vendor.postcheck", function() { return getExpenseVendorOglStatus(vendorId); })) {
                         throw new Error("Hàm đồng bộ chưa xác nhận NCC đã đồng bộ OGL.");
                     }
-                    siteId = getExpenseVendorOglSite(vendorId, siteId, branchCode, contractCategory);
+                    siteId = expensePerformanceMeasure(expensePerformance, "site.resolve", function() {
+                        return getExpenseVendorOglSite(vendorId, siteId, branchCode, contractCategory);
+                    });
                     itemFile["vendor.site.id"] = siteId;
                     itemFile["ogl.sync.status"] = true;
-                    var updateRc = itemFile.doUpdate();
+                    var updateRc = expensePerformanceMeasure(expensePerformance, "item.updateOgl", function() {
+                        return itemFile.doUpdate();
+                    });
                     if (updateRc !== RC_SUCCESS) {
                         throw new Error("OGL đã đồng bộ nhưng không lưu được trạng thái món. Code: " + updateRc);
                     }
-                    verifyExpenseVendorOglSaved(itemId, paymentId, vendorId, siteId);
+                    expensePerformanceMeasure(expensePerformance, "item.verifySaved", function() {
+                        return verifyExpenseVendorOglSaved(itemId, paymentId, vendorId, siteId);
+                    });
                     data.synced++;
                     data.items.push({ id: itemId, status: "synced", message: "Đã đồng bộ OGL." });
                 }
@@ -427,7 +444,9 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
                         (contractCategory === "XDCB" && !checkOnly && wasSynced)) {
                     itemFile["ogl.sync.status"] = false;
                     try {
-                        var resetRc = itemFile.doUpdate();
+                        var resetRc = expensePerformanceMeasure(expensePerformance, "item.resetOgl", function() {
+                            return itemFile.doUpdate();
+                        });
                         if (resetRc !== RC_SUCCESS) itemMessage += " Không gỡ được cờ đồng bộ sai. Code: " + resetRc;
                     } catch (resetError) {
                         itemMessage += " Không gỡ được cờ đồng bộ sai: " + String(resetError.message || resetError);
@@ -436,7 +455,7 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
                 data.failed++;
                 data.items.push({ id: itemId, status: "failed", message: itemMessage });
             }
-            itemRc = itemFile.getNext();
+            itemRc = expensePerformanceMeasure(expensePerformance, "items.next", function() { return itemFile.getNext(); });
         }
         if (itemRc !== RC_NO_MORE) {
             throw new Error("Không đọc được đầy đủ danh sách món Dự chi. Code: " + itemRc);
@@ -453,6 +472,9 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
     } finally {
         closeExpenseVendorFile(itemFile);
         closeExpenseVendorFile(paymentFile);
+        expensePerformanceFinish(expensePerformance, {
+            total: data.total, synced: data.synced, skipped: data.skipped, failed: data.failed
+        });
     }
 }
 
@@ -1442,25 +1464,32 @@ function importExpenseVendors(input) {
     var rows = params.rows instanceof Array ? params.rows : [];
     var payment = new SCFile("esdHTKTpayment");
     var created = [];
+    var expensePerformance = expensePerformanceCreate("import", paymentId, rows.length);
     try {
         if (!paymentId || !currentUser || !rows.length) {
             throw new Error("Thiếu mã phiếu, người thực hiện hoặc dữ liệu import.");
         }
-        expenseImportCheckPayment(payment, paymentId, currentUser);
+        expensePerformanceMeasure(expensePerformance, "payment.check", function() {
+            return expenseImportCheckPayment(payment, paymentId, currentUser);
+        });
         var importCategory = expenseVendorCheckContractCategory(payment);
         if (importCategory === "XDCB") {
             lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext({ "payment.id": paymentId }, currentUser, true);
         }
         var contractParams = importCategory === "XDCB"
                 ? { currentUser: currentUser, contractCategory: "XDCB", paymentId: paymentId }
-                : expenseImportGetContractParams(payment, currentUser);
+                : expensePerformanceMeasure(expensePerformance, "user.context", function() {
+                    return expenseImportGetContractParams(payment, currentUser);
+                });
         contractParams.paymentId = paymentId;
         var cache = { contracts: {}, vendors: {}, links: {}, importedPairs: {} };
         var valid = [];
         var errors = [];
         for (var i = 0; i < rows.length; i++) {
             try {
-                valid.push(expenseImportValidateRow(rows[i], contractParams, cache));
+                valid.push(expensePerformanceMeasure(expensePerformance, "row.validate", function() {
+                    return expenseImportValidateRow(rows[i], contractParams, cache);
+                }));
             }
             catch (rowError) {
                 var fileName = normalizeExpenseVendorValue(rows[i] && rows[i].sourceFile);
@@ -1480,31 +1509,41 @@ function importExpenseVendors(input) {
                 createdItems: []
             };
         }
-        expenseImportCheckPayment(payment, paymentId, currentUser);
+        expensePerformanceMeasure(expensePerformance, "payment.recheck", function() {
+            return expenseImportCheckPayment(payment, paymentId, currentUser);
+        });
         for (var j = 0; j < valid.length; j++) {
             var row = valid[j];
             if (row.contractCategory === "XDCB") {
                 // Cùng resolver với Save; không cần nạp trước NCC S4 vào danh mục S6.
                 row.vendorId = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.ensureExpenseXdcbVendor(row.supplier, currentUser);
             }
-            var itemId = generateExpensePaymentVendorId();
+            var itemId = expensePerformanceMeasure(expensePerformance, "item.number", function() {
+                return generateExpensePaymentVendorId();
+            });
             created.push({ id: itemId, contractCode: row.contractCode });
             var item = new SCFile("esdHTKTpaymentVendor");
             try {
                 expenseImportSetItem(item, itemId, paymentId, row, payment["description"]);
-                var rc = item.doAction("add");
+                var rc = expensePerformanceMeasure(expensePerformance, "item.add", function() {
+                    return item.doAction("add");
+                });
                 if (rc !== RC_SUCCESS) {
                     throw new Error("Không tạo được món tại dòng " + row.sourceRow + ". Code: " + rc);
                 }
 
-                const selectRc = item.doSelect('id="' + escapeExpenseVendorQueryValue(itemId) + '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"')
+                const selectRc = expensePerformanceMeasure(expensePerformance, "item.readback", function() {
+                    return item.doSelect('id="' + escapeExpenseVendorQueryValue(itemId) + '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
+                });
                 if (selectRc !== RC_SUCCESS) {
                     throw new Error("Không đọc lại được món " + itemId + ".");
                 }
 
                 // Giá trị mặc định của Add không được ghi đè số tiền/NCC đã validate.
                 expenseImportSetItem(item, itemId, paymentId, row, payment["description"]);
-                rc = item.doUpdate();
+                rc = expensePerformanceMeasure(expensePerformance, "item.updateAfterAdd", function() {
+                    return item.doUpdate();
+                });
                 if (rc !== RC_SUCCESS) {
                     throw new Error("Không lưu được món " + itemId + ". Code: " + rc);
                 }
@@ -1512,7 +1551,9 @@ function importExpenseVendors(input) {
                 closeExpenseVendorFile(item);
             }
         }
-        expenseImportRefreshTotals(payment, paymentId);
+        expensePerformanceMeasure(expensePerformance, "totals.final", function() {
+            return expenseImportRefreshTotals(payment, paymentId);
+        });
         return {
             success: true,
             message: "Đã import thành công " + created.length + "/" + rows.length + " bản ghi.",
@@ -1529,9 +1570,11 @@ function importExpenseVendors(input) {
         for (var k = created.length - 1; k >= 0; k--) {
             var rollback = new SCFile("esdHTKTpaymentVendor");
             try {
-                var rollbackRc = rollback.doSelect('id="' + escapeExpenseVendorQueryValue(created[k].id) + '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
+                var rollbackRc = expensePerformanceMeasure(expensePerformance, "rollback.read", function() {
+                    return rollback.doSelect('id="' + escapeExpenseVendorQueryValue(created[k].id) + '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
+                });
                 if (rollbackRc === RC_SUCCESS) {
-                    if (rollback.doDelete() !== RC_SUCCESS) {
+                    if (expensePerformanceMeasure(expensePerformance, "rollback.delete", function() { return rollback.doDelete(); }) !== RC_SUCCESS) {
                         throw new Error("Không thu hồi được món " + created[k].id + ".");
                     }
                 } else if (rollbackRc !== RC_NO_MORE) {
@@ -1546,7 +1589,9 @@ function importExpenseVendors(input) {
         }
         if (created.length) {
             try {
-                expenseImportRefreshTotals(payment, paymentId);
+                expensePerformanceMeasure(expensePerformance, "totals.afterRollback", function() {
+                    return expenseImportRefreshTotals(payment, paymentId);
+                });
             }
             catch (totalError) {
                 var totalErrorMessage = String(totalError.message || totalError);
@@ -1566,7 +1611,13 @@ function importExpenseVendors(input) {
             errors: errors || [],
             createdItems: remaining
         };
-    } finally { closeExpenseVendorFile(payment); }
+    } finally {
+        closeExpenseVendorFile(payment);
+        expensePerformanceFinish(expensePerformance, {
+            inputRows: rows.length, validatedRows: valid ? valid.length : 0,
+            validationErrors: errors ? errors.length : 0, attemptedItemIds: created.length
+        });
+    }
 }
 
 /** Chặn import sai loại phiếu hoặc ngoài người/bước được sửa. */
@@ -1885,4 +1936,59 @@ function expenseImportRefreshTotals(payment, paymentId) {
             throw new Error("Không cập nhật được tổng món/số tiền trên phiếu Dự chi. Mã lỗi SM: " + updateRc + ".");
         }
     } finally { closeExpenseVendorFile(item); }
+}
+
+
+/** Temporary observation for expense import/OGL requests; no shared state or business writes. */
+function expensePerformanceCreate(action, paymentId, inputRows) {
+    try {
+        var enabled = true; // Set false after collecting the diagnostic measurements.
+        if (!enabled || String(paymentId || "").indexOf("DC.") !== 0) return null;
+        return { version: 1, action: action, paymentId: paymentId, inputRows: inputRows,
+            startedMs: new Date().getTime(), stages: {} };
+    } catch (ignored) { return null; }
+}
+
+/** Callback return values and thrown business errors pass through unchanged. */
+function expensePerformanceMeasure(profile, stage, operation) {
+    if (!profile) return operation();
+    var started = null;
+    try { started = new Date().getTime(); } catch (ignoredStart) {}
+    var operationThrew = true;
+    try {
+        var value = operation();
+        operationThrew = false;
+        return value;
+    } finally {
+        try {
+            var elapsed = started === null ? 0 : Math.max(0, new Date().getTime() - started);
+            var stat = profile.stages[stage];
+            if (!stat) stat = profile.stages[stage] = { calls: 0, ms: 0, maxMs: 0, exceptions: 0 };
+            stat.calls++;
+            stat.ms += elapsed;
+            if (elapsed > stat.maxMs) stat.maxMs = elapsed;
+            if (operationThrew) stat.exceptions++;
+        } catch (ignoredTiming) {}
+    }
+}
+
+/** One compact log per API operation. Update timings include any synchronous SM triggers. */
+function expensePerformanceFinish(profile, counts) {
+    if (!profile) return;
+    try {
+        var totalMs = Math.max(0, new Date().getTime() - profile.startedMs);
+        var measuredMs = 0;
+        for (var name in profile.stages) {
+            if (Object.prototype.hasOwnProperty.call(profile.stages, name)) measuredMs += profile.stages[name].ms;
+        }
+        var stageMs = function(name) { return profile.stages[name] ? profile.stages[name].ms : 0; };
+        // Keep primary timings first: the existing HTTP logger truncates response bodies.
+        var result = { version: profile.version, action: profile.action, paymentId: profile.paymentId,
+            totalMs: totalMs, validationMs: stageMs("row.validate"), addMs: stageMs("item.add"),
+            updateMs: stageMs("item.updateAfterAdd") + stageMs("item.updateOgl"),
+            syncHelperMs: stageMs("vendorSite.syncHelper"), totalsMs: stageMs("totals.final"),
+            unmeasuredMs: Math.max(0, totalMs - measuredMs),
+            counts: counts, stages: profile.stages };
+        if (typeof print === "function") print("[DUCHI-PERF] " + JSON.stringify(result));
+    } catch (ignoredLog) {}
 }
