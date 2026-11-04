@@ -22,28 +22,31 @@ function run() {
 
         var result;
         switch (name) {
-            // Danh sách món Dự chi theo nhà cung cấp.
+                // Danh sách món Dự chi theo nhà cung cấp.
             case "getListExpenseVendor":
                 result = { success: true, data: getListExpenseVendor(input) };
                 break;
-            // Tạo esdHTKTpaymentVendor từ Hợp đồng/Khoản mua sắm được chọn.
+                // Tạo esdHTKTpaymentVendor từ Hợp đồng/Khoản mua sắm được chọn.
             case "createPaymentVendor":
                 result = createPaymentVendor(input);
                 break;
-            // Nhập danh sách món Dự chi từ file Excel.
+                // Nhập danh sách món Dự chi từ file Excel.
             case "importExpenseVendors":
                 result = importExpenseVendors(input);
                 break;
-            // Gắn danh sách hóa đơn vào món Dự chi theo nhà cung cấp.
+                // Gắn danh sách hóa đơn vào món Dự chi theo nhà cung cấp.
             case "createListInvoinVendor":
                 result = createListInvoinVendor(input);
                 break;
-            // Xóa món Dự chi theo ID esdHTKTpaymentVendor.
+                // Xóa món Dự chi theo ID esdHTKTpaymentVendor.
             case "deleteExpenseVendor":
                 result = deleteExpenseVendor(input);
                 break;
             case "syncExpenseVendorsToOgl":
                 result = syncExpenseVendorsToOgl(input);
+                break;
+            case "totalContractSuppliers":
+                result = { success: true, data: totalContractSuppliers(input) };
                 break;
             default:
                 result = {
@@ -72,8 +75,8 @@ function run() {
 function createListInvoinVendor(input) {
     var params = getExpenseVendorInputDetails(input);
     var rows = params.updatedSelectedRows instanceof Array
-        ? params.updatedSelectedRows
-        : (params instanceof Array ? params : []);
+            ? params.updatedSelectedRows
+            : (params instanceof Array ? params : []);
 
     if (rows.length === 0) {
         return {
@@ -84,10 +87,10 @@ function createListInvoinVendor(input) {
     }
 
     var paymentId = normalizeExpenseVendorValue(
-        rows[0].transactionId || rows[0].paymentId || params.paymentId
+            rows[0].transactionId || rows[0].paymentId || params.paymentId
     );
     var paymentVendorId = normalizeExpenseVendorValue(
-        rows[0].paymentVendorId || rows[0]["payment.vendor.id"] || params.paymentVendorId || params.id
+            rows[0].paymentVendorId || rows[0]["payment.vendor.id"] || params.paymentVendorId || params.id
     );
     var vendorId = normalizeExpenseVendorValue(rows[0].vendorId || params.vendorId);
 
@@ -173,13 +176,13 @@ function createListInvoinVendor(input) {
             var invoiceSumFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
             try {
                 var sumSql = 'SELECT i.grand.total FROM esdHTKTinvoice i ' +
-                    'JOIN esdHTKTpaymentInvoice pi ON (pi.invoice.id = i.id) ' +
-                    'WHERE pi.ref.id="' + escapeExpenseVendorQueryValue(paymentVendorId) + '"';
+                        'JOIN esdHTKTpaymentInvoice pi ON (pi.invoice.id = i.id) ' +
+                        'WHERE pi.ref.id="' + escapeExpenseVendorQueryValue(paymentVendorId) + '"';
                 var sumRc = invoiceSumFile.doSelect(sumSql);
                 while (sumRc === RC_SUCCESS) {
                     totalInvoiceAmount = lib.ESD_HTKT_Utils.addStringsManual(
-                        totalInvoiceAmount,
-                        String(invoiceSumFile["grand.total"] || "0")
+                            totalInvoiceAmount,
+                            String(invoiceSumFile["grand.total"] || "0")
                     );
                     totalInvoiceCount++;
                     sumRc = invoiceSumFile.getNext();
@@ -213,7 +216,7 @@ function createListInvoinVendor(input) {
             return {
                 success: true,
                 message: "Liên kết thành công các hóa đơn: " + successInvoiceIds.join(", ") +
-                    " (Thất bại " + (rows.length - successInvoiceIds.length) + " hóa đơn)",
+                        " (Thất bại " + (rows.length - successInvoiceIds.length) + " hóa đơn)",
                 checkStatus: checkStatusList
             };
         }
@@ -246,7 +249,7 @@ function deleteExpenseVendor(input) {
     var paymentFile = null;
     try {
         var query = 'id="' + escapeExpenseVendorQueryValue(paymentVendorId) +
-            '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"';
+                '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"';
         if (relationFile.doSelect(query) !== RC_SUCCESS) {
             return { success: false, status: "error", message: "Không tìm thấy món Dự chi cần xóa." };
         }
@@ -255,13 +258,13 @@ function deleteExpenseVendor(input) {
         if (deleteRc !== RC_SUCCESS) {
             return { success: false, status: "error", message: "Xóa món Dự chi thất bại. Code: " + deleteRc };
         }
-        
+
         paymentFile = new SCFile("esdHTKTpayment");
         if (paymentFile.doSelect('id="' + escapeExpenseVendorQueryValue(paymentId) + '"') !== RC_SUCCESS) {
             throw new Error("Không tìm thấy phiếu Dự chi " + paymentId + ".");
         }
         paymentFile["total.transaction"] = Math.max(
-            0, Number(paymentFile["total.transaction"] || 0) - 1
+                0, Number(paymentFile["total.transaction"] || 0) - 1
         );
         paymentFile["total.amount.paid"] = getExpenseTotalAmount(paymentId);
         var updateRc = paymentFile.doUpdate();
@@ -349,7 +352,7 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
         if (!canSync) {
             return { success: false, message: "Không có quyền đồng bộ OGL tại bước hiện tại của phiếu Dự chi." };
         }
-        
+
         var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(paymentFile["unit.lv1"]);
         if (!entityInfo || !entityInfo.entity || !entityInfo.oglBranchCode) {
             return { success: false, message: "Không xác định được entity/mã chi nhánh OGL của phiếu Dự chi." };
@@ -398,8 +401,8 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
                     itemFile["ogl.sync.status"] = false;
                     // Gọi tuần tự cùng hàm đồng bộ NCC/site mà Thanh toán đang dùng.
                     var syncResult = contractCategory === "XDCB"
-                        ? lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.syncExpenseXdcbVendorToOgl(itemFile, branchCode, entityInfo.entity, currentUser)
-                        : lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(itemFile, branchCode, entityInfo.entity, syncUser);
+                            ? lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.syncExpenseXdcbVendorToOgl(itemFile, branchCode, entityInfo.entity, currentUser)
+                            : lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(itemFile, branchCode, entityInfo.entity, syncUser);
                     if (!syncResult || syncResult.success !== true) {
                         throw new Error(syncResult && (syncResult.message || syncResult.error) || "Đồng bộ NCC/site OGL thất bại.");
                     }
@@ -441,8 +444,8 @@ function runExpenseVendorOglSync(params, submissionRecord, checkOnly) {
         return {
             success: data.failed === 0,
             message: data.total === 0 ? "Phiếu chưa có món Dự chi để đồng bộ OGL." :
-                "Đồng bộ OGL: thành công " + data.synced + " món, đã đồng bộ " + data.skipped +
-                " món, thất bại " + data.failed + " món.",
+                    "Đồng bộ OGL: thành công " + data.synced + " món, đã đồng bộ " + data.skipped +
+                    " món, thất bại " + data.failed + " món.",
             data: data
         };
     } catch (error) {
@@ -491,7 +494,7 @@ function getExpenseVendorOglSite(vendorId, siteId, branchCode, contractCategory)
         if (!xdcbSite) throw new Error("Không tìm thấy site XDCB hợp lệ của NCC tại chi nhánh phiếu.");
         return normalizeExpenseVendorValue(xdcbSite.id);
     }
-    
+
     // 2. Nếu đã có site hợp lệ rồi thì giữ nguyên
     if (siteId) return siteId;
 
@@ -562,21 +565,125 @@ function createPaymentVendor(input) {
         var contractCategory;
         try {
             if (paymentId.indexOf("DC.") !== 0 || sourceFile.doSelect(
-                    'id="' + escapeExpenseVendorQueryValue(paymentId) + '"') !== RC_SUCCESS ||
+                            'id="' + escapeExpenseVendorQueryValue(paymentId) + '"') !== RC_SUCCESS ||
                     normalizeExpenseVendorValue(sourceFile["transaction.type"]) !== "Dự chi") {
                 return { success: false, message: "Không tìm thấy phiếu Dự chi hợp lệ." };
             }
             contractCategory = expenseVendorCheckContractCategory(sourceFile);
         } finally { closeExpenseVendorFile(sourceFile); }
+
+        // 1. Logic validate chặn theo số tiền còn lại của hợp đồng (Tham khảo phần validate tạo phiếu của tạm ứng)
+        for (var c = 0; c < contracts.length; c++) {
+            var cItem = contracts[c] || {};
+            var cId = normalizeExpenseVendorValue(cItem.id || cItem["contract.id"]);
+            if (!cId) continue;
+            try {
+                var remainingContractValue = calculateContractRemainingValue(cId);
+
+                // Chặn tạo nếu giá trị HĐ còn lại = 0 (nếu remaining.amount là null thì là HĐ chưa thực hiện -> cho phép tạo)
+                if (remainingContractValue !== null && Number(remainingContractValue) <= 0) {
+                    var zeroMsg = contracts.length === 1
+                            ? "Tổng giá trị HĐ/KMS còn lại của hợp đồng đã về 0. Không thể tạo thêm món dự chi mới."
+                            : ("Tổng giá trị HĐ/KMS còn lại của hợp đồng " + cId + " đã về 0. Không thể tạo thêm món dự chi mới.");
+                    return {
+                        success: false,
+                        message: zeroMsg
+                    };
+                }
+            } catch (eCalc) {
+                return {
+                    success: false,
+                    message: "Lỗi hệ thống khi tính toán số dư hợp đồng: " + eCalc.toString()
+                };
+            }
+        }
+
         var xdcbContracts = {};
         if (contractCategory === "XDCB") {
             lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext({ "payment.id": paymentId }, currentUser, true);
             // Kiểm tra toàn bộ lựa chọn trước khi cấp số/ghi bất kỳ món nào.
             for (var c = 0; c < contracts.length; c++) {
                 var requestedId = normalizeExpenseVendorValue(contracts[c] && (contracts[c].id || contracts[c]["contract.id"]));
+                if (!requestedId || xdcbContracts["$" + requestedId]) continue;
                 var selectedContract = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSelection(requestedId, currentUser, paymentId);
                 lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(selectedContract);
                 xdcbContracts["$" + requestedId] = selectedContract;
+            }
+        }
+
+        // 2. Logic đếm số lượng NCC của hợp đồng và kiểm tra với số món NCC hiện có trong đề nghị dự chi
+        var contractBatchCounts = {};
+        for (var b = 0; b < contracts.length; b++) {
+            var cObj = contracts[b] || {};
+            var cIdKey = normalizeExpenseVendorValue(cObj.id || cObj["contract.id"]);
+            if (cIdKey) {
+                contractBatchCounts[cIdKey] = (contractBatchCounts[cIdKey] || 0) + 1;
+            }
+        }
+
+        for (var contractIdKey in contractBatchCounts) {
+            if (!Object.prototype.hasOwnProperty.call(contractBatchCounts, contractIdKey)) continue;
+
+            var existingVendorCount = countExpensePaymentVendors(paymentId, contractIdKey);
+            var xdcbContract = contractCategory === "XDCB" ? xdcbContracts["$" + contractIdKey] : null;
+            var totalSuppliers = getContractTotalSuppliers(contractIdKey, xdcbContract);
+
+            // Nếu số lượng món NCC ứng với ĐNDC trong bảng paymentVendor đã bằng số NCC của hợp đồng này -> không cho tạo nữa
+            if (totalSuppliers > 0) {
+                if (existingVendorCount >= totalSuppliers) {
+                    return {
+                        success: false,
+                        message: "Hợp đồng " + contractIdKey + " đã tạo đủ số lượng món dự chi tương ứng với số nhà cung cấp của hợp đồng (" + existingVendorCount + "/" + totalSuppliers + "). Không thể tạo thêm."
+                    };
+                }
+                if (existingVendorCount + contractBatchCounts[contractIdKey] > totalSuppliers) {
+                    return {
+                        success: false,
+                        message: "Hợp đồng " + contractIdKey + " chỉ có " + totalSuppliers + " nhà cung cấp. Số lượng món dự chi tạo mới vượt quá số nhà cung cấp còn lại (" + (totalSuppliers - existingVendorCount) + ")."
+                    };
+                }
+            }
+        }
+
+        // 3. Logic validate chặn trùng lặp bộ (contract.id, vendor.id) trong đề nghị dự chi
+        // Mỗi hợp đồng chỉ có 1 món dự chi với mỗi nhà cung cấp
+        var batchSeen = {};
+        for (var k = 0; k < contracts.length; k++) {
+            var contractCheck = contracts[k] || {};
+            var contractIdCheck = normalizeExpenseVendorValue(contractCheck.id || contractCheck["contract.id"]);
+            var vendorIdCheck = normalizeExpenseVendorValue(contractCheck.vendorId || contractCheck["vendor.id"] || contractCheck.vendor || contractCheck.supplierId || contractCheck["supplier.id"]);
+            if (!contractIdCheck) continue;
+
+            var pairKeyCheck = vendorIdCheck ? (contractIdCheck + "::" + vendorIdCheck) : contractIdCheck;
+            if (batchSeen[pairKeyCheck]) {
+                return {
+                    success: false,
+                    message: "Trong một đề nghị dự chi: mỗi hợp đồng chỉ có 1 món dự chi với mỗi nhà cung cấp (Hợp đồng: " + contractIdCheck + ")."
+                };
+            }
+            batchSeen[pairKeyCheck] = true;
+
+            // Kiểm tra món đã tồn tại trong phiếu Dự chi này
+            var existItemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+            try {
+                var existSql = 'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+                        '" and contract.id="' + escapeExpenseVendorQueryValue(contractIdCheck) + '"';
+                if (vendorIdCheck) {
+                    existSql += ' and vendor.id="' + escapeExpenseVendorQueryValue(vendorIdCheck) + '"';
+                } else {
+                    existSql += ' and (null(vendor.id) or vendor.id="" or vendor.id=NULL)';
+                }
+                if (existItemFile.doSelect(existSql) === RC_SUCCESS) {
+                    var dupMsg = vendorIdCheck
+                            ? ("Trong một đề nghị dự chi: mỗi hợp đồng chỉ có 1 món dự chi với mỗi nhà cung cấp (Hợp đồng: " + contractIdCheck + ").")
+                            : ("Hợp đồng " + contractIdCheck + " đã có món dự chi chưa chọn nhà cung cấp trong đề nghị dự chi.");
+                    return {
+                        success: false,
+                        message: dupMsg
+                    };
+                }
+            } finally {
+                closeExpenseVendorFile(existItemFile);
             }
         }
 
@@ -585,28 +692,34 @@ function createPaymentVendor(input) {
         for (var i = 0; i < contracts.length; i++) {
             var contract = contracts[i] || {};
             var contractId = normalizeExpenseVendorValue(contract.id || contract["contract.id"]);
-            if (!contractId || seen[contractId]) continue;
-            seen[contractId] = true;
+            var vendorId = normalizeExpenseVendorValue(contract.vendorId || contract["vendor.id"] || contract.vendor || contract.supplierId || contract["supplier.id"]);
+            if (!contractId) continue;
+            var pairKey = vendorId ? (contractId + "::" + vendorId) : contractId;
+            if (seen[pairKey]) continue;
+            seen[pairKey] = true;
 
             var paymentVendorId = generateExpensePaymentVendorId();
             var relationFile = new SCFile("esdHTKTpaymentVendor");
             try {
                 var firstCreatedItem = createdItems.length === 0;
-                var createdItem = { id: paymentVendorId, contractId: contractId };
+                var createdItem = { id: paymentVendorId, contractId: contractId, vendorId: vendorId };
                 // Theo dõi cả lần Add lỗi để thu hồi nếu trigger đã ghi một phần.
                 if (contractCategory === "XDCB") createdItems.push(createdItem);
                 relationFile["id"] = paymentVendorId;
                 relationFile["payment.id"] = paymentId;
                 relationFile["contract.id"] = contractId;
+                if (vendorId) {
+                    relationFile["vendor.id"] = vendorId;
+                }
                 relationFile["currency"] = contractCategory === "XDCB" ? xdcbContracts["$" + contractId].currency : contract.currency || "VND";
                 relationFile["amount"] = 0;
 
                 var addRc = relationFile.doAction("add");
                 if (addRc !== RC_SUCCESS) {
                     throw new Error(
-                        "Không ghi được hợp đồng " + contractId +
-                        " vào esdHTKTpaymentVendor. Code: " + addRc +
-                        " reason " + relationFile.getMessages()
+                            "Không ghi được hợp đồng " + contractId +
+                            " vào esdHTKTpaymentVendor. Code: " + addRc +
+                            " reason " + relationFile.getMessages()
                     );
                 }
 
@@ -630,7 +743,7 @@ function createPaymentVendor(input) {
         if (createdItems.length > 0) {
             paymentFile = new SCFile("esdHTKTpayment");
             var paymentRc = paymentFile.doSelect(
-                'id="' + escapeExpenseVendorQueryValue(paymentId) + '"'
+                    'id="' + escapeExpenseVendorQueryValue(paymentId) + '"'
             );
             if (paymentRc !== RC_SUCCESS) {
                 throw new Error("Không tìm thấy phiếu Dự chi " + paymentId + ".");
@@ -639,13 +752,13 @@ function createPaymentVendor(input) {
             // paymentFile["total.contract"] =
             //     Number(paymentFile["total.contract"] || 0) + createdItems.length;
             paymentFile["total.transaction"] =
-                Number(paymentFile["total.transaction"] || 0) + createdItems.length;
+                    Number(paymentFile["total.transaction"] || 0) + createdItems.length;
             paymentFile["total.amount.paid"] = getExpenseTotalAmount(paymentId);
             var updateRc = paymentFile.doUpdate();
             if (updateRc !== RC_SUCCESS) {
                 throw new Error(
-                    "Đã thêm hợp đồng nhưng không cập nhật được tổng số hợp đồng trên phiếu. Code: " +
-                    updateRc
+                        "Đã thêm hợp đồng nhưng không cập nhật được tổng số hợp đồng trên phiếu. Code: " +
+                        updateRc
                 );
             }
         }
@@ -654,8 +767,8 @@ function createPaymentVendor(input) {
         return {
             success: true,
             message: firstItem
-                ? "Thêm hợp đồng vào phiếu Dự chi thành công."
-                : "Không có hợp đồng hợp lệ để thêm vào phiếu Dự chi.",
+                    ? "Thêm hợp đồng vào phiếu Dự chi thành công."
+                    : "Không có hợp đồng hợp lệ để thêm vào phiếu Dự chi.",
             id: firstItem ? firstItem.id : "",
             paymentVendorId: firstItem ? firstItem.id : "",
             paymentId: paymentId,
@@ -684,7 +797,7 @@ function expenseVendorRollbackXdcbItems(payment, paymentId, createdItems) {
         var file = new SCFile("esdHTKTpaymentVendor");
         try {
             var rc = file.doSelect('id="' + escapeExpenseVendorQueryValue(createdItems[i].id) +
-                '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
+                    '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
             if (rc === RC_SUCCESS) {
                 if (file.doDelete() !== RC_SUCCESS) throw new Error("Không thu hồi được món " + createdItems[i].id + ".");
             } else if (rc !== RC_NO_MORE) throw new Error("Không kiểm tra được món " + createdItems[i].id + " khi thu hồi.");
@@ -712,14 +825,14 @@ function refreshExpenseAmountsAfterInvoiceDelete(paymentId, paymentVendorIds) {
         var invoiceFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
         try {
             var invoiceRc = invoiceFile.doSelect(
-                'SELECT i.grand.total FROM esdHTKTinvoice i ' +
-                'JOIN esdHTKTpaymentInvoice pi ON (pi.invoice.id = i.id) ' +
-                'WHERE pi.payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
-                '" AND pi.ref.id="' + escapeExpenseVendorQueryValue(itemId) + '"'
+                    'SELECT i.grand.total FROM esdHTKTinvoice i ' +
+                    'JOIN esdHTKTpaymentInvoice pi ON (pi.invoice.id = i.id) ' +
+                    'WHERE pi.payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+                    '" AND pi.ref.id="' + escapeExpenseVendorQueryValue(itemId) + '"'
             );
             while (invoiceRc === RC_SUCCESS) {
                 totalInvoiceAmount = lib.ESD_HTKT_Utils.addStringsManual(
-                    totalInvoiceAmount, String(invoiceFile[0] || "0")
+                        totalInvoiceAmount, String(invoiceFile[0] || "0")
                 );
                 totalInvoiceCount++;
                 invoiceRc = invoiceFile.getNext();
@@ -734,8 +847,8 @@ function refreshExpenseAmountsAfterInvoiceDelete(paymentId, paymentVendorIds) {
         var itemFile = new SCFile("esdHTKTpaymentVendor");
         try {
             var itemRc = itemFile.doSelect(
-                'id="' + escapeExpenseVendorQueryValue(itemId) +
-                '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"'
+                    'id="' + escapeExpenseVendorQueryValue(itemId) +
+                    '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"'
             );
             if (itemRc !== RC_SUCCESS) {
                 throw new Error("Không tìm thấy món Dự chi " + itemId + ". Code: " + itemRc);
@@ -765,12 +878,12 @@ function getExpenseTotalAmount(paymentId) {
     try {
         itemFile.setFields(["amount"]);
         var itemRc = itemFile.doSelect(
-            'payment.id="' + escapeExpenseVendorQueryValue(normalizedId) + '"'
+                'payment.id="' + escapeExpenseVendorQueryValue(normalizedId) + '"'
         );
         var totalAmount = "0";
         while (itemRc === RC_SUCCESS) {
             totalAmount = lib.ESD_HTKT_Utils.addStringsManual(
-                totalAmount, String(itemFile["amount"] || "0")
+                    totalAmount, String(itemFile["amount"] || "0")
             );
             itemRc = itemFile.getNext();
         }
@@ -794,7 +907,7 @@ function syncExpenseTotalAmount(paymentId) {
     var paymentFile = new SCFile("esdHTKTpayment");
     try {
         var paymentRc = paymentFile.doSelect(
-            'id="' + escapeExpenseVendorQueryValue(normalizedId) + '"'
+                'id="' + escapeExpenseVendorQueryValue(normalizedId) + '"'
         );
         if (paymentRc !== RC_SUCCESS) {
             throw new Error("Không tìm thấy phiếu Dự chi " + normalizedId + ". Code: " + paymentRc);
@@ -829,7 +942,7 @@ function getListExpenseVendor(input) {
     var paymentVendorFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
     try {
         var isXdcb = paymentId.indexOf("DC.") === 0 &&
-            lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext({ "payment.id": paymentId }, "", false).category === "XDCB";
+                lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext({ "payment.id": paymentId }, "", false).category === "XDCB";
         var vendorQuery =
                 "SELECT pv.id, pv.payment.id, pv.contract.id," +
                 " v.vendor.number, v.vendor.name, pv.amount, pv.currency," +
@@ -915,8 +1028,8 @@ function generateExpensePaymentVendorId() {
     var rawNumber = String(nextNumber.getText()).replace(/^\s+|\s+$/g, "");
     if (rcText !== "0" || !rawNumber) {
         throw new Error(
-            "Không cấp được ID từ Sequential Numbers " + numberClass +
-            ". rc=" + rcText + ", number=" + rawNumber
+                "Không cấp được ID từ Sequential Numbers " + numberClass +
+                ". rc=" + rcText + ", number=" + rawNumber
         );
     }
 
@@ -932,6 +1045,110 @@ function closeExpenseVendorFile(file) {
     try { file.doClose(); } catch (e) {}
 }
 
+/**
+ * Tính toán số tiền còn lại của hợp đồng từ bảng esdHDcontract.
+ * Tham khảo logic từ module tạm ứng (PREPAYMENT).
+ * Trả về:
+ * - Chuỗi số tiền còn lại (> 0) nếu hợp đồng đã có dữ liệu số dư.
+ * - "0" nếu remaining.amount <= 0.
+ * - null nếu remaining.amount là null, undefined hoặc rỗng (HĐ chưa thực hiện).
+ */
+function calculateContractRemainingValue(contractId) {
+    if (!contractId) return null;
+
+    var contractFile = null;
+    try {
+        contractFile = new SCFile("esdHDcontract", SCFILE_READONLY);
+        contractFile.setFields(["remaining.amount"]);
+        if (contractFile.doSelect('id="' + escapeExpenseVendorQueryValue(contractId) + '"') === RC_SUCCESS) {
+            var remVal = contractFile["remaining.amount"];
+            if (remVal !== null && remVal !== undefined && String(remVal).trim() !== "") {
+                var numRem = Number(remVal);
+                return !isNaN(numRem) && numRem > 0 ? String(numRem) : "0";
+            }
+
+            // Bỏ fallback về "0": Khi trường remaining.amount trong bảng esdHDcontract không có dữ liệu -> trả về null (HĐ chưa thực hiện)
+            return null;
+        }
+    } catch (e) {
+        // Bỏ qua lỗi truy vấn, trả về null
+    } finally {
+        closeExpenseVendorFile(contractFile);
+    }
+
+    return null;
+}
+
+/**
+ * Lấy tổng số lượng nhà cung cấp của hợp đồng.
+ * Với XDCB: lấy từ danh sách suppliers của selectedContract.
+ * Với HHDV/thông thường: đếm số supplier.id duy nhất trong bảng esdHDcontractSupplier.
+ */
+function getContractTotalSuppliers(contractId, xdcbContract) {
+    if (!contractId) return 0;
+
+    if (xdcbContract && xdcbContract.suppliers instanceof Array) {
+        return xdcbContract.suppliers.length;
+    }
+
+    var supplierFile = null;
+    try {
+        supplierFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
+        supplierFile.setFields(["supplier.id"]);
+        var rc = supplierFile.doSelect('contract.id="' + escapeExpenseVendorQueryValue(contractId) + '"');
+        var distinctSuppliers = {};
+        var count = 0;
+        while (rc === RC_SUCCESS) {
+            var sId = normalizeExpenseVendorValue(supplierFile["supplier.id"]);
+            if (sId && !distinctSuppliers[sId]) {
+                distinctSuppliers[sId] = true;
+                count++;
+            }
+            rc = supplierFile.getNext();
+        }
+        return count;
+    } catch (e) {
+        return 0;
+    } finally {
+        closeExpenseVendorFile(supplierFile);
+    }
+}
+
+/**
+ * Đếm số lượng món dự chi ứng với đề nghị dự chi trong bảng esdHTKTpaymentVendor của một hợp đồng.
+ */
+function countExpensePaymentVendors(paymentId, contractId) {
+    if (!paymentId || !contractId) return 0;
+
+    var pvFile = null;
+    try {
+        pvFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+        var query = 'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+                '" and contract.id="' + escapeExpenseVendorQueryValue(contractId) + '"';
+        var count = pvFile.doCount(query);
+        var num = Number(count);
+        return !isNaN(num) && num >= 0 ? num : 0;
+    } catch (e) {
+        return 0;
+    } finally {
+        closeExpenseVendorFile(pvFile);
+    }
+}
+
+/**
+ * Trả về tổng số NCC của hợp đồng từ API.
+ */
+function totalContractSuppliers(input) {
+    var contractId = "";
+    try {
+        var details = getExpenseVendorInputDetails(input);
+        contractId = details.contractId || details.id || "";
+    } catch (ex) {
+        return 0;
+    }
+    return getContractTotalSuppliers(contractId);
+}
+
 
 /**
  * Số tiền món Dự chi lấy từ hóa đơn thì không cho nhập tay.
@@ -945,8 +1162,8 @@ function hasExpenseVendorInvoices(record) {
     var invoiceFile = new SCFile("esdHTKTpaymentInvoice", SCFILE_READONLY);
     try {
         var rc = invoiceFile.doSelect(
-            'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
-            '" and ref.id="' + escapeExpenseVendorQueryValue(itemId) + '"'
+                'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+                '" and ref.id="' + escapeExpenseVendorQueryValue(itemId) + '"'
         );
         if (rc === RC_SUCCESS) return true;
         if (rc === RC_NO_MORE) return false;
@@ -964,6 +1181,43 @@ function loadPaymentVendorInfo(record) {
     if (sourceContext.category === "XDCB") {
         return lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadExpenseSupplierScreen(record);
     }
+
+    var paymentId = normalizeExpenseVendorValue(record["payment.id"] || record.payment_id || vars.$G_payment_id);
+    var contractId = normalizeExpenseVendorValue(record["contract.id"] || record.contract_id || vars.$G_contract_id);
+    var currentItemId = normalizeExpenseVendorValue(record["id"] || record.id || vars.$G_payment_vendor_id);
+    var isDC = String(paymentId || "").indexOf("DC.") === 0;
+
+    // Nếu là DC thì lọc các NCC đã có trong paymentVendor (ứng với các món khác của HĐ này trong cùng ĐNDC)
+    var usedSupplierIds = {};
+    if (isDC && paymentId && contractId) {
+        var otherVendorFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+        try {
+            var otherQuery = 'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+                    '" and contract.id="' + escapeExpenseVendorQueryValue(contractId) + '"';
+            if (currentItemId) {
+                otherQuery += ' and id~="' + escapeExpenseVendorQueryValue(currentItemId) + '"';
+            }
+            var otherRc = otherVendorFile.doSelect(otherQuery);
+            while (otherRc === RC_SUCCESS) {
+                var otherVendorId = normalizeExpenseVendorValue(otherVendorFile["vendor.id"]);
+                if (otherVendorId) {
+                    var vFile = new SCFile("esdHTKTvendor", SCFILE_READONLY);
+                    try {
+                        if (vFile.doSelect('id="' + escapeExpenseVendorQueryValue(otherVendorId) + '"') === RC_SUCCESS) {
+                            var usedSuppId = normalizeExpenseVendorValue(vFile["supplier.id"]);
+                            if (usedSuppId) usedSupplierIds[usedSuppId] = true;
+                        }
+                    } finally {
+                        closeExpenseVendorFile(vFile);
+                    }
+                }
+                otherRc = otherVendorFile.getNext();
+            }
+        } finally {
+            closeExpenseVendorFile(otherVendorFile);
+        }
+    }
+
     var itemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
     vars.$arrVendors = [];
     vars.$supplierdisplays = [];
@@ -1026,7 +1280,8 @@ function loadPaymentVendorInfo(record) {
         }
 
         var supplierId = normalizeExpenseVendorValue(itemFile["supplier.id"]);
-        if (supplierId && !supplierIds[supplierId]) {
+        // Không hiển thị NCC nếu đã được sử dụng bởi món khác của hợp đồng này trong cùng ĐNDC
+        if (supplierId && !supplierIds[supplierId] && !usedSupplierIds[supplierId]) {
             arrVendors.push({
                 "supplier.id": supplierId,
                 "supplier.name": itemFile["supplier.name"],
@@ -1123,13 +1378,55 @@ function validateVendorAndPaymentDetails(record) {
         errorMss.push("Số tiền dự chi phải lớn hơn 0.");
     }
 
-    var transactionDescription = String(record["transaction.des"] || "").trim();
-    if (!transactionDescription) {
-        errorMss.push("Nội dung đề nghị không được để trống.");
-    } else {
-        checkMaxLength(transactionDescription, 255, "Nội dung đề nghị");
+    // Không cần validate Nội dung đề nghị
+    // var transactionDescription = String(record["transaction.des"] || "").trim();
+    // if (!transactionDescription) {
+    //  errorMss.push("Nội dung đề nghị không được để trống.");
+    // } else {
+    //  checkMaxLength(transactionDescription, 255, "Nội dung đề nghị");
+    // }
+
+    // Chặn trùng lặp bộ (contract.id, vendor.id) trong cùng đề nghị dự chi
+    var paymentId = normalizeExpenseVendorValue(record["payment.id"] || record.payment_id);
+    var contractId = normalizeExpenseVendorValue(record["contract.id"] || record.contract_id);
+    var currentItemId = normalizeExpenseVendorValue(record["id"] || record.id);
+    var selectedVendorId = normalizeExpenseVendorValue(record["vendor.id"]);
+
+    if (!selectedVendorId && (vars.$taxCode || vars.$supplierId)) {
+        var vLookup = new SCFile("esdHTKTvendor", SCFILE_READONLY);
+        try {
+            vLookup.setFields(["id"]);
+            var vSql = "";
+            if (vars.$taxCode) {
+                vSql = 'vendor.number="' + escapeExpenseVendorQueryValue(vars.$taxCode) + '"';
+            } else if (vars.$supplierId) {
+                vSql = 'supplier.id="' + escapeExpenseVendorQueryValue(vars.$supplierId) + '"';
+            }
+            if (vSql && vLookup.doSelect(vSql) === RC_SUCCESS) {
+                selectedVendorId = normalizeExpenseVendorValue(vLookup["id"]);
+            }
+        } finally {
+            closeExpenseVendorFile(vLookup);
+        }
     }
-    
+
+    if (paymentId && contractId && selectedVendorId) {
+        var dupCheckFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+        try {
+            var dupSql = 'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
+                '" and contract.id="' + escapeExpenseVendorQueryValue(contractId) +
+                '" and vendor.id="' + escapeExpenseVendorQueryValue(selectedVendorId) + '"';
+            if (currentItemId) {
+                dupSql += ' and id~="' + escapeExpenseVendorQueryValue(currentItemId) + '"';
+            }
+            if (dupCheckFile.doSelect(dupSql) === RC_SUCCESS) {
+                errorMss.push("Trong một đề nghị dự chi: mỗi hợp đồng chỉ có 1 món dự chi với mỗi nhà cung cấp (Hợp đồng: " + contractId + ").");
+            }
+        } finally {
+            closeExpenseVendorFile(dupCheckFile);
+        }
+    }
+
     return errorMss;
 }
 
@@ -1148,21 +1445,22 @@ function importExpenseVendors(input) {
     try {
         if (!paymentId || !currentUser || !rows.length) {
             throw new Error("Thiếu mã phiếu, người thực hiện hoặc dữ liệu import.");
-        } 
+        }
         expenseImportCheckPayment(payment, paymentId, currentUser);
         var importCategory = expenseVendorCheckContractCategory(payment);
         if (importCategory === "XDCB") {
             lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext({ "payment.id": paymentId }, currentUser, true);
         }
         var contractParams = importCategory === "XDCB"
-            ? { currentUser: currentUser, contractCategory: "XDCB", paymentId: paymentId }
-            : expenseImportGetContractParams(payment, currentUser);
-        var cache = { contracts: {}, vendors: {}, links: {} };
+                ? { currentUser: currentUser, contractCategory: "XDCB", paymentId: paymentId }
+                : expenseImportGetContractParams(payment, currentUser);
+        contractParams.paymentId = paymentId;
+        var cache = { contracts: {}, vendors: {}, links: {}, importedPairs: {} };
         var valid = [];
         var errors = [];
         for (var i = 0; i < rows.length; i++) {
-            try { 
-                valid.push(expenseImportValidateRow(rows[i], contractParams, cache)); 
+            try {
+                valid.push(expenseImportValidateRow(rows[i], contractParams, cache));
             }
             catch (rowError) {
                 var fileName = normalizeExpenseVendorValue(rows[i] && rows[i].sourceFile);
@@ -1171,8 +1469,8 @@ function importExpenseVendors(input) {
             }
         }
         if (!valid.length) {
-            return { 
-                success: false, 
+            return {
+                success: false,
                 errorCode: "IMPORT_ROW_VALIDATION_FAILED",
                 message: "Đã import thành công 0/" + rows.length + " bản ghi.",
                 totalCount: rows.length,
@@ -1181,7 +1479,7 @@ function importExpenseVendors(input) {
                 errors: errors,
                 createdItems: []
             };
-        } 
+        }
         expenseImportCheckPayment(payment, paymentId, currentUser);
         for (var j = 0; j < valid.length; j++) {
             var row = valid[j];
@@ -1197,12 +1495,12 @@ function importExpenseVendors(input) {
                 var rc = item.doAction("add");
                 if (rc !== RC_SUCCESS) {
                     throw new Error("Không tạo được món tại dòng " + row.sourceRow + ". Code: " + rc);
-                } 
+                }
 
                 const selectRc = item.doSelect('id="' + escapeExpenseVendorQueryValue(itemId) + '" and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"')
                 if (selectRc !== RC_SUCCESS) {
                     throw new Error("Không đọc lại được món " + itemId + ".");
-                } 
+                }
 
                 // Giá trị mặc định của Add không được ghi đè số tiền/NCC đã validate.
                 expenseImportSetItem(item, itemId, paymentId, row, payment["description"]);
@@ -1210,19 +1508,19 @@ function importExpenseVendors(input) {
                 if (rc !== RC_SUCCESS) {
                     throw new Error("Không lưu được món " + itemId + ". Code: " + rc);
                 }
-            } finally { 
-                closeExpenseVendorFile(item); 
+            } finally {
+                closeExpenseVendorFile(item);
             }
         }
         expenseImportRefreshTotals(payment, paymentId);
-        return { 
-            success: true, 
+        return {
+            success: true,
             message: "Đã import thành công " + created.length + "/" + rows.length + " bản ghi.",
             totalCount: rows.length,
             successCount: created.length,
             failedCount: rows.length - created.length,
             errors: errors,
-            createdItems: created 
+            createdItems: created
         };
     } catch (error) {
         var failureMessage = String(error.message || error);
@@ -1235,30 +1533,30 @@ function importExpenseVendors(input) {
                 if (rollbackRc === RC_SUCCESS) {
                     if (rollback.doDelete() !== RC_SUCCESS) {
                         throw new Error("Không thu hồi được món " + created[k].id + ".");
-                    } 
+                    }
                 } else if (rollbackRc !== RC_NO_MORE) {
                     throw new Error("Không kiểm tra được món " + created[k].id + " khi thu hồi.");
-                } 
+                }
             } catch (rollbackError) {
                 remaining.unshift(created[k]);
                 rollbackErrors.push(String(rollbackError.message || rollbackError));
-            } finally { 
-                closeExpenseVendorFile(rollback); 
+            } finally {
+                closeExpenseVendorFile(rollback);
             }
         }
         if (created.length) {
-            try { 
+            try {
                 expenseImportRefreshTotals(payment, paymentId);
             }
-            catch (totalError) { 
+            catch (totalError) {
                 var totalErrorMessage = String(totalError.message || totalError);
                 rollbackErrors.push(totalErrorMessage === failureMessage
-                    ? "Cập nhật lại tổng phiếu sau khi thu hồi món cũng thất bại."
-                    : "Cập nhật tổng phiếu sau khi thu hồi món: " + totalErrorMessage);
+                        ? "Cập nhật lại tổng phiếu sau khi thu hồi món cũng thất bại."
+                        : "Cập nhật tổng phiếu sau khi thu hồi món: " + totalErrorMessage);
             }
         }
-        return { 
-            success: false, 
+        return {
+            success: false,
             errorCode: error.importCode || "IMPORT_FAILED",
             debugContext: error.importDebugContext || null,
             message: failureMessage + (rollbackErrors.length ? " " + rollbackErrors.join(" ") : ""),
@@ -1266,7 +1564,7 @@ function importExpenseVendors(input) {
             successCount: remaining.length,
             failedCount: rows.length - remaining.length,
             errors: errors || [],
-            createdItems: remaining 
+            createdItems: remaining
         };
     } finally { closeExpenseVendorFile(payment); }
 }
@@ -1276,7 +1574,7 @@ function expenseImportCheckPayment(payment, paymentId, currentUser) {
     const paymentRc = payment.doSelect('id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
     if (paymentRc !== RC_SUCCESS || normalizeExpenseVendorValue(payment["transaction.type"]) !== "Dự chi") {
         throw new Error("Không tìm thấy phiếu Dự chi hợp lệ.");
-    } 
+    }
 
     var actor = currentUser.toLowerCase();
     var creator = normalizeExpenseVendorValue(payment["created.by"]).toLowerCase();
@@ -1284,11 +1582,11 @@ function expenseImportCheckPayment(payment, paymentId, currentUser) {
     var phase = normalizeExpenseVendorValue(payment["current.phase"]);
     var role = normalizeExpenseVendorValue(payment["initial.role"]);
     const hasPermission = (phase === "initial_dmms" && role === "dmms" && actor === creator)
-        || (phase === "initial_kttc"
-            && (actor === checker || (role === "kttc" && actor === creator)));
+            || (phase === "initial_kttc"
+                    && (actor === checker || (role === "kttc" && actor === creator)));
     if (!hasPermission) {
         throw new Error("Không có quyền import món tại bước hiện tại của phiếu Dự chi.");
-    } 
+    }
     expenseVendorCheckContractCategory(payment);
 }
 
@@ -1322,13 +1620,13 @@ function expenseImportGetContractParams(payment, currentUser) {
         }
         if (contactRc === RC_NO_MORE) {
             throw expenseImportContextError("IMPORT_USER_NOT_FOUND",
-                'Không tìm thấy hồ sơ người thực hiện "' + currentUser + '" trong danh bạ hệ thống. Chưa kiểm tra dữ liệu trong file Excel. Vui lòng kiểm tra tài khoản đăng nhập.',
-                currentUser, contactRc);
+                    'Không tìm thấy hồ sơ người thực hiện "' + currentUser + '" trong danh bạ hệ thống. Chưa kiểm tra dữ liệu trong file Excel. Vui lòng kiểm tra tài khoản đăng nhập.',
+                    currentUser, contactRc);
         }
         if (contactRc !== RC_SUCCESS) {
             throw expenseImportContextError("IMPORT_USER_LOOKUP_FAILED",
-                'Không tra cứu được hồ sơ người thực hiện "' + currentUser + '" do lỗi hệ thống. Chưa kiểm tra dữ liệu trong file Excel. Vui lòng thử lại hoặc liên hệ quản trị.',
-                currentUser, contactRc);
+                    'Không tra cứu được hồ sơ người thực hiện "' + currentUser + '" do lỗi hệ thống. Chưa kiểm tra dữ liệu trong file Excel. Vui lòng thử lại hoặc liên hệ quản trị.',
+                    currentUser, contactRc);
         }
         var contactUser = normalizeExpenseVendorValue(contact["contact.name"]) || currentUser;
         var lv1 = normalizeExpenseVendorValue(contact["lv1.id"]);
@@ -1336,13 +1634,13 @@ function expenseImportGetContractParams(payment, currentUser) {
             var nextContactRc = contact.getNext();
             if (nextContactRc === RC_SUCCESS) {
                 throw expenseImportContextError("IMPORT_USER_AMBIGUOUS",
-                    'Có nhiều hồ sơ khớp tài khoản "' + currentUser + '". Chưa kiểm tra dữ liệu trong file Excel. Vui lòng liên hệ quản trị để xác định đúng người thực hiện.',
-                    currentUser, nextContactRc);
+                        'Có nhiều hồ sơ khớp tài khoản "' + currentUser + '". Chưa kiểm tra dữ liệu trong file Excel. Vui lòng liên hệ quản trị để xác định đúng người thực hiện.',
+                        currentUser, nextContactRc);
             }
             if (nextContactRc !== RC_NO_MORE) {
                 throw expenseImportContextError("IMPORT_USER_LOOKUP_FAILED",
-                    'Không xác định được hồ sơ người thực hiện "' + currentUser + '" do lỗi hệ thống. Chưa kiểm tra dữ liệu trong file Excel.',
-                    currentUser, nextContactRc);
+                        'Không xác định được hồ sơ người thực hiện "' + currentUser + '" do lỗi hệ thống. Chưa kiểm tra dữ liệu trong file Excel.',
+                        currentUser, nextContactRc);
             }
         }
         var permission;
@@ -1350,24 +1648,24 @@ function expenseImportGetContractParams(payment, currentUser) {
             permission = lib.ESD_PERMS_RIGHTS.getUnitByDataPermissions(contactUser, "00401") || {};
         } catch (permissionError) {
             throw expenseImportContextError("IMPORT_USER_SCOPE_FAILED",
-                'Không xác định được phạm vi dữ liệu của người thực hiện "' + contactUser + '". Chưa kiểm tra dữ liệu trong file Excel. Vui lòng kiểm tra cấu hình phân quyền.',
-                currentUser, contactRc);
+                    'Không xác định được phạm vi dữ liệu của người thực hiện "' + contactUser + '". Chưa kiểm tra dữ liệu trong file Excel. Vui lòng kiểm tra cấu hình phân quyền.',
+                    currentUser, contactRc);
         }
         var scope = normalizeExpenseVendorValue(permission.scope || permission.dataScopeList || permission["permission.scope"]) || "QT_PQDL_01";
         if (!lv1 && scope !== "QT_PQDL_06") {
             throw expenseImportContextError("IMPORT_USER_UNIT_MISSING",
-                'Hồ sơ người thực hiện "' + contactUser + '" chưa có đơn vị cấp 1 (LV1). Chưa thể kiểm tra phạm vi HĐ/KMS trong file Excel.',
-                currentUser, contactRc);
+                    'Hồ sơ người thực hiện "' + contactUser + '" chưa có đơn vị cấp 1 (LV1). Chưa thể kiểm tra phạm vi HĐ/KMS trong file Excel.',
+                    currentUser, contactRc);
         }
-        return { 
+        return {
             currentUser: contactUser,
-            unitLv1: lv1, 
-            scope: scope, 
-            status: "Dang thuc hien", 
-            start: 1, count: 1, 
-            initialRole: normalizeExpenseVendorValue(payment["current.phase"]) === "initial_kttc" 
-                        ? "kttc" 
-                        : normalizeExpenseVendorValue(payment["initial.role"]) 
+            unitLv1: lv1,
+            scope: scope,
+            status: "Dang thuc hien",
+            start: 1, count: 1,
+            initialRole: normalizeExpenseVendorValue(payment["current.phase"]) === "initial_kttc"
+                    ? "kttc"
+                    : normalizeExpenseVendorValue(payment["initial.role"])
         };
     } finally { closeExpenseVendorFile(contact); }
 }
@@ -1382,7 +1680,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
     raw = raw || {};
     if (normalizeExpenseVendorValue(raw.itemCode || raw.id)) {
         throw new Error("Import chỉ tạo mới, không nhận mã món có sẵn.");
-    } 
+    }
 
     var code = normalizeExpenseVendorValue(raw.contractCode);
     var vendorCode = normalizeExpenseVendorValue(raw.vendorCode);
@@ -1398,7 +1696,13 @@ function expenseImportValidateRow(raw, contractParams, cache) {
     }
 
     if (typeof amount !== "number" || !isFinite(amount) || amount <= 0 || amount > 9007199254740991) {
-       throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là chữ số lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
+        throw new Error(expenseImportDescribeField("Số tiền dự chi", amount) + ": phải là chữ số lớn hơn 0 hợp lệ, không nhận chuỗi hoặc ký tự đặc biệt.");
+    }
+
+    // 1. Validate chặn theo số tiền còn lại của hợp đồng
+    var remainingContractVal = calculateContractRemainingValue(code);
+    if (remainingContractVal !== null && Number(remainingContractVal) <= 0) {
+        throw new Error(contractField + ": Tổng giá trị HĐ/KMS còn lại của hợp đồng đã về 0. Không thể tạo thêm món dự chi mới.");
     }
 
     if (contractParams.contractCategory === "XDCB") {
@@ -1422,7 +1726,7 @@ function expenseImportValidateRow(raw, contractParams, cache) {
         var result = lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listPurchaseContracts({ queryString: JSON.stringify(contractParams) });
         if (!result || result.success !== true) {
             throw new Error(contractField + ": không kiểm tra được điều kiện chọn. " + (result && result.message || "Lỗi hệ thống, vui lòng thử lại."));
-        } 
+        }
         if (!result.data || !result.data.length || normalizeExpenseVendorValue(result.data[0].id) !== code) {
             throw new Error(contractField + ": có trong hệ thống nhưng không đủ điều kiện hoặc ngoài phạm vi được chọn của bạn.");
         }
@@ -1471,13 +1775,37 @@ function expenseImportValidateRow(raw, contractParams, cache) {
             cache.links[linkKey] = true;
         } finally { closeExpenseVendorFile(link); }
     }
-    return { 
-        contractCode: code, 
-        vendorId: selected.id, 
-        currency: cache.contracts["$" + code].currency, 
-        amount: amount, 
-        transactionDescription: transactionDescription, 
-        sourceRow: Number(raw.sourceRow) || 0 
+
+    // 2. Validate chặn trùng lặp bộ (contract.id, vendor.id)
+    cache.importedPairs = cache.importedPairs || {};
+    var pairKey = code + "::" + selected.id;
+    if (cache.importedPairs[pairKey]) {
+        throw new Error("Trong một đề nghị dự chi: mỗi hợp đồng chỉ có 1 món dự chi với mỗi nhà cung cấp (Hợp đồng: " + code + ").");
+    }
+    cache.importedPairs[pairKey] = true;
+
+    var importPaymentId = normalizeExpenseVendorValue(contractParams.paymentId);
+    if (importPaymentId) {
+        var existImportFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+        try {
+            var existSql = 'payment.id="' + escapeExpenseVendorQueryValue(importPaymentId) +
+                    '" and contract.id="' + escapeExpenseVendorQueryValue(code) +
+                    '" and vendor.id="' + escapeExpenseVendorQueryValue(selected.id) + '"';
+            if (existImportFile.doSelect(existSql) === RC_SUCCESS) {
+                throw new Error("Trong một đề nghị dự chi: mỗi hợp đồng chỉ có 1 món dự chi với mỗi nhà cung cấp (Hợp đồng: " + code + ").");
+            }
+        } finally {
+            closeExpenseVendorFile(existImportFile);
+        }
+    }
+
+    return {
+        contractCode: code,
+        vendorId: selected.id,
+        currency: cache.contracts["$" + code].currency,
+        amount: amount,
+        transactionDescription: transactionDescription,
+        sourceRow: Number(raw.sourceRow) || 0
     };
 }
 
@@ -1485,15 +1813,21 @@ function expenseImportValidateRow(raw, contractParams, cache) {
 function expenseImportValidateXdcbRow(raw, params, cache) {
     var code = normalizeExpenseVendorValue(raw.contractCode);
     var tax = normalizeExpenseVendorValue(raw.vendorCode);
+
+    var remainingXdcbVal = calculateContractRemainingValue(code);
+    if (remainingXdcbVal !== null && Number(remainingXdcbVal) <= 0) {
+        throw new Error(expenseImportDescribeField("Mã HĐ/KMS", code) + ": Tổng giá trị HĐ/KMS còn lại của hợp đồng đã về 0. Không thể tạo thêm món dự chi mới.");
+    }
+
     if (!cache.contracts["$" + code]) {
         var result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseXdcbContracts({ details: {
-            currentUser: params.currentUser, paymentId: params.paymentId, contractId: code, start: 1, count: 2
-        } });
+                currentUser: params.currentUser, paymentId: params.paymentId, contractId: code, start: 1, count: 2
+            } });
         if (!result || result.success !== true) throw new Error(result && result.message || "Không kiểm tra được HĐ XDCB.");
         if (result.totalCount !== 1 || !result.data || result.data.length !== 1 ||
                 normalizeExpenseVendorValue(result.data[0].id) !== code) {
             throw new Error(expenseImportDescribeField("Mã HĐ/KMS", code) +
-                (result.totalCount > 1 ? ": không xác định duy nhất HĐ XDCB theo ID." : ": không có HĐ XDCB đủ điều kiện theo ID trong phạm vi được chọn."));
+                    (result.totalCount > 1 ? ": không xác định duy nhất HĐ XDCB theo ID." : ": không có HĐ XDCB đủ điều kiện theo ID trong phạm vi được chọn."));
         }
         cache.contracts["$" + code] = result.data[0];
     }
@@ -1503,6 +1837,14 @@ function expenseImportValidateXdcbRow(raw, params, cache) {
     if (!cache.links[key]) {
         cache.links[key] = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.resolveExpenseXdcbSupplier(contract, "", tax);
     }
+
+    cache.importedPairs = cache.importedPairs || {};
+    var xdcbPairKey = (contract.id || code) + "::" + tax;
+    if (cache.importedPairs[xdcbPairKey]) {
+        throw new Error("Trong một đề nghị dự chi: mỗi hợp đồng chỉ có 1 món dự chi với mỗi nhà cung cấp (Hợp đồng: " + code + ").");
+    }
+    cache.importedPairs[xdcbPairKey] = true;
+
     return { contractCode: code, contractId: contract.id, supplier: cache.links[key], contractCategory: "XDCB",
         currency: contract.currency, amount: raw.amount, transactionDescription: normalizeExpenseVendorValue(raw.transactionDescription),
         sourceRow: Number(raw.sourceRow) || 0 };
