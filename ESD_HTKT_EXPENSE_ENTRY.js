@@ -5,7 +5,7 @@
  * Version      : 1.0.0
  * Chức năng:
  * - Tự động tính toán và sinh các dòng bút toán định khoản Nợ/Có (esdHTKTpaymentEntry) cho phiếu Dự chi.
- * - Áp dụng quy tắc sinh bút toán tự động theo đặc tả 2.7 (gồm 3 dòng tự sinh TT-BK-01*, TT-BK-02, TT-BK-03*).
+ * - Áp dụng quy tắc sinh bút toán tự động theo đặc tả 2.7 (gồm 3 dòng tự sinh DC-BK-01*, DC-BK-02, DC-BK-03*).
  * - Xác định điều kiện thuế theo DC_BR_01 (Có/Không có thuế khấu trừ).
  * - Đồng bộ bút toán tự động khi có thay đổi từ hóa đơn hoặc nhà cung cấp.
  * - Lưu chỉnh sửa theo luồng riêng của Dự chi; các danh mục dùng chung ESD_HTKT_PAYMENT_ENTRY.
@@ -34,9 +34,9 @@ function debugExpenseEntry(point, message) {
  *      -> merge dữ liệu chỉnh sửa -> validate cân đối -> lưu DB.
  *
  *  03. QUY TẮC SINH BÚT TOÁN TỰ ĐỘNG (2.7)
- *      - TT-BK-01* (Nợ TK Chi phí): Số tiền = Số tiền dự chi - Thuế khấu trừ (nếu có)
- *      - TT-BK-02  (Nợ TK Thuế GTGT): Số tiền = Thuế trên hóa đơn (theo DC_BR_01)
- *      - TT-BK-03* (Có TK Phải trả NCC): Số tiền = Số tiền dự chi
+ *      - DC-BK-01* (Nợ TK Chi phí): Số tiền = Số tiền dự chi - Thuế khấu trừ (nếu có)
+ *      - DC-BK-02  (Nợ TK Thuế GTGT): Số tiền = Thuế trên hóa đơn (theo DC_BR_01)
+ *      - DC-BK-03* (Có TK Phải trả NCC): Số tiền = Số tiền dự chi
  *      - Dòng thủ công do người dùng tự thêm (MANUAL)
  *
  *  04. VALIDATE & PERSISTENCE
@@ -115,11 +115,17 @@ var TYPE = {
     GL: 'GL'
 };
 
-// Mã dòng bút toán tự động theo đặc tả 2.7.2
+// Tài khoản mặc định ban đầu cho dòng phải trả NCC (DC-BK-03)
+var DEFAULT_EXPENSE_LIABILITY_ACCOUNT = {
+    number: '224160300',
+    name: 'TK phải trả cho nhà cung cấp'
+};
+
+// Mã dòng bút toán tự động theo đặc tả 2.7.2 của phân hệ Dự chi (DC-BK)
 var AUTO_ENTRY_CODE = {
-    COST:      'TT-BK-01',   // Ghi nhận chi phí        (Nợ)
-    TAX:       'TT-BK-02',   // Dòng thuế GTGT          (Nợ)
-    LIABILITY: 'TT-BK-03'    // Ghi nhận nghĩa vụ TT    (Có)
+    COST:      'DC-BK-01',   // Ghi nhận chi phí        (Nợ)
+    TAX:       'DC-BK-02',   // Dòng thuế GTGT          (Nợ)
+    LIABILITY: 'DC-BK-03'    // Ghi nhận nghĩa vụ TT    (Có)
 };
 
 var MONEY_EPSILON = 0.001;
@@ -860,6 +866,8 @@ function syncExpenseEntryBySourceChange(sourceTable, sourceRecord) {
         paymentVendorId = safeString(source['id'] || source['internal.ref.id']).trim();
     } else if (sourceTable === 'esdHTKTpaymentInvoice') {
         paymentVendorId = safeString(source['ref.id'] || source['ref_id']).trim();
+    } else if (sourceTable === 'esdHTKTpaymentCostDivision' || sourceTable === TABLE_COST_DIVISION) {
+        paymentVendorId = safeString(source['ref.id'] || source['ref_id'] || source.refId).trim();
     }
 
     debugExpenseEntry(
@@ -1181,9 +1189,9 @@ function getEntryTypeByRuleCode(entryCode) {
 /**
  * 2.7. Quy tắc sinh bút toán tự động:
  * Mỗi món dự chi gắn với một HĐ/KMS và một NCC, luôn phát sinh tối thiểu:
- * - Ghi Nợ TK Chi phí (TT-BK-01*)
- * - Ghi Có TK Phải trả NCC (TT-BK-03*)
- * Bút toán thuế GTGT (TT-BK-02) chỉ phát sinh khi hóa đơn NCC có thuế khấu trừ (DC_BR_01).
+ * - Ghi Nợ TK Chi phí (DC-BK-01*)
+ * - Ghi Có TK Phải trả NCC (DC-BK-03*)
+ * Bút toán thuế GTGT (DC-BK-02) chỉ phát sinh khi hóa đơn NCC có thuế khấu trừ (DC_BR_01).
  */
 function buildExpectedExpenseEntries(expenseId) {
     var request = getExpenseRequest(expenseId);
@@ -1261,10 +1269,53 @@ function buildExpectedExpenseEntries(expenseId) {
 /**
  * Gom ngữ cảnh thông tin một món dự chi / NCC
  */
+/**
+ * Đọc danh sách phân chia chi phí của một món dự chi từ bảng esdHTKTpaymentCostDivision
+ */
+function getExpenseCostDivisions(expenseId, paymentVendorId) {
+    var list = [];
+    var f = new SCFile(TABLE_COST_DIVISION, SCFILE_READONLY);
+    var query = 'payment.id="' + escapeQueryValue(expenseId) + '"';
+    if (paymentVendorId) {
+        query += ' and ref.id="' + escapeQueryValue(paymentVendorId) + '"';
+    }
+
+    var rc;
+    try {
+        rc = f.doSelect(query);
+    } catch (e) {
+        closeFile(f);
+        return list;
+    }
+
+    while (rc === RC_SUCCESS) {
+        list.push({
+            id: readText(f, 'id'),
+            payment_id: readText(f, 'payment.id'),
+            ref_id: readText(f, 'ref.id'),
+            account_number: readText(f, 'account.number'),
+            account_name: readText(f, 'account.name'),
+            amount: readNumber(f, 'amount'),
+            department: readText(f, 'department'),
+            department_name: readText(f, 'department.name'),
+            transaction_code: readText(f, 'transaction.code'),
+            unit_id: readText(f, 'unit.id'),
+            unit_name: readText(f, 'unit.name'),
+            vendor_id: readText(f, 'vendor.id')
+        });
+        rc = f.getNext();
+    }
+
+    closeFile(f);
+    return list;
+}
+
 function buildExpenseCaseContext(expenseId, request, vendor, vendorCount, firstOrder) {
     var taxInfo = getExpenseInvoiceTaxInfo(expenseId, vendor, vendorCount);
     var hasInvoice = hasLinkedInvoicesForVendor(expenseId, vendor, vendorCount);
     var expenseAmount = toNumber(vendor.amount); // Số tiền dự chi do NSD nhập
+    var paymentVendorId = safeString(vendor && (vendor.payment_vendor_id || vendor.id)).trim();
+    var costDivisions = expenseAmount > 0 ? getExpenseCostDivisions(expenseId, paymentVendorId) : [];
 
     var errors = taxInfo.errors.slice(0);
     if (expenseAmount <= 0) {
@@ -1284,6 +1335,7 @@ function buildExpenseCaseContext(expenseId, request, vendor, vendorCount, firstO
         hasInvoice: hasInvoice,
         hasTax: taxInfo.hasDeductibleTax,
         taxInfo: taxInfo,
+        costDivisions: costDivisions,
         firstOrder: firstOrder,
         errors: errors
     };
@@ -1291,9 +1343,9 @@ function buildExpenseCaseContext(expenseId, request, vendor, vendorCount, firstO
 
 /**
  * 2.7.2. Sinh 3 dòng bút toán theo danh mục:
- * 1. TT-BK-01*: Ghi nhận chi phí (Nợ) = Số tiền dự chi - Thuế khấu trừ
- * 2. TT-BK-02 : Dòng thuế GTGT (Nợ)   = Số tiền thuế trên hóa đơn (nếu có thuế khấu trừ theo DC_BR_01)
- * 3. TT-BK-03*: Ghi nhận nghĩa vụ TT (Có) = Số tiền dự chi
+ * 1. DC-BK-01*: Ghi nhận chi phí (Nợ) = Số tiền dự chi - Thuế khấu trừ
+ * 2. DC-BK-02 : Dòng thuế GTGT (Nợ)   = Số tiền thuế trên hóa đơn (nếu có thuế khấu trừ theo DC_BR_01)
+ * 3. DC-BK-03*: Ghi nhận nghĩa vụ TT (Có) = Số tiền dự chi
  */
 function buildExpenseCaseEntries(c) {
     var rows = [];
@@ -1301,23 +1353,49 @@ function buildExpenseCaseEntries(c) {
     var totalTaxAmount = c.hasTax ? c.taxInfo.totalDeductibleTax : 0;
     var costAmount = Math.max(0, c.expenseAmount - totalTaxAmount);
 
-    // Dòng 1: TT-BK-01* - Ghi nhận chi phí (Nợ) (bỏ trống số tài khoản như bên thanh toán để KT nhập sau)
+    // Dòng 1: DC-BK-01* - Ghi nhận chi phí (Nợ)
     if (c.expenseAmount > 0) {
-        rows.push(buildExpenseEntryRow({
-            expenseId: c.expenseId,
-            request: c.request,
-            vendor: c.vendor,
-            entryCode: AUTO_ENTRY_CODE.COST,
-            amount: costAmount,
-            order: order++,
-            accountOverride: {
-                number: '',
-                name: ''
+        if (c.costDivisions && c.costDivisions.length > 0) {
+            // Nếu ĐÃ CÓ phân bổ chi phí -> sinh các dòng chi phí chi tiết theo phân bổ
+            for (var cdIdx = 0; cdIdx < c.costDivisions.length; cdIdx++) {
+                var div = c.costDivisions[cdIdx];
+                var divAmount = toNumber(div.amount);
+                if (divAmount <= 0) continue;
+
+                rows.push(buildExpenseEntryRow({
+                    expenseId: c.expenseId,
+                    request: c.request,
+                    vendor: c.vendor,
+                    entryCode: AUTO_ENTRY_CODE.COST,
+                    amount: divAmount,
+                    order: order++,
+                    branchOverride: div.unit_id || '',
+                    departmentOverride: div.department || '',
+                    transactionOfficeOverride: div.transaction_code || '',
+                    accountOverride: {
+                        number: safeString(div.account_number).trim(),
+                        name: safeString(div.account_name).trim()
+                    }
+                }));
             }
-        }));
+        } else {
+            // Chưa có phân bổ chi phí -> giữ logic mặc định: sinh 1 dòng chi phí gộp để KT nhập sau
+            rows.push(buildExpenseEntryRow({
+                expenseId: c.expenseId,
+                request: c.request,
+                vendor: c.vendor,
+                entryCode: AUTO_ENTRY_CODE.COST,
+                amount: costAmount,
+                order: order++,
+                accountOverride: {
+                    number: '',
+                    name: ''
+                }
+            }));
+        }
     }
 
-    // Dòng 2: TT-BK-02 - Dòng thuế GTGT (Nợ) (chỉ sinh khi có thuế khấu trừ)
+    // Dòng 2: DC-BK-02 - Dòng thuế GTGT (Nợ) (chỉ sinh khi có thuế khấu trừ)
     if (c.hasTax && totalTaxAmount > 0) {
         for (var tIdx = 0; tIdx < c.taxInfo.groups.length; tIdx++) {
             var taxGroup = c.taxInfo.groups[tIdx];
@@ -1333,8 +1411,9 @@ function buildExpenseCaseEntries(c) {
         }
     }
 
-    // Dòng 3: TT-BK-03* - Ghi nhận nghĩa vụ thanh toán (Có) (bỏ trống số tài khoản để KT nhập sau)
+    // Dòng 3: DC-BK-03* - Ghi nhận nghĩa vụ thanh toán (Có) (Mặc định ban đầu TK 224160300)
     if (c.expenseAmount > 0) {
+        var liabilityAccount = resolveAccount(AUTO_ENTRY_CODE.LIABILITY, c.vendor);
         rows.push(buildExpenseEntryRow({
             expenseId: c.expenseId,
             request: c.request,
@@ -1342,10 +1421,7 @@ function buildExpenseCaseEntries(c) {
             entryCode: AUTO_ENTRY_CODE.LIABILITY,
             amount: c.expenseAmount,
             order: order++,
-            accountOverride: {
-                number: '',
-                name: ''
-            }
+            accountOverride: liabilityAccount
         }));
     }
 
@@ -1364,6 +1440,9 @@ function buildExpenseEntryRow(params) {
         throw new Error('Thiếu paymentVendorId khi sinh bút toán ' + entryType + ' cho món Dự chi.');
     }
 
+    var entryDescription = safeString(params.request && params.request.description).trim() ||
+        safeString(params.vendor && params.vendor.transaction_description).trim();
+
     return {
         id: '',
         payment_id: params.expenseId,
@@ -1379,7 +1458,7 @@ function buildExpenseEntryRow(params) {
         transaction_office: params.transactionOfficeOverride || GL_DEFAULT_TRANSACTION_OFFICE,
         amount: params.amount,
         currency: params.vendor.currency,
-        description: safeString(params.vendor.transaction_description).trim(),
+        description: entryDescription,
         vendor_id: params.vendor.vendor_id,
         ref_id: paymentVendorId,
         'ref.id': paymentVendorId,
@@ -1407,7 +1486,16 @@ function resolveAccount(entryCode, vendor, taxInfo) {
         };
     }
 
-    // Dòng chi phí và dòng phải trả sinh tự động bỏ trống số tài khoản để KT nhập sau
+    if (entryCode === AUTO_ENTRY_CODE.LIABILITY) {
+        var accNum = DEFAULT_EXPENSE_LIABILITY_ACCOUNT.number;
+        var accName = getGlAccountName(accNum) || DEFAULT_EXPENSE_LIABILITY_ACCOUNT.name;
+        return {
+            number: accNum,
+            name: accName
+        };
+    }
+
+    // Dòng chi phí sinh tự động bỏ trống số tài khoản để KT nhập sau
     return {
         number: '',
         name: ''
@@ -2576,6 +2664,21 @@ function handleExpenseInvoiceChange(rec) {
         syncExpenseEntryBySourceChange('esdHTKTpaymentInvoice', rec);
     } catch (ex) {
         debugExpenseEntry('INVOICE-TRIGGER-ERROR', 'expenseId=' + expenseId + ', ex=' + ex.toString());
+    }
+}
+
+function handleExpenseCostDivisionChange(rec) {
+    if (!rec) return;
+    var expenseId = safeString(rec['payment.id'] || rec['id']).trim();
+    if (!expenseId) return;
+
+    var request = getExpenseRequest(expenseId);
+    if (!request || isGenerationPhaseLocked(request.current_phase)) return;
+
+    try {
+        syncExpenseEntryBySourceChange('esdHTKTpaymentCostDivision', rec);
+    } catch (ex) {
+        debugExpenseEntry('COST-DIVISION-TRIGGER-ERROR', 'expenseId=' + expenseId + ', ex=' + ex.toString());
     }
 }
 
