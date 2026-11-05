@@ -70,6 +70,11 @@ function createExpenseRequest(input) {
         }
 
         if (returnCode == RC_SUCCESS) {
+            // Điểm nối đồng bộ tạo mới S4 đặt ngay sau Add thành công, không dùng trigger.
+            // TẠM TẮT cho Dự chi: ESD_XDCB_SYNC_SQUAD_DATA chưa hỗ trợ payment.category="Dự chi"
+            // hoặc phiếu trống chưa có HĐ/NCC. Chờ S4 bổ sung hàm/payload Dự chi rồi mới nối tại đây.
+            // Chưa gọi squad6ThemMoiTienDoThanhToanTamUngCuaHDTH1/TH2; không truyền HĐ/MST giả.
+
             createActivity(
                     "activityHTKTpayment",
                     'Thêm mới Đề nghị Dự chi: Mã đề nghị: "' +
@@ -251,7 +256,6 @@ function generateDocumentCode(docType, branchCode) {
  * ========================================================= */
 
 function htktCreateExpense_detectInitialRoleByRights(contactId) {
-    var RIGHT_VIEW_INVOICE = "0040040003000001";
     var RIGHT_VIEW_EXPENSE = "0040040004000001";
     var RIGHT_CREATE_EXPENSE = "0040040004000002";
     var RIGHT_ACCOUNTING_INPUT = "0040040004000003";
@@ -260,7 +264,6 @@ function htktCreateExpense_detectInitialRoleByRights(contactId) {
 
     if (
             htktCreateExpense_hasAllRights(rights, [
-                RIGHT_VIEW_INVOICE,
                 RIGHT_VIEW_EXPENSE,
                 RIGHT_CREATE_EXPENSE,
                 RIGHT_ACCOUNTING_INPUT
@@ -271,7 +274,6 @@ function htktCreateExpense_detectInitialRoleByRights(contactId) {
 
     if (
             htktCreateExpense_hasAllRights(rights, [
-                RIGHT_VIEW_INVOICE,
                 RIGHT_VIEW_EXPENSE,
                 RIGHT_CREATE_EXPENSE
             ])
