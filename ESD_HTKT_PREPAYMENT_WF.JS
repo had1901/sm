@@ -83,7 +83,7 @@ var HTKT_WF_DSM_STATUS = {
 
 /*
  * HẬU KIỂM không được thao tác các action workflow của hồ sơ.
- * Chỉ bổ sung lớp phủ quyết theo right riêng của module; các điều kiện
+ * Chỉ bổ sung lớp phủ quyết theo right Hậu kiểm dùng chung; các điều kiện
  * phase/actor hiện hữu bên dưới được giữ nguyên cho mọi role khác.
  */
 function isPostAuditContext(record) {
@@ -139,12 +139,21 @@ function isPostAuditOperator(record) {
 
         if (!currentUser) return false;
 
-        var rights = lib.ESD_PERMS_RIGHTS.permsRight(currentUser) || [];
-
+        var rights = vars["$G.rights"] || [];
         if (rights && rights.toArray) rights = rights.toArray();
+        if (typeof rights === "string") rights = [rights];
 
         for (var i = 0; i < rights.length; i++) {
-            if (String(rights[i] || "").trim() === "0040040002000010") {
+            if (String(rights[i] || "").trim() === "0040040005000001") {
+                return true;
+            }
+        }
+
+        rights = lib.ESD_PERMS_RIGHTS.permsRight(currentUser) || [];
+        if (rights && rights.toArray) rights = rights.toArray();
+
+        for (var j = 0; j < rights.length; j++) {
+            if (String(rights[j] || "").trim() === "0040040005000001") {
                 return true;
             }
         }
