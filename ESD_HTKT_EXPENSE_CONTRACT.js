@@ -1,13 +1,14 @@
 /**
  * ScriptLibrary: ESD_HTKT_EXPENSE_CONTRACT
- * Đọc HĐ S4 theo quyền của từng luồng; cung cấp khóa gói thầu cho resolver NCC Dự chi.
- * Nhánh đọc Thanh toán độc lập, không thay đổi listPurchaseContracts của S2/Tạm ứng.
+ * Dự chi: phiếu cha -> quyền/phạm vi -> SHTL -> HĐ thật -> resolver NCC S4.
+ * TH1: SHTL.id.contract = HĐ.id. TH2: SHTL.id.contract = hồ sơ.id -> hồ sơ.ctr.id = HĐ.id.
+ * Chỉ đổi nguồn Dự chi XDCB; HHDV ủy quyền S2, reader Thanh toán/Tạm ứng giữ nguyên.
  */
 
 /** Nguồn HĐ được xác định từ phiếu đã lưu, không lấy từ lựa chọn phía client. */
 function listExpenseContracts(input) {
     var payment = null;
-    try {
+    try { 
         var params = expenseContractParams(input);
         var paymentId = expenseContractText(params.paymentId);
         var actor = expenseContractText(params.currentUser);
@@ -81,11 +82,11 @@ function listExpenseContracts(input) {
     }
 }
 
-/** Dự chi: xác định phạm vi bằng quyền Dự chi rồi đọc HĐ S4 đủ điều kiện. */
+/** Dự chi XDCB: lấy nguồn từ SHTL rồi phân giải HĐ S4, giữ quyền/phạm vi Dự chi hiện có. */
 function listExpenseXdcbContracts(input) {
     try {
         var params = expenseContractParams(input);
-        return expenseContractReadXdcb(params, expenseContractScope(params.currentUser, params.paymentId));
+        return expenseContractReadDigitizations(params, expenseContractScope(params.currentUser, params.paymentId));
     } catch (error) {
         return { 
             success: false, 
@@ -97,6 +98,381 @@ function listExpenseXdcbContracts(input) {
             message: String(error.message || error) 
         };
     }
+}
+
+/**
+ * Dự chi XDCB đi từ SHTL, dùng query native giống các reader S2 đang chạy trên SM.
+ * Không truyền SELECT/subselect vào doSelectEx: mẫu đó bị môi trường hiện tại từ chối (GET probe RC 71).
+ * Chỉ đọc khóa/cột sort của HĐ theo lô, gộp/sắp xếp rồi đọc đủ thông tin của trang cần trả.
+ */
+function expenseContractReadDigitizations(params, scopeQuery) {
+    var plan = expenseDigitizationContractPlan(params, scopeQuery);
+    var source = expenseDigitizationReadSourceLinks(params);
+    var keys = [];
+    var seen = {};
+    var keyFields = plan.sortField === "id" ? ["id"] : ["id", plan.sortField];
+
+    // Nguồn rỗng là kết quả hợp lệ, không mở cursor HĐ rồi biến trường hợp này thành lỗi đọc trang.
+    for (var batch = 0; batch < source.contractIds.length; batch += 100) {
+        var keyQuery =
+            "(" +
+            plan.query +
+            ") and " +
+            expenseDigitizationIdQuery(source.contractIds.slice(batch, batch + 100));
+        // Chuẩn hóa giá trị ngay khi cursor còn mở, cùng kiểu dữ liệu với DTO HĐ cũ.
+        var batchKeys = expenseDigitizationReadRows(
+            "esdXDCBrepairProjectCtr",
+            keyQuery,
+            keyFields,
+            "contract-keys",
+            function (file) {
+                var value = file[plan.sortField];
+                return {
+                    id: expenseContractText(file.id),
+                    value:
+                        plan.sortField === "contract.amount"
+                            ? Number(value || 0)
+                            : plan.sortField === "effective.date"
+                              ? expenseContractDate(value)
+                              : expenseContractText(value)
+                };
+            }
+        );
+        for (var k = 0; k < batchKeys.length; k++) {
+            var key = "$" + batchKeys[k].id;
+            if (batchKeys[k].id && !seen[key]) {
+                keys.push(batchKeys[k]);
+                seen[key] = true;
+            }
+        }
+    }
+
+    // Một HĐ có nhiều SHTL/hồ sơ chỉ tính một dòng. Phải lọc quyền và loại trùng trước khi cắt trang.
+    keys.sort(function (a, b) {
+        var comparison = a.value < b.value ? -1 : a.value > b.value ? 1 : 0;
+        if (comparison) return plan.direction === "desc" ? -comparison : comparison;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    var pageKeys = keys.slice(plan.start - 1, plan.start - 1 + plan.count);
+    var pageIds = [];
+    for (var p = 0; p < pageKeys.length; p++) pageIds.push(pageKeys[p].id);
+    var rows = [];
+
+    if (pageIds.length) {
+        var pageQuery = "(" + plan.query + ") and " + expenseDigitizationIdQuery(pageIds);
+        var pageRows = expenseDigitizationReadRows(
+            "esdXDCBrepairProjectCtr",
+            pageQuery,
+            plan.fields,
+            "contract-page",
+            function (file) {
+                var row = expenseContractRow(file);
+                var money = expenseXdcbContractAmounts(file);
+                row.totalPaidAmount = money.totalPaidAmount;
+                row.remainingAmount = money.remainingAmount;
+                return row;
+            }
+        );
+        var byId = {};
+        for (var r = 0; r < pageRows.length; r++) byId["$" + pageRows[r].id] = pageRows[r];
+        for (var i = 0; i < pageIds.length; i++) {
+            var row = byId["$" + pageIds[i]];
+            if (!row) {
+                throw expenseContractError(
+                    "SHTL_SOURCE_CHANGED",
+                    "HĐ XDCB đã thay đổi trong khi tải trang. Vui lòng tải lại danh sách."
+                );
+            }
+            rows.push(row);
+        }
+        expenseDigitizationAttachReferences(rows, source);
+    }
+
+    return {
+        success: true,
+        data: rows,
+        totalCount: keys.length,
+        start: plan.start,
+        count: plan.count,
+        returnedCount: rows.length,
+        hasMore: plan.start - 1 + rows.length < keys.length
+    };
+}
+
+/** Đọc SHTL TH1/TH2 bằng native query, phân giải hồ sơ và giữ các tham chiếu theo HĐ thật. */
+function expenseDigitizationReadSourceLinks(params) {
+    var query =
+        "(" +
+        expenseDigitizationSourceQuery("XDCB_CTSC_XMCT_TTQ", params.digitizationId) +
+        ") or (" +
+        expenseDigitizationSourceQuery("XDCB_XMCT_VTQ", params.digitizationId) +
+        ")";
+    var sources = expenseDigitizationReadRows(
+        "esdHDdigitization",
+        query,
+        ["id", "type.document", "id.contract"],
+        "shtl-sources"
+    );
+    var dossierIds = [];
+    var dossierSeen = {};
+    var dossiers = {};
+    for (var i = 0; i < sources.length; i++) {
+        var reference = expenseContractText(sources[i]["id.contract"]);
+        if (sources[i]["type.document"] === "XDCB_XMCT_VTQ" && !dossierSeen["$" + reference]) {
+            dossierIds.push(reference);
+            dossierSeen["$" + reference] = true;
+        }
+    }
+    // TH1 không phải đọc bảng hồ sơ. TH2 chỉ đọc các ID do SHTL thực sự dẫn tới, tối đa 100 ID mỗi lô.
+    for (var d = 0; d < dossierIds.length; d += 100) {
+        var dossierRows = expenseDigitizationReadRows(
+            "esdXDCBctrPaymentAdvance",
+            expenseDigitizationIdQuery(dossierIds.slice(d, d + 100)),
+            ["id", "ctr.id", "contractor.tax.code"],
+            "shtl-dossiers"
+        );
+        for (var h = 0; h < dossierRows.length; h++) {
+            var dossierKey = "$" + expenseContractText(dossierRows[h].id);
+            if (dossiers[dossierKey]) {
+                throw expenseContractError("AMBIGUOUS_DOSSIER", "Trùng ID hồ sơ-HĐ S4.");
+            }
+            dossiers[dossierKey] = dossierRows[h];
+        }
+    }
+
+    var contractIds = [];
+    var references = {};
+    for (var s = 0; s < sources.length; s++) {
+        var item = sources[s];
+        var ref = expenseContractText(item["id.contract"]);
+        var dossier = item["type.document"] === "XDCB_XMCT_VTQ" ? dossiers["$" + ref] : null;
+        var contractId =
+            item["type.document"] === "XDCB_CTSC_XMCT_TTQ"
+                ? ref
+                : expenseContractText(dossier && dossier["ctr.id"]);
+        // Không dùng ID hồ sơ thay HĐ.id, không fallback sang toàn bộ HĐ khi liên kết đứt.
+        if (!contractId || !expenseContractText(item.id)) continue;
+        if (params.contractId && contractId !== expenseContractText(params.contractId)) continue;
+        if (params.contractCode && contractId !== expenseContractText(params.contractCode))
+            continue;
+        var contractKey = "$" + contractId;
+        if (!references[contractKey]) {
+            references[contractKey] = [];
+            contractIds.push(contractId);
+        }
+        references[contractKey].push({
+            id: expenseContractText(item.id),
+            type: expenseContractText(item["type.document"]),
+            referenceId: ref,
+            sourceCase: dossier ? "TH2" : "TH1",
+            taxCode: expenseContractText(dossier && dossier["contractor.tax.code"])
+        });
+    }
+    return {
+        contractIds: contractIds,
+        references: references
+    };
+}
+
+/** Bộ lọc SHTL native; giữ nguyên loại/khóa, chưa tự thêm trạng thái SHTL khi chưa có quy tắc. */
+function expenseDigitizationSourceQuery(type, sourceId) {
+    if (type !== "XDCB_CTSC_XMCT_TTQ" && type !== "XDCB_XMCT_VTQ") {
+        throw expenseContractError("INVALID_SHTL_TYPE", "Loại SHTL XDCB không hợp lệ.");
+    }
+    var query =
+        'type.document="' +
+        type +
+        '" and not null(id) and id~="" and not null(id.contract) and id.contract~=""';
+    if (expenseContractText(sourceId)) query += ' and id="' + expenseContractQuote(sourceId) + '"';
+    return query;
+}
+
+/** Gắn metadata đã đọc trên server vào trang HĐ; chỉ dùng để kiểm tra NCC, không thay contract.id của món. */
+function expenseDigitizationAttachReferences(rows, source) {
+    for (var i = 0; i < rows.length; i++) {
+        var refs = source.references["$" + rows[i].id];
+        if (!refs || !refs.length) {
+            throw expenseContractError(
+                "SHTL_SOURCE_CHANGED",
+                "Không xác định được nguồn SHTL của HĐ XDCB."
+            );
+        }
+        rows[i].digitizationReferences = refs;
+    }
+}
+
+/** Đọc cursor native readonly; rỗng là hợp lệ, lỗi phải giữ bước/table/RC để chẩn đoán trên SM. */
+function expenseDigitizationReadRows(table, query, fields, stage, mapper) {
+    var file = new SCFile(table, SCFILE_READONLY);
+    var rows = [];
+    var step = "doSelect";
+    try {
+        file.setFields(fields);
+        var rc = file.doSelect(query);
+        while (rc === RC_SUCCESS) {
+            if (mapper) {
+                rows.push(mapper(file));
+            } else {
+                var row = {};
+                for (var i = 0; i < fields.length; i++) row[fields[i]] = file[fields[i]];
+                rows.push(row);
+            }
+            step = "getNext";
+            rc = file.getNext();
+        }
+        if (rc !== RC_NO_MORE) {
+            throw expenseDigitizationQueryError(stage || "source-read", table, step, rc, query);
+        }
+        return rows;
+    } finally {
+        expenseContractClose(file);
+    }
+}
+
+/** Đưa RC gốc vào thông báo; query chỉ ghi Messages để kiểm tra, không gửi credentials/URL ra client. */
+function expenseDigitizationQueryError(stage, table, step, rc, query) {
+    var rcText = "";
+    try {
+        if (typeof RCtoString === "function") rcText = String(RCtoString(rc));
+    } catch (translateError) {
+        /* Giữ nguyên RC ngay cả khi SM không dịch được mã lỗi. */
+    }
+    try {
+        print(
+            "[DC-XDCB-SHTL][QUERY-ERROR] " +
+                JSON.stringify({
+                    stage: stage,
+                    table: table,
+                    step: step,
+                    rc: String(rc),
+                    rcText: rcText,
+                    query: query
+                })
+        );
+    } catch (logError) {
+        /* Log không được che lỗi query gốc. */
+    }
+    var code =
+        table === "esdXDCBrepairProjectCtr" ? "CONTRACT_QUERY_FAILED" : "SHTL_SOURCE_READ_FAILED";
+    return expenseContractError(
+        code,
+        "Không đọc được dữ liệu XDCB (" +
+            stage +
+            "/" +
+            step +
+            ", " +
+            table +
+            ", RC=" +
+            rc +
+            (rcText ? ": " + rcText : "") +
+            ")."
+    );
+}
+
+/** Giữ nguyên bộ lọc/quyền/sort của HĐ; reader gắn thêm các ID hợp lệ do SHTL dẫn tới. */
+function expenseDigitizationContractPlan(params, scopeQuery) {
+    var start = expenseContractPageNumber(params.start, 1);
+    var count = Math.min(expenseContractPageNumber(params.count, 10), 100);
+    var sort = expenseContractText(params.sortField) || "id";
+    var sortFields = {
+        id: "id",
+        contractCode: "id",
+        name: "contract.name",
+        contractAmount: "contract.amount",
+        effectiveDate: "effective.date",
+        status: "status",
+        responsibleOfficer: "responsible.officer",
+        currency: "currency"
+    };
+    var direction = expenseContractText(params.sortOrder) || "asc";
+    if (!Object.prototype.hasOwnProperty.call(sortFields, sort))
+        throw expenseContractError("INVALID_SORT_FIELD", "Cột sắp xếp HĐ XDCB không hợp lệ.");
+    if (direction !== "asc" && direction !== "desc")
+        throw expenseContractError("INVALID_SORT_ORDER", "Chiều sắp xếp HĐ XDCB không hợp lệ.");
+    var projectType = expenseContractText(params.projectType);
+    if (projectType && projectType !== "REPAIR" && projectType !== "CONSTRUCTION")
+        throw expenseContractError(
+            "INVALID_PROJECT_TYPE",
+            "Loại công trình/dự án XDCB không hợp lệ."
+        );
+    var from = expenseContractDateFilter(params.effectiveDateFrom);
+    var to = expenseContractDateFilter(params.effectiveDateTo);
+    if (from && to && from > to)
+        throw expenseContractError("INVALID_DATE_RANGE", "Khoảng ngày hiệu lực không hợp lệ.");
+
+    var repair =
+        '((not null(repair.id) and repair.id~="") and (null(construction.id) or construction.id=""))';
+    var construction =
+        '((not null(construction.id) and construction.id~="") and (null(repair.id) or repair.id=""))';
+    // Dự chi XDCB chỉ chọn HĐ Đang thực hiện; SHTL không làm thay đổi điều kiện trạng thái này.
+    var conditions = [
+        "(null(deleted.flag) or deleted.flag=false)",
+        'status="Đang thực hiện"',
+        scopeQuery,
+        projectType === "REPAIR"
+            ? repair
+            : projectType === "CONSTRUCTION"
+              ? construction
+              : "(" + repair + " or " + construction + ")"
+    ];
+    var contractId = expenseContractText(params.contractId),
+        contractCode = expenseContractText(params.contractCode);
+    if (contractId) conditions.push('id="' + expenseContractQuote(contractId) + '"');
+    // contractCode chỉ là tên tham số cũ; luôn đối chiếu HĐ.id, không dùng contract.code của S4.
+    if (contractCode) conditions.push('id="' + expenseContractQuote(contractCode) + '"');
+    var keyword = expenseContractText(params.keyword);
+    if (keyword) {
+        var escaped = expenseContractQuote(keyword.toLowerCase());
+        conditions.push(
+            '(tolower(id) like "*' +
+                escaped +
+                '*" or tolower(contract.name) like "*' +
+                escaped +
+                '*")'
+        );
+    }
+    if (from) conditions.push('effective.date >= "' + from + ' 00:00:00"');
+    if (to) conditions.push('effective.date < "' + expenseContractNextDate(to) + ' 00:00:00"');
+    var fields = [
+        "id",
+        "contract.name",
+        "contract.amount",
+        "total.amount.paid",
+        "currency",
+        "signed.date",
+        "effective.date",
+        "expire.date",
+        "status",
+        "responsible.officer",
+        "repair.id",
+        "construction.id",
+        "type.budget",
+        "vendor.name",
+        "tax.code",
+        "vendor.address",
+        "tender.package.id"
+    ];
+
+    return {
+        start: start,
+        count: count,
+        sortField: sortFields[sort],
+        direction: direction,
+        fields: fields,
+        query: conditions.join(" and ")
+    };
+}
+
+/** Ghép danh sách khóa nội bộ đã escape; field thuộc whitelist, danh sách rỗng phải trả điều kiện không khớp. */
+function expenseDigitizationIdQuery(ids, field) {
+    field = field || "id";
+    if (field !== "id" && field !== "id.contract" && field !== "ctr.id")
+        throw expenseContractError("INVALID_LINK_FIELD", "Khóa liên kết SHTL không hợp lệ.");
+    if (!ids.length) return "1=0";
+    var conditions = [];
+    for (var i = 0; i < ids.length; i++)
+        conditions.push(field + '="' + expenseContractQuote(ids[i]) + '"');
+    return "(" + conditions.join(" or ") + ")";
 }
 
 /** Thanh toán: chỉ đọc HĐ S4 bằng quyền tạo Thanh toán, không tạo phiếu/NCC hay dùng quyền Dự chi. */
@@ -456,6 +832,24 @@ function expenseContractDateFilter(value) {
 /** Chuẩn hóa ngày SM thành giá trị trả về API. */
 function expenseContractDate(value) {
     return value && value.toISOString ? value.toISOString() : expenseContractText(value);
+}
+
+/** Đọc số tiền S4; field trống là chưa có dữ liệu, không tự biến thành số 0. */
+function expenseXdcbMoney(value) {
+    if (value == null || expenseContractText(value) === "") return null;
+    var amount = Number(value);
+    if (!isFinite(amount)) throw new Error("Số tiền nguồn S4 không hợp lệ.");
+    return amount;
+}
+
+/** HĐ S4: số còn lại = giá trị HĐ - tổng đã TU/TT; giữ null nếu nguồn chưa đủ hai số. */
+function expenseXdcbContractAmounts(record) {
+    var total = expenseXdcbMoney(record["contract.amount"]);
+    var paid = expenseXdcbMoney(record["total.amount.paid"]);
+    return {
+        totalPaidAmount: paid,
+        remainingAmount: total === null || paid === null ? null : total - paid
+    };
 }
 
 /** Lấy đầu ngày kế tiếp để bộ lọc bao gồm toàn bộ ngày kết thúc. */

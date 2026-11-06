@@ -1,6 +1,8 @@
 /**
  * ScriptLibrary : ESD_HTKT_EXPENSE_FILE_ATTACHMENT
  * Quản lý tệp đính kèm của đề nghị Dự chi.
+ * Phần 1: thêm/xem/tải/bỏ tài liệu đã gắn với món Dự chi, giữ phân biệt TL_S2 và TL_S4.
+ * Phần 2 cuối file: lấy và xác minh tài liệu nguồn qua SHTL cho XDCB; HHDV ủy quyền reader S2.
  */
 
 function run() {
@@ -10,6 +12,9 @@ function run() {
 
         var result;
         switch (input.name) {
+            case "listExpenseSourceDocuments": // Phần 2: nguồn tài liệu SHTL XDCB, HHDV dùng S2.
+                result = listExpenseSourceDocuments(input);
+                break;
             case "addExpenseFileAttachment":
                 result = addFileAttachment(input);
                 break;
@@ -44,6 +49,11 @@ function addFileAttachment(fileInput) {
     var dataObj = parseExpenseAttachmentInput(fileInput);
     if (!(dataObj instanceof Array) || dataObj.length === 0) {
         return { success: false, message: "Dữ liệu không phải là mảng hoặc mảng trống" };
+    }
+
+    // Xác minh toàn bộ lựa chọn S4 trước Insert dòng đầu; HHDV giữ dữ liệu/mapper cũ.
+    for (var p = 0; p < dataObj.length; p++) {
+        dataObj[p] = prepareExpenseSourceAttachment(dataObj[p] || {});
     }
 
     var successFileNames = [];
@@ -102,7 +112,7 @@ function mapExpenseAttachment(record, data, attachmentId) {
     record["size"] = String(size || "0");
     record["doc.code"] = data["document.type"] || data.documentType || "DINH_KEM";
     record["uploaded.at"] = new Date();
-    record["type"] = "TL_S2";
+    record["type"] = data._expenseShtlSource === true ? "TL_S4" : "TL_S2";
 }
 
 function getFileAttachments(fileInput) {
@@ -166,6 +176,20 @@ function deleteFileAttachment(fileInput) {
         if (attachmentFile.doSelect(query) !== RC_SUCCESS) {
             return { success: false, message: "Không tìm thấy tài liệu thuộc món Dự chi." };
         }
+        // Tệp SHTL S4 chỉ là tham chiếu: bỏ liên kết ở món, không xóa tài liệu gốc trên ECM/SHTL.
+        if (String(attachmentFile["type"] || "") === "TL_S4") {
+            var sourceContext = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(
+                { "payment.id": attachmentFile["payment.id"] }, dataObj.currentUser, true
+            );
+            if (sourceContext.category !== "XDCB" || sourceContext.payment.id !== dataObj.paymentId) {
+                return { success: false, message: "Tài liệu không thuộc phiếu Dự chi XDCB này." };
+            }
+            var unlinkRc = attachmentFile.doDelete();
+            return {
+                success: unlinkRc === RC_SUCCESS,
+                message: unlinkRc === RC_SUCCESS ? "Đã bỏ tài liệu khỏi món Dự chi." : "Không bỏ được liên kết tài liệu SHTL."
+            };
+        }
         var ecmDocId = String(attachmentFile["ecm.doc.id"] || "").trim();
         if (!ecmDocId) {
             return { success: false, message: "Tài liệu Dự chi chưa có ecm.doc.id để xóa trên ECM." };
@@ -226,4 +250,188 @@ function closeExpenseAttachmentFile(file) {
 
 function escapeExpenseAttachmentQueryValue(value) {
     return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+// ============================================================================
+// PHẦN 2 - NGUỒN TÀI LIỆU SHTL CHO DỰ CHI XDCB (S4)
+// TH1: SHTL -> HĐ. TH2: SHTL -> hồ sơ -> HĐ; lấy tài liệu qua esdHDtlks.parent.id.
+// HHDV ủy quyền reader S2; các hàm dưới không ghi tiến độ hoặc tổng tiền S4.
+// Giữ kiểm tra actor/phase/phạm vi khi chọn và kiểm tra lại tài liệu/ECM trước Insert.
+// ============================================================================
+
+/** Dự chi XDCB: món -> SHTL TH1/TH2 -> esdHDtlks.parent.id. HHDV ủy quyền reader S2. */
+function listExpenseSourceDocuments(input) {
+    try {
+        var params = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseContractParams(input);
+        var actor = sourceDocumentText(params.currentUser);
+        if (!actor) throw new Error("Không xác định được người lấy tài liệu.");
+        var context = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(
+            { "payment.id": params.paymentId },
+            actor,
+            true
+        );
+        if (context.category === "HHDV") {
+            // HHDV giữ query S2; chuyển queryReturnArray thành JSON cho action Dự chi.
+            var legacy = { queryString: JSON.stringify(params) };
+            lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listFileAttachment(legacy);
+            var values = legacy.queryReturnArray || [];
+            if (values.toArray) values = values.toArray();
+            var oldRows = [];
+            for (var l = 0; l < values.length; l++) {
+                var raw = values[l];
+                // Datum hoặc Java String qua scope SL không nhất thiết có typeof === string.
+                if (raw && typeof raw.getText === "function") raw = raw.getText();
+                var text = sourceDocumentText(raw);
+                var value =
+                    typeof raw === "string" || text.charAt(0) === "{" ? JSON.parse(text) : raw;
+                oldRows.push(value.esdHDtlks || value);
+            }
+            return { success: true, data: oldRows, contractCategory: "HHDV" };
+        }
+        var source = expenseSourceDocumentContext(params, context, actor);
+        var rows = [];
+        var seen = {};
+        for (var start = 0; start < source.ids.length; start += 100) {
+            var conditions = [];
+            var ids = source.ids.slice(start, start + 100);
+            for (var n = 0; n < ids.length; n++)
+                conditions.push('parent.id="' + sourceDocumentQuote(ids[n]) + '"');
+            var query = "(" + conditions.join(" or ") + ') and status="So hoa thanh cong"';
+            var docs = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseDigitizationReadRows(
+                "esdHDtlks",
+                query,
+                [
+                    "id",
+                    "name",
+                    "sizeKb",
+                    "created.at",
+                    "executor",
+                    "doc.id",
+                    "parent.id",
+                    "attach.id",
+                    "document.type",
+                    "status"
+                ],
+                "expense-source-documents",
+                sourceDocumentRow
+            );
+            for (var d = 0; d < docs.length; d++) {
+                if (!seen["$" + docs[d].id]) {
+                    rows.push(docs[d]);
+                    seen["$" + docs[d].id] = true;
+                }
+            }
+        }
+        return { success: true, data: rows, contractCategory: "XDCB" };
+    } catch (error) {
+        return { success: false, data: [], message: String(error.message || error) };
+    }
+}
+
+/** Kiểm tra món thuộc phiếu, phân giải HĐ qua SHTL; TH2 giới hạn theo NCC đã lưu nếu có. */
+function expenseSourceDocumentContext(params, context, actor) {
+    var itemId = sourceDocumentText(params.paymentVendorId);
+    if (!itemId) throw new Error("Thiếu mã món Dự chi khi lấy tài liệu SHTL.");
+    var item = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
+        "esdHTKTpaymentVendor",
+        'id="' +
+            sourceDocumentQuote(itemId) +
+            '" and payment.id="' +
+            sourceDocumentQuote(context.payment.id) +
+            '"',
+        ["id", "payment.id", "contract.id", "vendor.id"],
+        true
+    );
+    if (
+        params.contractId &&
+        sourceDocumentText(params.contractId) !== sourceDocumentText(item["contract.id"])
+    ) {
+        throw new Error("HĐ lấy tài liệu khác HĐ đã lưu trên món Dự chi.");
+    }
+    var contract = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSelection(
+        item["contract.id"],
+        actor,
+        context.payment.id
+    );
+    var tax = "";
+    if (sourceDocumentText(item["vendor.id"])) {
+        var vendor = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(
+            item["vendor.id"]
+        );
+        tax = sourceDocumentText(vendor["vendor.number"]);
+        lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.resolveExpenseXdcbSupplier(contract, "", tax);
+    }
+    var ids = [];
+    var refs = contract.digitizationReferences || [];
+    for (var i = 0; i < refs.length; i++) {
+        if (refs[i].sourceCase === "TH1" || !tax || sourceDocumentText(refs[i].taxCode) === tax)
+            ids.push(refs[i].id);
+    }
+    if (!ids.length) throw new Error("Không có SHTL phù hợp HĐ/NCC của món Dự chi.");
+    return { ids: ids, contract: contract };
+}
+
+/** Dùng field thực sizeKb/executor; chuyển ngày khi cursor còn mở, giữ ID ECM nguồn. */
+function sourceDocumentRow(file) {
+    return {
+        id: sourceDocumentText(file.id),
+        name: sourceDocumentText(file.name),
+        sizeKb: file.sizeKb == null ? null : Number(file.sizeKb),
+        size: file.sizeKb == null ? null : Number(file.sizeKb) * 1024,
+        "created.at": lib.ESD_HTKT_EXPENSE_CONTRACT.expenseContractDate(file["created.at"]),
+        executor: sourceDocumentText(file.executor),
+        "doc.id": sourceDocumentText(file["doc.id"]),
+        "attach.id": sourceDocumentText(file["attach.id"]),
+        "parent.id": sourceDocumentText(file["parent.id"]),
+        "document.type": sourceDocumentText(file["document.type"]),
+        status: sourceDocumentText(file.status),
+        source: "S4"
+    };
+}
+
+/** Kiểm tra lại tài liệu XDCB trước Insert, lấy metadata từ nguồn thay vì tin ECM/name từ client. */
+function prepareExpenseSourceAttachment(data) {
+    // Chỉ server được đánh dấu tham chiếu S4.
+    data._expenseShtlSource = false;
+    var actor = sourceDocumentText(data.currentUser);
+    var context = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(
+        { "payment.id": data.paymentId || data.transactionId },
+        actor,
+        false
+    );
+    if (context.category !== "XDCB") return data;
+    var result = listExpenseSourceDocuments({
+        details: {
+            currentUser: actor,
+            paymentId: context.payment.id,
+            paymentVendorId: data.paymentVendorId
+        }
+    });
+    if (!result.success) throw new Error(result.message);
+    var selectedId = sourceDocumentText(data.id);
+    var selectedDoc = sourceDocumentText(data["doc.id"] || data.ecmDocId);
+    for (var i = 0; i < result.data.length; i++) {
+        var row = result.data[i];
+        if (row.id !== selectedId) continue;
+        if (!row["doc.id"] || (selectedDoc && row["doc.id"] !== selectedDoc)) {
+            throw new Error("Tài liệu SHTL không có hoặc không khớp ID ECM.");
+        }
+        row.paymentId = context.payment.id;
+        row.transactionId = context.payment.id;
+        row.paymentVendorId = data.paymentVendorId;
+        row.currentUser = actor;
+        row._expenseShtlSource = true;
+        return row;
+    }
+    throw new Error("Tài liệu đã chọn không thuộc SHTL của HĐ/NCC này.");
+}
+
+/** Chuẩn hóa text, giữ nguyên số 0 đầu của ID/MST. */
+function sourceDocumentText(value) {
+    return value == null ? "" : String(value).replace(/^\s+|\s+$/g, "");
+}
+
+/** Escape giá trị cho native query; không nhận tên bảng/field từ client. */
+function sourceDocumentQuote(value) {
+    return sourceDocumentText(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }

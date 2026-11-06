@@ -213,13 +213,16 @@ function run() {
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.listPaymentXdcbContracts(input);
                 break;
             //Du chi
-            case "listExpenseContracts": // Danh sách HĐ/KMS theo hạng mục trên phiếu Dự chi: HHDV lấy S2, XDCB lấy S4.
+            case "listExpenseSourceDocuments": // Dự chi: S4 lấy tài liệu theo SHTL, HHDV giữ reader S2.
+                result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.listExpenseSourceDocuments(input);
+                break;
+            case "listExpenseContracts": // Dự chi: quyền/phase trên phiếu cha -> HHDV ủy quyền S2; XDCB qua SHTL -> HĐ S4.
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseContracts(input);
                 break;
-            case "listExpenseXdcbContracts":  // Danh sách HĐ S4 Đang thực hiện theo phạm vi được xem
+            case "listExpenseXdcbContracts": // Đọc Dự chi XDCB qua hai loại SHTL; lọc HĐ/phạm vi rồi phân trang trên SM.
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseXdcbContracts(input);
                 break;
-            case "getExpenseXdcbContract": // Chi tiết một HĐ S4 theo contractId (field id)
+            case "getExpenseXdcbContract": // Đọc lại nguồn SHTL và chi tiết theo HĐ.id; TH2 phải phân giải hồ sơ.ctr.id.
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.getExpenseXdcbContract(input);
                 break;
             case "getExpenceList":
