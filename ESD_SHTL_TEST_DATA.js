@@ -1360,3 +1360,162 @@ function shtlMockContractFillMissing(record) {
         return true;
     } finally { shtlTestClose(file); }
 }
+
+// ============================================================================
+// PHẦN D - THÊM NCC THỨ HAI CHO MỘT HĐ MOCK TH1 CHƯA PHÁT SINH NGHIỆP VỤ.
+// Giữ tổng HĐ; chia total.amount.due cho hai NCC. Không giả lập tiền đã TT/TƯ.
+// Dùng quyền/phiếu hiện tại, xác thực marker của bộ mock cũ kể cả phiếu tạo bộ mock đã bị xóa.
+// ============================================================================
+
+/** Xem trước thêm Mạnh Hưng vào mock _05_C; không ghi DB hoặc gọi OGL. */
+function previewSecondSupplier(options) {
+    return shtlSecondSupplierRun("preview", options || {});
+}
+
+/** Thêm đúng một NCC; chạy lại chỉ đọc kết quả đã có, không ghi đè các số tiền người dùng đang test. */
+function addSecondSupplier(options) {
+    return shtlSecondSupplierRun("add", options || {});
+}
+
+/** Kiểm tra owner/TH1/quyền/nguồn và chỉ phân bổ tiền khi mock chưa có món hoặc tiến độ. */
+function shtlSecondSupplierRun(action, options) {
+    var inserted = null;
+    var slots = null;
+    var first = null;
+    var firstSlot = null;
+    var originalDue = null;
+    var firstDue = null;
+    try {
+        var current = shtlTestContext(options);
+        var contractId = shtlTestText(options.contractId) || "S6DC_TEST_aff72456_M8_05_C";
+        var contractRows = shtlTestRead("esdXDCBrepairProjectCtr", 'id="' + shtlTestQuote(contractId) + '"',
+            ["id", "contract.name"]);
+        if (contractRows.length !== 1) throw new Error("Không đọc được HĐ mock đã chọn.");
+        var owner = shtlTestText(contractRows[0]["contract.name"]).split("|");
+        if (owner.length !== 3 || owner[1] !== current.actor.toLowerCase() || owner[2].indexOf("DC.") !== 0) {
+            throw new Error("HĐ không thuộc bộ mock của người dùng hiện tại; không ghi dữ liệu.");
+        }
+        var marker = "S6DC_SHTL_TEST|" + owner[1] + "|" + owner[2];
+        var seed = { actor: current.actor, paymentId: owner[2], marker: marker + "|CONTRACT_MATRIX8",
+            prefix: "S6DC_TEST_" + shtlTestHash(marker) + "_M8" };
+        var cases = shtlMockContractCases(seed);
+        var item = null;
+        for (var c = 0; c < cases.length; c++) if (cases[c].contractId === contractId) item = cases[c];
+        if (!item || item.sourceCase !== "TH1" || !item.packageId) {
+            throw new Error("Chỉ thêm NCC cho HĐ mock TH1 có gói thầu; TH2 còn bị giới hạn MST theo hồ sơ.");
+        }
+        slots = shtlMockContractSlots(seed, [item]);
+        var existing = shtlMockContractsExisting(slots);
+        first = existing[item.joinPrefix + "1"];
+        var secondId = item.joinPrefix + "2";
+        if (!first || !existing[item.shtlId] || !existing[item.packageId]) throw new Error("Thiếu nguồn HĐ/gói thầu/NCC/SHTL mock.");
+        var selection = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSelection(contractId, current.actor, current.paymentId);
+        var refs = selection.digitizationReferences || [];
+        var hasTH1 = false;
+        for (var r = 0; r < refs.length; r++) if (refs[r].id === item.shtlId && refs[r].sourceCase === "TH1") hasTH1 = true;
+        if (!hasTH1) throw new Error("SHTL TH1 của mock không còn hợp lệ.");
+        var secondTax = "0311368188";
+        if (shtlTestText(first["tax.code"]) === secondTax) throw new Error("NCC thêm trùng MST với NCC hiện có.");
+        if (existing[secondId]) {
+            if (shtlTestText(existing[secondId]["tax.code"]) !== secondTax ||
+                    shtlTestText(existing[secondId]["tender.package.id"]) !== item.packageId) {
+                throw new Error("Slot NCC2 đã được dùng cho dữ liệu khác; không ghi đè.");
+            }
+            return { success: true, action: action, reused: true, contractId: contractId, packageId: item.packageId,
+                suppliers: lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(selection) };
+        }
+        // Không thay số dư của một mock đã có món/tiến độ hoặc đã được người dùng nhập tiền thanh toán thử.
+        try { shtlMockContractsAssertUnused(slots); }
+        catch (usedError) { throw new Error("Không phân bổ lại tiền mock đã được sử dụng: " + String(usedError.message || usedError)); }
+        var money = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseXdcbMoney;
+        var contract = existing[contractId];
+        var total = money(contract["contract.amount"]);
+        var secondDue = options.secondDue == null ? 1000000 : Number(options.secondDue);
+        originalDue = money(first["total.amount.due"]);
+        firstDue = total - secondDue;
+        if (money(contract["total.amount.paid"]) !== 0 || money(first["total.amount.paid"]) !== 0 ||
+                originalDue !== total || !isFinite(secondDue) || secondDue <= 0 || firstDue <= 0) {
+            throw new Error("Tiền mock đã khác trạng thái ban đầu hoặc phần chia không hợp lệ; giữ nguyên để tránh mất số đang test.");
+        }
+        var templateId = "0311368188THAU-299";
+        var profileFields = ["id", "tax.code", "name", "address", "phone.number", "representative.name",
+            "bank.number", "bank.name", "contractor.group", "contractor.id"];
+        var templates = shtlTestRead("esdjoinXDCBtenderPackageContractor", 'id="' + templateId + '"', profileFields);
+        if (templates.length !== 1 || shtlTestText(templates[0]["tax.code"]) !== secondTax ||
+                !shtlTestText(templates[0].name) || !shtlTestText(templates[0].address)) {
+            throw new Error("NCC mẫu Mạnh Hưng không còn hợp lệ; không tự bịa thông tin NCC.");
+        }
+        var secondSlot = null;
+        for (var s = 0; s < slots.length; s++) {
+            if (slots[s].id === secondId) secondSlot = slots[s];
+            if (slots[s].id === first.id) firstSlot = slots[s];
+        }
+        var values = { id: secondId, "tender.package.id": item.packageId,
+            "total.amount.due": secondDue, "total.amount.paid": 0,
+            "contractor.group.name": secondSlot.marker, "created.by": current.actor,
+            "created.at": shtlMockBusinessDate(0) };
+        for (var f = 1; f < profileFields.length; f++) {
+            var field = profileFields[f];
+            values[field] = shtlTestText(templates[0][field]);
+        }
+        var record = { table: "esdjoinXDCBtenderPackageContractor", markerField: secondSlot.markerField,
+            marker: secondSlot.marker, values: values };
+        shtlMockPrepareWriteTypes({ records: [record] }, false);
+        if (action === "preview") return { success: true, action: action, contractId: contractId,
+            packageId: item.packageId, contractAmount: total,
+            existingSupplier: { id: first.id, tax: first["tax.code"], dueBefore: originalDue, dueAfter: firstDue, paid: 0 },
+            newSupplier: values };
+        shtlMockContractInsert(record, current);
+        inserted = record;
+        shtlMockContractReadBack(record);
+        shtlSecondSupplierSetDue(first, firstSlot, originalDue, firstDue);
+        var suppliers = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(selection);
+        if (suppliers.length !== 2) throw new Error("Reader S4 chưa trả đúng hai NCC.");
+        var sum = 0;
+        for (var v = 0; v < suppliers.length; v++) {
+            if (Number(suppliers[v]["total.amount.paid"]) !== 0) throw new Error("Tiền đã TT/TƯ của NCC vừa thay đổi, dừng thêm mock.");
+            sum += Number(suppliers[v]["total.amount.due"]);
+        }
+        if (sum !== total) throw new Error("Tổng tiền NCC sau ghi không bằng tổng HĐ.");
+        return { success: true, action: action, createdId: secondId, contractId: contractId,
+            packageId: item.packageId, contractAmount: total, suppliers: suppliers };
+    } catch (error) {
+        var rollbackError = "";
+        if (inserted) {
+            try {
+                shtlMockContractsAssertUnused(slots);
+                // Nếu Update đã ghi rồi mới phát sinh lỗi, phục hồi đúng giá trị trước lần gọi này.
+                var now = shtlTestRead("esdjoinXDCBtenderPackageContractor", 'id="' + shtlTestQuote(first.id) + '"',
+                    ["id", "total.amount.due"]);
+                if (now.length !== 1) throw new Error("Không đọc được NCC1 khi rollback.");
+                if (Number(now[0]["total.amount.due"]) === firstDue) shtlSecondSupplierSetDue(first, firstSlot, firstDue, originalDue);
+                else if (Number(now[0]["total.amount.due"]) !== originalDue) throw new Error("NCC1 vừa đổi số tiền, dừng rollback.");
+                shtlMockContractDelete(inserted);
+                inserted = null;
+            } catch (cleanupError) { rollbackError = String(cleanupError.message || cleanupError); }
+        }
+        return { success: false, action: action, message: String(error.message || error), rollbackMessage: rollbackError,
+            remainingCreatedId: inserted ? inserted.values.id : "" };
+    }
+}
+
+/** Chỉ đổi total.amount.due của đúng NCC1 mock, kiểm tra snapshot/đã TT=0 trước Update và đọc lại sau ghi. */
+function shtlSecondSupplierSetDue(row, slot, expectedDue, due) {
+    var file = new SCFile("esdjoinXDCBtenderPackageContractor");
+    try {
+        if (file.doSelect('id="' + shtlTestQuote(row.id) + '"') !== RC_SUCCESS ||
+                shtlTestText(file[slot.markerField]) !== slot.marker ||
+                shtlTestText(file["tender.package.id"]) !== shtlTestText(row["tender.package.id"]) ||
+                shtlTestText(file["tax.code"]) !== shtlTestText(row["tax.code"]) ||
+                Number(file["total.amount.due"]) !== expectedDue || shtlTestText(file["total.amount.paid"]) === "" ||
+                Number(file["total.amount.paid"]) !== 0) {
+            throw new Error("NCC1 mock đã thay đổi, không Update số tiền.");
+        }
+        file["total.amount.due"] = due;
+        var rc = file.doUpdate();
+        if (rc !== RC_SUCCESS) throw new Error("Không cập nhật được phần tiền NCC1, RC=" + rc);
+    } finally { shtlTestClose(file); }
+    var rows = shtlTestRead("esdjoinXDCBtenderPackageContractor", 'id="' + shtlTestQuote(row.id) + '"',
+        ["id", "total.amount.due"]);
+    if (rows.length !== 1 || Number(rows[0]["total.amount.due"]) !== due) throw new Error("Đọc lại tiền NCC1 không khớp.");
+}
