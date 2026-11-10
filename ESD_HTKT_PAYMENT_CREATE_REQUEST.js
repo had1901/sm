@@ -285,36 +285,61 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
 }
 
 /**
- * Bảng map cứng: process.id (esdHDcontract) -> original.contract.category (esdHTKTpayment).
- */
-var HTKT_PAYMENT_PRODUCT_CATEGORY_BY_PROCESS = {
-    "01_04_01_03": "Khác",
-    "01_03_01_01": "MS HHDV thường xuyên từ vốn ĐT mua sắm TSCĐ",
-    "01_04_01_02": "MS HHDV thường xuyên từ vốn chi phí nhóm 1",
-    "01_07_01_01": "MS HHDV thường xuyên từ vốn chi phí nhóm 2"
-};
-
-/**
- * Tra process.id của hợp đồng và trả về tên nghiệp vụ sản phẩm tương ứng.
- * Trả về "" nếu không tìm thấy hợp đồng hoặc process.id không nằm trong bảng map.
+ * Nghiệp vụ sản phẩm của phiếu thanh toán:
+ *   esdHDcontract.process.id = esdDMmsProcess.code -> esdDMmsProcess.type
+ *   -> esdHTKTpayment.original.contract.category
+ * Engine SLA so original.contract.category với esdHTKTslaConfig.product.type, nên
+ * product.type trên cấu hình SLA phải trùng đúng esdDMmsProcess.type.
+ * Trả về "" nếu không tìm thấy hợp đồng / process.id / danh mục; khi đó SLA Thanh toán
+ * dùng cấu hình "Tất cả".
  */
 function htktCreatePay_getProductCategoryByContract(contractId) {
     var normalizedId = htktCreatePay_normalizeValue(contractId);
     if (!normalizedId) return "";
 
-    var contractFile = null;
+    var contractFile = null, processId = "";
     try {
         contractFile = new SCFile("esdHDcontract", SCFILE_READONLY);
         contractFile.setFields(["id", "process.id"]);
         if (contractFile.doSelect('id="' + escapeSmQueryValue(normalizedId) + '"') !== RC_SUCCESS) {
+            print("[HTKT_PAYMENT_PRODUCT] Không tìm thấy hợp đồng " + normalizedId + " trong esdHDcontract");
             return "";
         }
-        var processId = htktCreatePay_normalizeValue(contractFile["process.id"]);
-        return HTKT_PAYMENT_PRODUCT_CATEGORY_BY_PROCESS[processId] || "";
+        processId = htktCreatePay_normalizeValue(contractFile["process.id"]);
     } catch (e) {
+        print("[HTKT_PAYMENT_PRODUCT] Lỗi đọc esdHDcontract " + normalizedId + ": " + (e && e.message ? e.message : e));
         return "";
     } finally {
         closeSCFile(contractFile);
+    }
+    if (!processId) {
+        print("[HTKT_PAYMENT_PRODUCT] Hợp đồng " + normalizedId + " chưa có process.id");
+        return "";
+    }
+    return htktCreatePay_getProductCategoryByProcess(processId);
+}
+
+/**
+ * Tra danh mục quy trình mua sắm esdDMmsProcess theo code, trả về type (đã trim).
+ * type là giá trị combo Nghiệp vụ/Sản phẩm Thanh toán trên cấu hình SLA.
+ */
+function htktCreatePay_getProductCategoryByProcess(processId) {
+    var processFile = null;
+    try {
+        processFile = new SCFile("esdDMmsProcess", SCFILE_READONLY);
+        processFile.setFields(["code", "type"]);
+        if (processFile.doSelect('code="' + escapeSmQueryValue(processId) + '"') !== RC_SUCCESS) {
+            print("[HTKT_PAYMENT_PRODUCT] process.id " + processId + " không có trong esdDMmsProcess");
+            return "";
+        }
+        var type = htktCreatePay_normalizeValue(processFile["type"]);
+        if (!type) print("[HTKT_PAYMENT_PRODUCT] esdDMmsProcess " + processId + " chưa có type");
+        return type;
+    } catch (e) {
+        print("[HTKT_PAYMENT_PRODUCT] Lỗi đọc esdDMmsProcess " + processId + ": " + (e && e.message ? e.message : e));
+        return "";
+    } finally {
+        closeSCFile(processFile);
     }
 }
 

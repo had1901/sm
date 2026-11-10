@@ -938,6 +938,9 @@ function snapshotPaymentForSla(payment) {
 function notifySlaPaymentReassigned(beforeRecord, payment) {
     try {
         var afterRecord = snapshotPaymentForSla(payment);
+        // sysmodtime trên SCFile ngay sau doUpdate không đáng tin (có thể lệch múi giờ)
+        // => bỏ để engine dùng giờ server làm mốc REASSIGN.
+        afterRecord["sysmodtime"] = null;
         var result = lib.ESD_HTKT_SLA_ENGINE.onWorkflowChanged(beforeRecord, afterRecord);
         print("[PAY_APR][SLA_REASSIGN] SUCCESS | id=" + String(afterRecord.id || "") +
                 " | result=" + JSON.stringify(result));
