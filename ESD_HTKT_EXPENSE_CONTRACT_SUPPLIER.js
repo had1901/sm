@@ -442,9 +442,9 @@ function saveExpenseXdcbDetails(record) {
     // Input số tiền của FD ghi trực tiếp vào record; $amount có thể vẫn là giá trị khởi tạo.
     var amount = Number(String(record["amount"]).replace(/,/g, ""));
     if (!isFinite(amount) || amount <= 0 || amount > 9007199254740991) throw new Error("Số tiền dự chi phải lớn hơn 0 hợp lệ.");
-    // if (!expenseSupplierText(record["transaction.des"]) || expenseSupplierText(record["transaction.des"]).length > 255) {
-    //     throw new Error("Nội dung đề nghị là bắt buộc và không quá 255 ký tự.");
-    // }
+//    if (!expenseSupplierText(record["transaction.des"]) || expenseSupplierText(record["transaction.des"]).length > 255) {
+//        throw new Error("Nội dung đề nghị là bắt buộc và không quá 255 ký tự.");
+//    }
     var oldId = expenseSupplierText(record["vendor.id"]);
     var oldVendor = oldId ? getExpenseAccountingVendor(oldId) : null;
     if (lib.ESD_HTKT_EXPENSE_VENDOR.hasExpenseVendorInvoices(record) &&

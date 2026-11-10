@@ -237,13 +237,7 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
                 normalizeIdentity(vendorRow.vendor_type) === 'cn';
         var invoiceAmount = sumInvoiceLineAmounts(apLines);
         updatePaymentVendorDebtAmount(payment.id || vendorRow.payment_id, vendorRow.vendor_id, invoiceAmount, vendorRow.vendor_site_id, vendorRow.id);
-        var amountPayTemp = isPersonalVendor
-                ? customerPaymentAmount
-                : vendorRow.amount;
-        var remainingAmountPay = toNumber(amountPayTemp) - payableDebitAmount;
-        var amountPay = remainingAmountPay < 0
-                ? amountPayTemp
-                : remainingAmountPay;
+        var amountPay = 0;
         var invoicePayload = {
             requestId: invoiceRequestId, referenceId: payment.id,
             vendorNumber: context.vendorNumber,

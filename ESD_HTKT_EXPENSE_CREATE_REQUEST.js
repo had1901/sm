@@ -29,7 +29,7 @@ function createExpenseRequest(input) {
         if (!expenseData) {
             return { success: false, message: "Thiếu dữ liệu dự chi." };
         }
-
+        
         var contractCategory = String(expenseData.contractCategory || "HHDV").trim().toUpperCase();
         if (contractCategory !== "HHDV" && contractCategory !== "XDCB") {
             return { success: false, message: "Hạng mục Dự chi không hợp lệ." };
@@ -73,8 +73,8 @@ function createExpenseRequest(input) {
             // Điểm nối đồng bộ tạo mới S4 đặt ngay sau Add thành công, không dùng trigger.
             // TẠM TẮT cho Dự chi: ESD_XDCB_SYNC_SQUAD_DATA chưa hỗ trợ payment.category="Dự chi"
             // hoặc phiếu trống chưa có HĐ/NCC. Chờ S4 bổ sung hàm/payload Dự chi rồi mới nối tại đây.
-            // Chưa gọi squad6ThemMoiTienDoThanhToanTamUngCuaHDTH1/TH2; không truyền HĐ/MST giả.
-
+            // Chưa gọi squad6ThemMoiTienDoThanhToanTamUngCuaHDTH1/TH2.
+            
             createActivity(
                     "activityHTKTpayment",
                     'Thêm mới Đề nghị Dự chi: Mã đề nghị: "' +
@@ -84,6 +84,16 @@ function createExpenseRequest(input) {
                     "Thêm mới",
                     currentUser
             );
+            
+            // =================================================================
+            // ĐỒNG BỘ DASHBOARD CHO PHIẾU DỰ CHI VỪA TẠO MỚI
+            // =================================================================
+            try {
+                lib.ESD_HTKT_DASHBOARD_SET_DATA.setDataDashboard(expenseRec, null, "esdHTKTpayment");
+            } catch (errDash) {
+                // Ghi log cảnh báo để không làm gián đoạn luồng trả kết quả tạo phiếu
+                print("Lỗi đồng bộ Dashboard khi tạo Dự chi: " + errDash);
+            }
 
             return {
                 success: true,
@@ -109,7 +119,7 @@ function mapExpenseRecord(expenseRec, expenseData, expenseId) {
     expenseRec['id'] = expenseId;
     expenseRec['transaction.type'] = "Dự chi";
     expenseRec['original.contract.category'] = expenseData.contractCategory || "HHDV";
-
+    
     expenseRec['department'] =
             expenseData['unitLv3'] ||
             expenseData['unitLv2'] ||

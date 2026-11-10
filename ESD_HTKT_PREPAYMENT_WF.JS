@@ -28,6 +28,12 @@ var WF_CONFIG = {
     SERVICE_NAME: "ESD_HTKT_PREPAYMENT_WF",
     SERVICE_VERSION: "2.1.0"
 };
+
+var VENDOR_SITE_SOURCE = {
+    OGL: "OGL",
+    QLTS: "QLTS"
+};
+
 var HTKT_SLA_RETURN_CONTEXT_VARIABLE = "$L.htkt.sla.prepayment.return.contexts";
 
 var NEXT_PHASE_MAP = {

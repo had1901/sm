@@ -23,8 +23,6 @@ var CONFIG = {
     GROUP_PREFIX: "HTKT_DC_TK",
     NAME_PREFIX: "Phieu-de-nghi-du-chi-",
     MAX_SCAN_RECORDS: 500,
-    HTTP_TIMEOUT: 300,
-    MOCK_STORAGE_BASE_URL: "https://mockapi.smartsolutionvn.com.vn",
     ECM_REQUEST: {
         APP_ID: "NEWTPSS",
         SESSION_ID: "csep_session",
@@ -77,15 +75,14 @@ function assertDependencies(requireEform) {
     if (!lib || !lib.ESD_HTKT_PREPAYMENT_COMMON || typeof lib.ESD_HTKT_PREPAYMENT_COMMON.ok !== "function") {
         throw new Error("Thiếu thư viện ESD_HTKT_PREPAYMENT_COMMON.");
     }
-    if (!lib.ESD_ENV_CONFIG || typeof lib.ESD_ENV_CONFIG.getENV !== "function") {
-        throw new Error("Thiếu ESD_ENV_CONFIG cho Document Service.");
+    if (!lib.ESD_ENV_CONFIG ||
+        typeof lib.ESD_ENV_CONFIG.getENV !== "function" ||
+        typeof lib.ESD_ENV_CONFIG.esdEcmService !== "function") {
+        throw new Error("Thiếu contract ESD_ENV_CONFIG cho Document Service.");
     }
     var environment = getCommon().toUpper(lib.ESD_ENV_CONFIG.getENV());
-    var provider = environment === "SIT" ? "MOCK" : "REAL";
-    var storageBaseUrl = provider === "MOCK"
-        ? CONFIG.MOCK_STORAGE_BASE_URL
-        : (typeof lib.ESD_ENV_CONFIG.esdEcmService === "function" ? lib.ESD_ENV_CONFIG.esdEcmService() : "");
-    storageBaseUrl = getCommon().trim(storageBaseUrl).replace(/\/+$/, "");
+    var provider = "REAL";
+    var storageBaseUrl = getCommon().trim(lib.ESD_ENV_CONFIG.esdEcmService()).replace(/\/+$/, "");
     if (!storageBaseUrl) {
         throw new Error("Thiếu URL ECM cho môi trường " + environment + ".");
     }
@@ -95,10 +92,10 @@ function assertDependencies(requireEform) {
         throw new Error("Thiếu thư viện ESD_HTKT_EXPENSE_EFORM_SERVICE.");
     }
 
-    if (provider === "REAL" && (!lib.ESD_ECM_SERVICE ||
+    if (!lib.ESD_ECM_SERVICE ||
         typeof lib.ESD_ECM_SERVICE.uploadFileTaiLieu !== "function" ||
         typeof lib.ESD_ECM_SERVICE.downloadDocument !== "function" ||
-        typeof lib.ESD_ECM_SERVICE.deleteDocument !== "function")) {
+        typeof lib.ESD_ECM_SERVICE.deleteDocument !== "function") {
         throw new Error("Thiếu hoặc sai contract thư viện ESD_ECM_SERVICE (upload/download/delete).");
     }
     return {
@@ -211,60 +208,26 @@ function parseDocumentStorageResponse(rawResponse) {
     return responseOk({ code: code, message: message, data: data, raw: body });
 }
 
-function postDocumentJson(url, payload) {
-    var headers = [
-        new Header("Content-Type", "application/json"),
-        new Header("Accept", "application/json")
-    ];
-
-    // trưởng thêm: Gọi HTTP trực tiếp để nhận raw body cho upload/download/delete mock.
-    var responseBody = doHTTPRequest(
-        "POST",
-        getCommon().toString(url),
-        headers,
-        rteJSONStringify(payload),
-        CONFIG.HTTP_TIMEOUT,
-        CONFIG.HTTP_TIMEOUT,
-        CONFIG.HTTP_TIMEOUT
-    );
-
-    var responseText = getCommon().toString(responseBody);
-
-    // trưởng thêm: Mockoon SIT trả JSON có trailing comma; làm sạch trước khi parse.
-    return responseText.replace(/,\s*([}\]])/g, "$1");
-}
-
-// Chọn ECM hoặc mock theo môi trường của Dự chi.
+// UAT sử dụng ECM thật theo contract của Tạm ứng UAT.
 function uploadDocument(input) {
     try {
-        var environmentConfig = assertDependencies(false);
-        var provider = getCommon().toUpper(environmentConfig.PROVIDER);
+        assertDependencies(false);
         var expenseId = getCommon().trim(input.expenseId);
         var cifNum = getCommon().trim(input.cifNum) || expenseId;
         var accNum = getCommon().trim(input.accNum) || expenseId;
-        var rawResponse;
-
-        if (provider === "MOCK") {
-            rawResponse = postDocumentJson(environmentConfig.STORAGE_BASE_URL + "/CDM/service/document/upload", {
-                fileName: input.fileName,
-                content: input.pdfBase64
-            });
-        }
-        else {
-            rawResponse = lib.ESD_ECM_SERVICE.uploadFileTaiLieu({
-                docCat: CONFIG.ECM_REQUEST.DOC_CATEGORY,
-                docName: input.documentName,
-                cifNum: cifNum,
-                accNum: accNum,
-                docCreated: getCommon().getSystemDateTime(),
-                sourceId: CONFIG.ECM_REQUEST.SOURCE_ID,
-                sessionId: CONFIG.ECM_REQUEST.SESSION_ID,
-                appId: CONFIG.ECM_REQUEST.APP_ID,
-                fileBytes: input.pdfBase64,
-                fileName: input.fileName,
-                seq: CONFIG.ECM_REQUEST.SEQUENCE
-            });
-        }
+        var rawResponse = lib.ESD_ECM_SERVICE.uploadFileTaiLieu({
+            docCat: CONFIG.ECM_REQUEST.DOC_CATEGORY,
+            docName: input.documentName,
+            cifNum: cifNum,
+            accNum: accNum,
+            docCreated: getCommon().getSystemDateTime(),
+            sourceId: CONFIG.ECM_REQUEST.SOURCE_ID,
+            sessionId: CONFIG.ECM_REQUEST.SESSION_ID,
+            appId: CONFIG.ECM_REQUEST.APP_ID,
+            fileBytes: input.pdfBase64,
+            fileName: input.fileName,
+            seq: CONFIG.ECM_REQUEST.SEQUENCE
+        });
 
         var parsed = parseDocumentStorageResponse(rawResponse);
         if (parsed.success !== true) return parsed;
@@ -306,22 +269,12 @@ function downloadDocument(documentIdentity) {
     documentIdentity = documentIdentity || {};
 
     try {
-        var environmentConfig = assertDependencies(false);
-        var provider = getCommon().toUpper(environmentConfig.PROVIDER);
-        var rawResponse;
-
-        if (provider === "MOCK") {
-            rawResponse = postDocumentJson(environmentConfig.STORAGE_BASE_URL + "/CDM/service/document/download", {
-                documentId: getCommon().trim(documentIdentity.docId) || getCommon().trim(documentIdentity.objectId)
-            });
-        }
-        else {
-            rawResponse = lib.ESD_ECM_SERVICE.downloadDocument([{
-                DOC_OBJECTID: String(documentIdentity.objectId || documentIdentity.docId || ""),
-                APP_ID: CONFIG.ECM_REQUEST.APP_ID,
-                SESSION_ID: CONFIG.ECM_REQUEST.SESSION_ID
-            }]);
-        }
+        assertDependencies(false);
+        var rawResponse = lib.ESD_ECM_SERVICE.downloadDocument([{
+            DOC_OBJECTID: String(documentIdentity.objectId || documentIdentity.docId || ""),
+            APP_ID: CONFIG.ECM_REQUEST.APP_ID,
+            SESSION_ID: CONFIG.ECM_REQUEST.SESSION_ID
+        }]);
 
         var parsed = parseDocumentStorageResponse(rawResponse);
         if (parsed.success !== true) return parsed;
@@ -373,21 +326,11 @@ function deleteStoredDocument(docId) {
     try {
         var environmentConfig = assertDependencies(false);
         var provider = getCommon().toUpper(environmentConfig.PROVIDER);
-        var rawResponse;
-
-        if (provider === "MOCK") {
-            rawResponse = postDocumentJson(
-                environmentConfig.STORAGE_BASE_URL + "/CDM/service/document/delete",
-                { documentId: safeDocId }
-            );
-        }
-        else {
-            rawResponse = lib.ESD_ECM_SERVICE.deleteDocument([{
-                DOC_ID: safeDocId,
-                APP_ID: CONFIG.ECM_REQUEST.APP_ID,
-                SESSION_ID: CONFIG.ECM_REQUEST.SESSION_ID
-            }]);
-        }
+        var rawResponse = lib.ESD_ECM_SERVICE.deleteDocument([{
+            DOC_ID: safeDocId,
+            APP_ID: CONFIG.ECM_REQUEST.APP_ID,
+            SESSION_ID: CONFIG.ECM_REQUEST.SESSION_ID
+        }]);
 
         var parsed = parseDocumentStorageResponse(rawResponse);
         if (parsed.success !== true) return parsed;

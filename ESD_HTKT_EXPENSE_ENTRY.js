@@ -5,9 +5,9 @@
  * Version      : 1.0.0
  * Chức năng:
  * - Tự động tính toán và sinh các dòng bút toán định khoản Nợ/Có (esdHTKTpaymentEntry) cho phiếu Dự chi.
- * - Áp dụng quy tắc sinh bút toán tự động theo đặc tả 2.7 (gồm 3 dòng tự sinh DC-BK-01*, DC-BK-02, DC-BK-03*).
+ * - Áp dụng quy tắc sinh bút toán tự động theo đặc tả 2.7 (gồm các dòng tự sinh DC-BK-01*, DC-BK-02, DC-BK-03*, DC-BK-04).
  * - Xác định điều kiện thuế theo DC_BR_01 (Có/Không có thuế khấu trừ).
- * - Đồng bộ bút toán tự động khi có thay đổi từ hóa đơn hoặc nhà cung cấp.
+ * - Đồng bộ bút toán tự động khi có thay đổi từ hóa đơn, hoàn ứng hoặc nhà cung cấp.
  * - Lưu chỉnh sửa theo luồng riêng của Dự chi; các danh mục dùng chung ESD_HTKT_PAYMENT_ENTRY.
  * -----------------------------------------------------------------------------
  */
@@ -34,9 +34,10 @@ function debugExpenseEntry(point, message) {
  *      -> merge dữ liệu chỉnh sửa -> validate cân đối -> lưu DB.
  *
  *  03. QUY TẮC SINH BÚT TOÁN TỰ ĐỘNG (2.7)
- *      - DC-BK-01* (Nợ TK Chi phí): Số tiền = Số tiền dự chi - Thuế khấu trừ (nếu có)
+ *      - DC-BK-01* (Nợ TK Chi phí/Khác): Số tiền = Số tiền đề nghị dự chi + Số tiền hoàn ứng - Thuế khấu trừ (nếu có)
  *      - DC-BK-02  (Nợ TK Thuế GTGT): Số tiền = Thuế trên hóa đơn (theo DC_BR_01)
- *      - DC-BK-03* (Có TK Phải trả NCC): Số tiền = Số tiền dự chi
+ *      - DC-BK-03* (Có TK Phải trả NCC): Số tiền = Số tiền đề nghị dự chi
+ *      - DC-BK-04  (Có TK Tạm ứng): Số tiền = Số tiền hoàn ứng lần này (khi hoàn ứng > 0)
  *      - Dòng thủ công do người dùng tự thêm (MANUAL)
  *
  *  04. VALIDATE & PERSISTENCE
@@ -123,9 +124,10 @@ var DEFAULT_EXPENSE_LIABILITY_ACCOUNT = {
 
 // Mã dòng bút toán tự động theo đặc tả 2.7.2 của phân hệ Dự chi (DC-BK)
 var AUTO_ENTRY_CODE = {
-    COST:      'DC-BK-01',   // Ghi nhận chi phí        (Nợ)
-    TAX:       'DC-BK-02',   // Dòng thuế GTGT          (Nợ)
-    LIABILITY: 'DC-BK-03'    // Ghi nhận nghĩa vụ TT    (Có)
+    COST:       'DC-BK-01',   // Ghi nhận chi phí        (Nợ)
+    TAX:        'DC-BK-02',   // Dòng thuế GTGT          (Nợ)
+    LIABILITY:  'DC-BK-03',   // Ghi nhận nghĩa vụ TT    (Có)
+    PREPAYMENT: 'DC-BK-04'    // Hoàn ứng / Có TK Tạm ứng (Có)
 };
 
 var MONEY_EPSILON = 0.001;
@@ -143,6 +145,7 @@ var ENTRY_TYPE = {
     COST: 'COST',             // TK chi phí
     TAX: 'TAX',               // TK thuế
     PAYABLE: 'PAYABLE',       // TK phải trả NCC
+    PREPAYMENT: 'PREPAYMENT', // TK tạm ứng
     OTHER: 'OTHER'            // TK khác
 };
 
@@ -241,6 +244,20 @@ function readMoneyInWords(amount, currency) {
     return result;
 }
 
+function getVendorRefundAmount(vendor) {
+    if (!vendor) return 0;
+    if (vendor.refund_amount !== undefined && vendor.refund_amount !== null && !isNaN(Number(vendor.refund_amount))) {
+        return toNumber(vendor.refund_amount);
+    }
+    if (vendor['refund.amount'] !== undefined && vendor['refund.amount'] !== null && !isNaN(Number(vendor['refund.amount']))) {
+        return toNumber(vendor['refund.amount']);
+    }
+    if (vendor.refundAmount !== undefined && vendor.refundAmount !== null && !isNaN(Number(vendor.refundAmount))) {
+        return toNumber(vendor.refundAmount);
+    }
+    return 0;
+}
+
 function getExpenseSummaryMeta(expenseId, request, metaParams) {
     var params = metaParams || {};
     var req = request || {};
@@ -248,13 +265,18 @@ function getExpenseSummaryMeta(expenseId, request, metaParams) {
     var vendorCount = vendors.length;
     var currency = safeString(req.currency || (vendors.length > 0 ? vendors[0].currency : '') || 'VND').trim().toUpperCase() || 'VND';
 
-    // 1. Tổng số tiền đề nghị dự chi của tất cả các NCC thuộc phiếu Dự chi
+    // 1. Tổng số tiền đề nghị dự chi và tổng hoàn ứng của tất cả các NCC thuộc phiếu Dự chi
     var totalExpenseAmount = 0;
+    var totalRefundAmount = 0;
     for (var vIdx = 0; vIdx < vendors.length; vIdx++) {
         totalExpenseAmount += toNumber(vendors[vIdx].amount);
+        totalRefundAmount += getVendorRefundAmount(vendors[vIdx]);
     }
     if (totalExpenseAmount === 0 && req.total_amount_paid) {
         totalExpenseAmount = toNumber(req.total_amount_paid);
+    }
+    if (totalRefundAmount === 0 && req.total_advance_amount) {
+        totalRefundAmount = toNumber(req.total_advance_amount);
     }
 
     // 2. Tổng số tiền thuế của phiếu Dự chi
@@ -291,6 +313,8 @@ function getExpenseSummaryMeta(expenseId, request, metaParams) {
         totalPaidAmount: totalExpenseAmount,
         total_amount_paid: totalExpenseAmount,
         total_amount_after_tax: totalExpenseAmount,
+        totalRefundAmount: totalRefundAmount,
+        total_refund_amount: totalRefundAmount,
         amountInWords: amountInWords,
         totalAmountInWords: amountInWords,
         moneyInWords: amountInWords,
@@ -341,6 +365,7 @@ function getListExpenseEntry(details) {
     var createdBy = request.created_by;
     var currentUser = safeString(details.currentUser).trim();
     var creatorUnit = getCreatorAccountingUnit(currentUser || createdBy);
+    deleteJunkExpenseEntries(expenseId);
     var savedEntries = getSavedExpenseEntries(expenseId);
     var targetVendors = getExpenseVendors(expenseId);
 
@@ -376,15 +401,27 @@ function getListExpenseEntry(details) {
     savedEntries = getSavedExpenseEntries(expenseId);
 
     var needsUpdate = false;
-    var savedRefMap = {};
+    var savedVendorMap = {};
     var savedTaxMap = {};
+    var savedTaxAmountMap = {};
+    var savedCostAmountMap = {};
+    var savedPayableAmountMap = {};
+    var savedPrepaymentMap = {};
     for (var sIdx = 0; sIdx < savedEntries.length; sIdx++) {
         var sRow = savedEntries[sIdx];
-        var rId = safeString(sRow.ref_id || sRow['ref.id']).trim();
-        if (rId) {
-            savedRefMap[rId] = true;
-            if (normalizeEntryType(sRow.entry_type) === ENTRY_TYPE.TAX) {
-                savedTaxMap[rId] = true;
+        var savedPaymentVendorId = getEntryPaymentVendorId(sRow);
+        if (savedPaymentVendorId) {
+            savedVendorMap[savedPaymentVendorId] = true;
+            var sEntryType = normalizeEntryType(sRow.entry_type);
+            if (sEntryType === ENTRY_TYPE.TAX) {
+                savedTaxMap[savedPaymentVendorId] = true;
+                savedTaxAmountMap[savedPaymentVendorId] = (savedTaxAmountMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
+            } else if (sEntryType === ENTRY_TYPE.COST) {
+                savedCostAmountMap[savedPaymentVendorId] = (savedCostAmountMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
+            } else if (sEntryType === ENTRY_TYPE.PAYABLE && !getEntryReferenceId(sRow)) {
+                savedPayableAmountMap[savedPaymentVendorId] = (savedPayableAmountMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
+            } else if (sEntryType === ENTRY_TYPE.PREPAYMENT) {
+                savedPrepaymentMap[savedPaymentVendorId] = (savedPrepaymentMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
             }
         }
     }
@@ -394,9 +431,12 @@ function getListExpenseEntry(details) {
         var pVendorId = safeString(vItem.payment_vendor_id).trim();
         if (!pVendorId) continue;
 
-        // Nếu số tiền dự chi reset về <= 0: tự động xóa các dòng bút toán của món đó
-        if (toNumber(vItem.amount) <= 0) {
-            if (savedRefMap[pVendorId]) {
+        // Chỉ số tiền hoàn ứng đã được NSD chọn và lưu thành PREPAYMENT mới tham gia sinh bút toán.
+        var selectedRefund = savedPrepaymentMap[pVendorId] || 0;
+
+        // Nếu cả số tiền dự chi và hoàn ứng đã chọn đều <= 0: tự động xóa các dòng bút toán của món đó.
+        if (toNumber(vItem.amount) <= 0 && selectedRefund <= 0) {
+            if (savedVendorMap[pVendorId]) {
                 deleteAutoExpenseEntriesForVendor(expenseId, pVendorId);
                 needsUpdate = true;
             }
@@ -406,9 +446,16 @@ function getListExpenseEntry(details) {
         var taxInfo = getExpenseInvoiceTaxInfo(expenseId, vItem, targetVendors.length);
         var currentHasTax = taxInfo.hasDeductibleTax && taxInfo.totalDeductibleTax > 0;
         var savedHasTax = !!savedTaxMap[pVendorId];
+        var expectedTax = currentHasTax ? taxInfo.totalDeductibleTax : 0;
+        var expectedCost = Math.max(0, toNumber(vItem.amount) + selectedRefund - expectedTax);
+        var expectedPayable = Math.max(0, toNumber(vItem.amount));
+        var coreAmountChanged =
+                Math.abs((savedTaxAmountMap[pVendorId] || 0) - expectedTax) > MONEY_EPSILON ||
+                Math.abs((savedCostAmountMap[pVendorId] || 0) - expectedCost) > MONEY_EPSILON ||
+                Math.abs((savedPayableAmountMap[pVendorId] || 0) - expectedPayable) > MONEY_EPSILON;
 
-        // Món chưa có bút toán, hoặc trạng thái thuế/hóa đơn bị thay đổi -> chỉ sinh cho đúng món đó ("từng thằng 1")
-        if (!savedRefMap[pVendorId] || currentHasTax !== savedHasTax) {
+        // Món chưa đủ dòng lõi, thuế thay đổi hoặc số tiền lõi lệch với các khoản hoàn ứng đã chọn -> sinh lại đúng món đó.
+        if (!savedVendorMap[pVendorId] || currentHasTax !== savedHasTax || coreAmountChanged) {
             if (!isGenerationPhaseLocked(currentPhase)) {
                 syncExpenseEntryForSingleVendor(expenseId, pVendorId);
                 needsUpdate = true;
@@ -431,36 +478,52 @@ function isSavedEntriesCompleteAndValid(expenseId, savedEntries, vendors) {
     if (!vendors || vendors.length === 0) return true;
     if (!savedEntries || savedEntries.length === 0) return false;
 
-    var savedRefMap = {};
+    var savedVendorMap = {};
     var savedTaxMap = {};
+    var savedTaxAmountMap = {};
+    var savedCostAmountMap = {};
+    var savedPayableAmountMap = {};
+    var savedPrepaymentMap = {};
     var hasValidEntries = false;
 
     for (var i = 0; i < savedEntries.length; i++) {
         var s = savedEntries[i];
-        // Nếu tồn tại dòng rác (không có ref_id hoặc tiền <= 0) -> cần sync lại để làm sạch
-        if (!safeString(s.ref_id || s['ref.id']).trim() || toNumber(s.amount) <= 0) {
+        // Dòng tự sinh phải gắn đúng mã món dự chi qua payment.vendor.id.
+        if ((!isUserAddedEntryId(s.id) && !getEntryPaymentVendorId(s)) || toNumber(s.amount) <= 0) {
             return false;
         }
-        var ref = safeString(s.ref_id || s['ref.id']).trim();
-        if (ref) {
-            savedRefMap[ref] = true;
+        var savedPaymentVendorId = getEntryPaymentVendorId(s);
+        if (savedPaymentVendorId) {
+            savedVendorMap[savedPaymentVendorId] = true;
             hasValidEntries = true;
-            if (normalizeEntryType(s.entry_type) === ENTRY_TYPE.TAX) {
-                savedTaxMap[ref] = true;
+            var sType = normalizeEntryType(s.entry_type);
+            if (sType === ENTRY_TYPE.TAX) {
+                savedTaxMap[savedPaymentVendorId] = true;
+                savedTaxAmountMap[savedPaymentVendorId] = (savedTaxAmountMap[savedPaymentVendorId] || 0) + toNumber(s.amount);
+            } else if (sType === ENTRY_TYPE.COST) {
+                savedCostAmountMap[savedPaymentVendorId] = (savedCostAmountMap[savedPaymentVendorId] || 0) + toNumber(s.amount);
+            } else if (sType === ENTRY_TYPE.PAYABLE && !getEntryReferenceId(s)) {
+                savedPayableAmountMap[savedPaymentVendorId] = (savedPayableAmountMap[savedPaymentVendorId] || 0) + toNumber(s.amount);
+            } else if (sType === ENTRY_TYPE.PREPAYMENT) {
+                savedPrepaymentMap[savedPaymentVendorId] = (savedPrepaymentMap[savedPaymentVendorId] || 0) + toNumber(s.amount);
             }
         }
     }
 
     if (!hasValidEntries) return false;
 
-    // Kiểm tra xem tất cả món dự chi có trong saved entries không, và kiểm tra tính hợp lệ của thuế/hóa đơn
+    // Kiểm tra xem tất cả món dự chi có trong saved entries không, và kiểm tra tính hợp lệ của thuế/hóa đơn, hoàn ứng
     for (var j = 0; j < vendors.length; j++) {
         var vendor = vendors[j];
         var vId = safeString(vendor.payment_vendor_id).trim();
         if (!vId) continue;
 
+        var selectedRefund = savedPrepaymentMap[vId] || 0;
+        // Nếu cả số tiền dự chi và hoàn ứng <= 0 thì không cần kiểm tra
+        if (toNumber(vendor.amount) <= 0 && selectedRefund <= 0) continue;
+
         // 1. Món này chưa có bút toán trong DB -> cần sync lại
-        if (!savedRefMap[vId]) {
+        if (!savedVendorMap[vId]) {
             return false;
         }
 
@@ -473,6 +536,16 @@ function isSavedEntriesCompleteAndValid(expenseId, savedEntries, vendors) {
         // Hoặc trước không có nay mới gắn (savedHasTax = false, currentHasTax = true)
         // -> Bút toán trong DB bị lệch so với hóa đơn hiện tại -> cần sync lại ngay
         if (currentHasTax !== savedHasTax) {
+            return false;
+        }
+
+        // 3. Kiểm tra số tiền các dòng lõi theo đúng các khoản hoàn ứng đã chọn.
+        var expectedTax = currentHasTax ? taxInfo.totalDeductibleTax : 0;
+        var expectedCost = Math.max(0, toNumber(vendor.amount) + selectedRefund - expectedTax);
+        var expectedPayable = Math.max(0, toNumber(vendor.amount));
+        if (Math.abs((savedTaxAmountMap[vId] || 0) - expectedTax) > MONEY_EPSILON ||
+                Math.abs((savedCostAmountMap[vId] || 0) - expectedCost) > MONEY_EPSILON ||
+                Math.abs((savedPayableAmountMap[vId] || 0) - expectedPayable) > MONEY_EPSILON) {
             return false;
         }
     }
@@ -488,9 +561,9 @@ function getUniqueCostEntriesByAccountNumber(entries) {
         var entry = entries[i];
         var isManual = isUserAddedEntryId(entry.id);
 
-        // Loại bỏ các dòng rác: không có ref_id (mã món dự chi), hoặc số tiền <= 0
+        // Loại bỏ các dòng rác tự sinh: không có payment.vendor.id hoặc số tiền <= 0.
         if (!isManual) {
-            if (!safeString(entry.ref_id || entry['ref.id']).trim() || toNumber(entry.amount) <= 0) {
+            if (!getEntryPaymentVendorId(entry) || toNumber(entry.amount) <= 0) {
                 continue;
             }
         } else {
@@ -502,9 +575,9 @@ function getUniqueCostEntriesByAccountNumber(entries) {
         if (normalizeEntryType(entry.entry_type) === ENTRY_TYPE.COST) {
             var accountNumber = safeString(entry.account_number).trim();
             var contractId = safeString(entry.contract_id || entry['contract.id']).trim();
-            var refId = safeString(entry.ref_id || entry['ref.id']).trim();
+            var paymentVendorId = getEntryPaymentVendorId(entry);
             var accountKey = 'contract|' + contractId +
-                    '|ref|' + refId +
+                    '|paymentVendor|' + paymentVendorId +
                     '|vendor|' + safeString(entry.vendor_id).trim() +
                     '|account|' + accountNumber;
             if (accountNumber && usedCostAccounts[accountKey]) {
@@ -578,7 +651,7 @@ function getTransFromNamePrefix(value) {
 function deleteAutoExpenseEntriesForVendor(expenseId, paymentVendorId) {
     var deleted = 0;
     var f = new SCFile(TABLE_PAYMENT_ENTRY);
-    var query = 'payment.id="' + escapeQueryValue(expenseId) + '" and ref.id="' + escapeQueryValue(paymentVendorId) + '"';
+    var query = 'payment.id="' + escapeQueryValue(expenseId) + '" and payment.vendor.id="' + escapeQueryValue(paymentVendorId) + '"';
     var rc = f.doSelect(query);
 
     while (rc === RC_SUCCESS) {
@@ -587,6 +660,8 @@ function deleteAutoExpenseEntriesForVendor(expenseId, paymentVendorId) {
             payment_id: f['payment.id'],
             contract_id: f['contract.id'],
             vendor_id: f['vendor.id'],
+            payment_vendor_id: f['payment.vendor.id'],
+            'payment.vendor.id': f['payment.vendor.id'],
             type: f['type'],
             entry_type: f['entry.type'],
             ref_id: f['ref.id'],
@@ -602,19 +677,35 @@ function deleteAutoExpenseEntriesForVendor(expenseId, paymentVendorId) {
     return deleted;
 }
 
-/** Xóa các dòng rác: không có ref_id (mã món dự chi), hoặc số tiền <= 0 */
+/** Xóa dòng tự sinh không có payment.vendor.id hợp lệ hoặc số tiền <= 0. ref.id là mã tham chiếu nghiệp vụ, không phải mã món. */
 function deleteJunkExpenseEntries(expenseId) {
     var deleted = 0;
     var f = new SCFile(TABLE_PAYMENT_ENTRY);
     var query = 'payment.id="' + escapeQueryValue(expenseId) + '"';
     var rc = f.doSelect(query);
 
+    var validVendors = getExpenseVendors(expenseId);
+    var validVendorMap = {};
+    for (var v = 0; v < validVendors.length; v++) {
+        var vid = safeString(validVendors[v].payment_vendor_id).trim();
+        if (vid) validVendorMap[vid] = true;
+    }
+
     while (rc === RC_SUCCESS) {
         var isManual = isUserAddedEntryId(f['id']);
-        if (!isManual) {
-            var refId = safeString(f['ref.id']).trim();
+        if (isManual) {
+            // Dòng thủ công legacy từng lưu mã món trong ref.id: chuyển sang trường mới và giải phóng ref.id.
+            var manualPaymentVendorId = safeString(f['payment.vendor.id']).trim();
+            var legacyRefId = safeString(f['ref.id']).trim();
+            if (!manualPaymentVendorId && validVendorMap[legacyRefId]) {
+                f['payment.vendor.id'] = legacyRefId;
+                f['ref.id'] = '';
+                f.doUpdate();
+            }
+        } else {
+            var paymentVendorId = safeString(f['payment.vendor.id']).trim();
             var amt = toNumber(f['amount']);
-            if (!refId || amt <= 0) {
+            if (!paymentVendorId || amt <= 0 || !validVendorMap[paymentVendorId]) {
                 var deleteRc = f.doDelete();
                 if (deleteRc === RC_SUCCESS) deleted++;
             }
@@ -636,6 +727,7 @@ function buildExpectedExpenseEntriesForVendor(expenseId, vendor, vendorCount, fi
     );
 
     var enriched = enrichVendor(vendor);
+    enrichVendorSelectedRefunds(expenseId, enriched);
     var vendorErrors = getVendorAutoEntryErrors(enriched);
     if (vendorErrors.length > 0) {
         return {
@@ -695,9 +787,10 @@ function syncExpenseEntryForSingleVendor(expenseId, paymentVendorId) {
         }
     }
 
-    // Nếu món này không còn trong DB (đã bị xóa) hoặc số tiền dự chi reset về <= 0
+    var targetRefund = getSelectedRefundAmount(expenseId, paymentVendorId);
+    // Nếu món này không còn trong DB (đã bị xóa) hoặc cả số tiền dự chi và hoàn ứng reset về <= 0
     // -> Tự động xóa các dòng bút toán tự sinh của món này, không báo lỗi
-    if (!targetVendor || toNumber(targetVendor.amount) <= 0) {
+    if (!targetVendor || (toNumber(targetVendor.amount) <= 0 && targetRefund <= 0)) {
         var delCount = deleteAutoExpenseEntriesForVendor(expenseId, paymentVendorId);
         return { success: true, canGenerate: true, deleted: delCount, inserted: 0 };
     }
@@ -714,7 +807,7 @@ function syncExpenseEntryForSingleVendor(expenseId, paymentVendorId) {
     var savedEntries = getSavedExpenseEntries(expenseId);
     var vendorSavedEntries = [];
     for (var j = 0; j < savedEntries.length; j++) {
-        if (safeString(savedEntries[j].ref_id || savedEntries[j]['ref.id']).trim() === paymentVendorId) {
+        if (getEntryPaymentVendorId(savedEntries[j]) === paymentVendorId) {
             vendorSavedEntries.push(savedEntries[j]);
         }
     }
@@ -742,7 +835,9 @@ function syncExpenseEntryForSingleVendor(expenseId, paymentVendorId) {
 /** Đồng bộ và sinh bút toán Dự chi */
 function syncExpenseEntryNowByInputDetails(details) {
     var expenseId = safeString(details.expenseId || details.paymentId || details.id).trim();
-    var paymentVendorId = safeString(details.paymentVendorId || details.ref_id || details['ref.id']).trim();
+    var paymentVendorId = safeString(
+        details.paymentVendorId || details.payment_vendor_id || details['payment.vendor.id']
+    ).trim();
 
     debugExpenseEntry(
             'SYNC-NOW-START',
@@ -758,6 +853,7 @@ function syncExpenseEntryNowByInputDetails(details) {
         });
     }
 
+    deleteJunkExpenseEntries(expenseId);
     var savedEntries = getSavedExpenseEntries(expenseId);
 
     // 1. Nếu đã có bút toán trong DB và có chỉ định món dự chi cụ thể -> Sinh cho đúng món đó ("sinh từng thằng 1")
@@ -843,8 +939,8 @@ function getPreservedAutoEntriesForOtherVendors(savedEntries, successfulVendorId
         if (!isAutoEntry(saved)) continue;
         if (toNumber(saved.amount) <= 0) continue;
 
-        var savedRefId = safeString(saved.ref_id || saved['ref.id']).trim();
-        if (savedRefId && successfulMap[savedRefId]) continue;
+        var savedPaymentVendorId = getEntryPaymentVendorId(saved);
+        if (savedPaymentVendorId && successfulMap[savedPaymentVendorId]) continue;
         result.push(copyObject({}, saved));
     }
 
@@ -1108,12 +1204,14 @@ function mapAccountingTableItems(rows) {
 
     for (var i = 0; i < list.length; i++) {
         var row = list[i];
-        var key = safeString(row.vendor_id).trim() + '|' +
+        var paymentVendorId = getEntryPaymentVendorId(row);
+        var key = paymentVendorId + '|' +
+                safeString(row.vendor_id).trim() + '|' +
                 safeString(row.vendor_site_id).trim() + '|' +
                 safeString(row.vendor_site_code).trim();
 
         if (!groups[key]) {
-            groups[key] = { items: [], totalDebt: 0, totalCr: 0 };
+            groups[key] = { paymentVendorId: paymentVendorId, items: [], totalDebt: 0, totalCr: 0 };
             keys.push(key);
         }
 
@@ -1171,6 +1269,7 @@ function normalizeEntryType(value) {
     if (type === ENTRY_TYPE.COST) return ENTRY_TYPE.COST;
     if (type === ENTRY_TYPE.TAX) return ENTRY_TYPE.TAX;
     if (type === ENTRY_TYPE.PAYABLE) return ENTRY_TYPE.PAYABLE;
+    if (type === ENTRY_TYPE.PREPAYMENT) return ENTRY_TYPE.PREPAYMENT;
     if (type === ENTRY_TYPE.OTHER) return ENTRY_TYPE.OTHER;
     return '';
 }
@@ -1179,6 +1278,7 @@ function getEntryTypeByRuleCode(entryCode) {
     if (entryCode === AUTO_ENTRY_CODE.COST) return ENTRY_TYPE.COST;
     if (entryCode === AUTO_ENTRY_CODE.TAX) return ENTRY_TYPE.TAX;
     if (entryCode === AUTO_ENTRY_CODE.LIABILITY) return ENTRY_TYPE.PAYABLE;
+    if (entryCode === AUTO_ENTRY_CODE.PREPAYMENT) return ENTRY_TYPE.PREPAYMENT;
     return ENTRY_TYPE.OTHER;
 }
 
@@ -1219,6 +1319,7 @@ function buildExpectedExpenseEntries(expenseId) {
 
     for (var vi = 0; vi < vendors.length; vi++) {
         vendors[vi] = enrichVendor(vendors[vi]);
+        enrichVendorSelectedRefunds(expenseId, vendors[vi]);
     }
 
     for (var i = 0; i < vendors.length; i++) {
@@ -1310,15 +1411,75 @@ function getExpenseCostDivisions(expenseId, paymentVendorId) {
     return list;
 }
 
+/** Các khoản hoàn ứng NSD đã chọn và lưu cho đúng món dự chi. */
+function getSelectedRefundEntries(expenseId, paymentVendorId) {
+    var list = [];
+    var safeExpenseId = safeString(expenseId).trim();
+    var safePaymentVendorId = safeString(paymentVendorId).trim();
+    if (!safeExpenseId || !safePaymentVendorId) return list;
+
+    var f = new SCFile(TABLE_PAYMENT_ENTRY, SCFILE_READONLY);
+    var query = 'payment.id="' + escapeQueryValue(safeExpenseId) +
+            '" and payment.vendor.id="' + escapeQueryValue(safePaymentVendorId) +
+            '" and entry.type="PREPAYMENT" and ref.id~=NULL and ref.id~=""';
+    var rc;
+    try {
+        rc = f.doSelect(query);
+        while (rc === RC_SUCCESS) {
+            var amount = readNumber(f, 'amount');
+            var refId = readText(f, 'ref.id').trim();
+            if (amount > 0 && refId) {
+                list.push({
+                    id: readText(f, 'id'),
+                    ref_id: refId,
+                    amount: amount,
+                    account_number: readText(f, 'account.number'),
+                    account_name: readText(f, 'account.name'),
+                    ap_code: readText(f, 'ap.code'),
+                    description: readText(f, 'description'),
+                    order: readNumber(f, 'order')
+                });
+            }
+            rc = f.getNext();
+        }
+    } catch (e) {
+        return [];
+    } finally {
+        closeFile(f);
+    }
+    return list;
+}
+
+function sumSelectedRefundEntries(entries) {
+    var total = 0;
+    var list = entries || [];
+    for (var i = 0; i < list.length; i++) total += toNumber(list[i].amount);
+    return total;
+}
+
+function getSelectedRefundAmount(expenseId, paymentVendorId) {
+    return sumSelectedRefundEntries(getSelectedRefundEntries(expenseId, paymentVendorId));
+}
+
+function enrichVendorSelectedRefunds(expenseId, vendor) {
+    if (!vendor) return vendor;
+    var entries = getSelectedRefundEntries(expenseId, vendor.payment_vendor_id);
+    vendor.selected_refund_entries = entries;
+    vendor.selected_refund_amount = sumSelectedRefundEntries(entries);
+    return vendor;
+}
+
 function buildExpenseCaseContext(expenseId, request, vendor, vendorCount, firstOrder) {
     var taxInfo = getExpenseInvoiceTaxInfo(expenseId, vendor, vendorCount);
     var hasInvoice = hasLinkedInvoicesForVendor(expenseId, vendor, vendorCount);
-    var expenseAmount = toNumber(vendor.amount); // Số tiền dự chi do NSD nhập
+    var expenseAmount = toNumber(vendor.amount); // Số tiền đề nghị dự chi do NSD nhập
     var paymentVendorId = safeString(vendor && (vendor.payment_vendor_id || vendor.id)).trim();
-    var costDivisions = expenseAmount > 0 ? getExpenseCostDivisions(expenseId, paymentVendorId) : [];
+    var refundEntries = vendor.selected_refund_entries || getSelectedRefundEntries(expenseId, paymentVendorId);
+    var refundAmount = sumSelectedRefundEntries(refundEntries);
+    var costDivisions = (expenseAmount > 0 || refundAmount > 0) ? getExpenseCostDivisions(expenseId, paymentVendorId) : [];
 
     var errors = taxInfo.errors.slice(0);
-    if (expenseAmount <= 0) {
+    if (expenseAmount < 0 || (expenseAmount <= 0 && refundAmount <= 0)) {
         var vendorName = safeString(vendor && (vendor.vendor_name || vendor.name)).trim();
         var vendorId = safeString(vendor && (vendor.vendor_id || vendor.id)).trim();
         var subject = vendorName ? 'Nhà cung cấp ' + vendorName : (vendorId ? 'Nhà cung cấp ' + vendorId : 'Nhà cung cấp');
@@ -1332,6 +1493,8 @@ function buildExpenseCaseContext(expenseId, request, vendor, vendorCount, firstO
         vendor: vendor,
         vendorCount: vendorCount,
         expenseAmount: expenseAmount,
+        refundAmount: refundAmount,
+        refundEntries: refundEntries,
         hasInvoice: hasInvoice,
         hasTax: taxInfo.hasDeductibleTax,
         taxInfo: taxInfo,
@@ -1342,19 +1505,21 @@ function buildExpenseCaseContext(expenseId, request, vendor, vendorCount, firstO
 }
 
 /**
- * 2.7.2. Sinh 3 dòng bút toán theo danh mục:
- * 1. DC-BK-01*: Ghi nhận chi phí (Nợ) = Số tiền dự chi - Thuế khấu trừ
+ * 2.7.2. Sinh các dòng bút toán theo danh mục:
+ * 1. DC-BK-01*: Ghi nhận chi phí (Nợ) = Số tiền đề nghị dự chi + Số tiền hoàn ứng - Số tiền thuế VAT
  * 2. DC-BK-02 : Dòng thuế GTGT (Nợ)   = Số tiền thuế trên hóa đơn (nếu có thuế khấu trừ theo DC_BR_01)
- * 3. DC-BK-03*: Ghi nhận nghĩa vụ TT (Có) = Số tiền dự chi
+ * 3. DC-BK-03*: Ghi nhận nghĩa vụ TT (Có TK Phải trả NCC) = Số tiền đề nghị dự chi
+ * 4. DC-BK-04 : Giảm dư tạm ứng (Có TK Tạm ứng) = Số tiền hoàn ứng lần này (khi hoàn ứng > 0)
  */
 function buildExpenseCaseEntries(c) {
     var rows = [];
     var order = c.firstOrder;
+    var refundAmount = c.refundAmount || 0;
     var totalTaxAmount = c.hasTax ? c.taxInfo.totalDeductibleTax : 0;
-    var costAmount = Math.max(0, c.expenseAmount - totalTaxAmount);
+    var costAmount = Math.max(0, c.expenseAmount + refundAmount - totalTaxAmount);
 
     // Dòng 1: DC-BK-01* - Ghi nhận chi phí (Nợ)
-    if (c.expenseAmount > 0) {
+    if (costAmount > 0 || (c.costDivisions && c.costDivisions.length > 0)) {
         if (c.costDivisions && c.costDivisions.length > 0) {
             // Nếu ĐÃ CÓ phân bổ chi phí -> sinh các dòng chi phí chi tiết theo phân bổ
             for (var cdIdx = 0; cdIdx < c.costDivisions.length; cdIdx++) {
@@ -1411,7 +1576,7 @@ function buildExpenseCaseEntries(c) {
         }
     }
 
-    // Dòng 3: DC-BK-03* - Ghi nhận nghĩa vụ thanh toán (Có) (Mặc định ban đầu TK 224160300)
+    // Dòng 3: DC-BK-03* - Ghi nhận nghĩa vụ thanh toán (Có TK Phải trả NCC) = Số tiền đề nghị dự chi
     if (c.expenseAmount > 0) {
         var liabilityAccount = resolveAccount(AUTO_ENTRY_CODE.LIABILITY, c.vendor);
         rows.push(buildExpenseEntryRow({
@@ -1422,6 +1587,29 @@ function buildExpenseCaseEntries(c) {
             amount: c.expenseAmount,
             order: order++,
             accountOverride: liabilityAccount
+        }));
+    }
+
+    // Dòng 4: chỉ đưa vào các khoản hoàn ứng NSD đã chọn ở tab Công nợ.
+    var refundEntries = c.refundEntries || [];
+    for (var refundIndex = 0; refundIndex < refundEntries.length; refundIndex++) {
+        var selectedRefund = refundEntries[refundIndex];
+        var fallbackPrepaymentAccount = resolveAccount(AUTO_ENTRY_CODE.PREPAYMENT, c.vendor);
+        rows.push(buildExpenseEntryRow({
+            idOverride: selectedRefund.id,
+            expenseId: c.expenseId,
+            request: c.request,
+            vendor: c.vendor,
+            entryCode: AUTO_ENTRY_CODE.PREPAYMENT,
+            amount: selectedRefund.amount,
+            order: order++,
+            accountOverride: {
+                number: safeString(selectedRefund.account_number).trim() || fallbackPrepaymentAccount.number,
+                name: safeString(selectedRefund.account_name).trim() || fallbackPrepaymentAccount.name
+            },
+            apCodeOverride: selectedRefund.ap_code,
+            referenceId: selectedRefund.ref_id,
+            descriptionOverride: selectedRefund.description
         }));
     }
 
@@ -1440,11 +1628,12 @@ function buildExpenseEntryRow(params) {
         throw new Error('Thiếu paymentVendorId khi sinh bút toán ' + entryType + ' cho món Dự chi.');
     }
 
-    var entryDescription = safeString(params.request && params.request.description).trim() ||
-        safeString(params.vendor && params.vendor.transaction_description).trim();
+    var entryDescription = safeString(params.descriptionOverride).trim() ||
+            safeString(params.request && params.request.description).trim() ||
+            safeString(params.vendor && params.vendor.transaction_description).trim();
 
     return {
-        id: '',
+        id: safeString(params.idOverride).trim(),
         payment_id: params.expenseId,
         contract_id: contractId,
         entry_type: entryType,
@@ -1460,10 +1649,13 @@ function buildExpenseEntryRow(params) {
         currency: params.vendor.currency,
         description: entryDescription,
         vendor_id: params.vendor.vendor_id,
-        ref_id: paymentVendorId,
-        'ref.id': paymentVendorId,
+        payment_vendor_id: paymentVendorId,
+        'payment.vendor.id': paymentVendorId,
+        ref_id: safeString(params.referenceId || params.refId || '').trim(),
+        'ref.id': safeString(params.referenceId || params.refId || '').trim(),
         type: TYPE.AP,
         order: params.order,
+        ap_code: safeString(params.apCodeOverride || '').trim(),
         accounting_request_id: '',
         payment_method: params.vendor.payment_method,
         beneficiary_account: beneficiary.account,
@@ -1474,7 +1666,7 @@ function buildExpenseEntryRow(params) {
 }
 
 function getAutoAccountType(entryCode) {
-    if (entryCode === AUTO_ENTRY_CODE.LIABILITY) return ACCOUNT_TYPE.ASSET; // Có
+    if (entryCode === AUTO_ENTRY_CODE.LIABILITY || entryCode === AUTO_ENTRY_CODE.PREPAYMENT) return ACCOUNT_TYPE.ASSET; // Có
     return ACCOUNT_TYPE.DEBIT; // Nợ (COST, TAX)
 }
 
@@ -1492,6 +1684,14 @@ function resolveAccount(entryCode, vendor, taxInfo) {
         return {
             number: accNum,
             name: accName
+        };
+    }
+
+    if (entryCode === AUTO_ENTRY_CODE.PREPAYMENT) {
+        var prepayAccNum = safeString(vendor && vendor.debit_account).trim();
+        return {
+            number: prepayAccNum,
+            name: prepayAccNum ? (getGlAccountName(prepayAccNum) || 'Tài khoản tạm ứng') : ''
         };
     }
 
@@ -1761,8 +1961,8 @@ function getAutoEntryRowErrors(row) {
     }
 
     if (!row.account_number) {
-        if (entryCode === AUTO_ENTRY_CODE.COST || entryCode === AUTO_ENTRY_CODE.LIABILITY) {
-            // Cho phép sinh dòng chi phí và dòng phải trả chưa chọn tài khoản để KT nhập sau
+        if (entryCode === AUTO_ENTRY_CODE.COST || entryCode === AUTO_ENTRY_CODE.LIABILITY || entryCode === AUTO_ENTRY_CODE.PREPAYMENT) {
+            // Cho phép sinh dòng chi phí, dòng phải trả và dòng tạm ứng chưa chọn tài khoản để KT nhập sau
         } else if (entryCode === AUTO_ENTRY_CODE.TAX) {
             errors.push(subject + vendorReference + ' chưa được thiết lập Tài khoản thuế GTGT đầu vào. Vui lòng kiểm tra lại.');
         }
@@ -1776,6 +1976,7 @@ function getVendorAutoEntryErrors(vendor) {
     var vendorName = safeString(vendor.vendor_name || vendor.name).trim();
     var vendorId = safeString(vendor.vendor_id || vendor.id).trim();
     var subject = vendorName ? 'Nhà cung cấp ' + vendorName : (vendorId ? 'Nhà cung cấp ' + vendorId : 'Nhà cung cấp');
+    var vRefundAmt = toNumber(vendor && vendor.selected_refund_amount);
 
     if (!vendor.vendor_id) {
         errors.push('Hồ sơ đề nghị chưa lựa chọn Nhà cung cấp. Vui lòng kiểm tra lại.');
@@ -1789,7 +1990,7 @@ function getVendorAutoEntryErrors(vendor) {
     if (!vendor.currency) {
         errors.push(subject + ' chưa chọn Loại tiền. Vui lòng kiểm tra lại.');
     }
-    if (toNumber(vendor.amount) <= 0) {
+    if (toNumber(vendor.amount) < 0 || (toNumber(vendor.amount) <= 0 && vRefundAmt <= 0)) {
         errors.push(subject + ' có số tiền đề nghị phải lớn hơn 0. Vui lòng kiểm tra lại.');
     }
 
@@ -1829,7 +2030,7 @@ function getExpenseVendors(expenseId, vendorId, paymentVendorId) {
     var rc;
 
     if (paymentVendorId) {
-        query += ' and id="' + escapeQueryValue(paymentVendorId) + '"';
+        query += ' and (id="' + escapeQueryValue(paymentVendorId) + '" or internal.ref.id="' + escapeQueryValue(paymentVendorId) + '")';
     } else if (vendorId) {
         query += ' and vendor.id="' + escapeQueryValue(vendorId) + '"';
     }
@@ -1848,6 +2049,7 @@ function getExpenseVendors(expenseId, vendorId, paymentVendorId) {
             vendor_site_id: readText(f, 'vendor.site.id'),
             contract_id: readText(f, 'contract.id'),
             amount: readNumber(f, 'amount'),
+            refund_amount: readNumber(f, 'refund.amount') || readNumber(f, 'refund_amount'),
             currency: readText(f, 'currency'),
             payment_method: readText(f, 'payment.method'),
             bank_name: readText(f, 'bank.name'),
@@ -1875,6 +2077,7 @@ function enrichVendor(vendor) {
     vendor.vendor_site_code = siteInfo.vendor_site_code;
     vendor.debit_account = siteInfo.debit_account;
     vendor.credit_account = siteInfo.credit_account;
+    vendor.refund_amount = getVendorRefundAmount(vendor);
 
     return vendor;
 }
@@ -1964,7 +2167,7 @@ function getSavedExpenseEntries(expenseId) {
             TABLE_PAYMENT_ENTRY +
             ' e LEFT JOIN ' +
             TABLE_PAYMENT_VENDOR +
-            ' pv ON (e.ref.id = pv.id AND e.payment.id = pv.payment.id)' +
+            ' pv ON (e.payment.vendor.id = pv.id AND e.payment.id = pv.payment.id)' +
             ' LEFT JOIN ' +
             TABLE_VENDOR +
             ' v ON (e.vendor.id = v.id)' +
@@ -1997,6 +2200,7 @@ function getExpenseEntryFields() {
         ['e.currency', 'currency', 'S'],
         ['e.description', 'description', 'S'],
         ['e.vendor.id', 'vendor_id', 'S'],
+        ['e.payment.vendor.id', 'payment_vendor_id', 'S'],
         ['v.vendor.name', 'vendor_name', 'S'],
         ['e.type', 'type', 'S'],
         ['e.order', 'order', 'N'],
@@ -2037,6 +2241,9 @@ function mergeEditableAutoEntryFields(savedEntries, expectedEntries) {
         if (matched) {
             expected.id = safeString(matched.id);
             expected.description = safeString(matched.description).trim() || expected.description;
+            if (matched.ap_code) {
+                expected.ap_code = safeString(matched.ap_code).trim();
+            }
 
             if (isEditableDebitAccountEntry(expected) || isEditableCreditAccountEntry(expected)) {
                 var generatedAccountNumber = safeString(expected.account_number);
@@ -2061,8 +2268,11 @@ function makeAutoEntryMatchKey(row) {
     var entryType = normalizeEntryType(row.entry_type);
     if (!entryType) return '';
 
-    var key = safeString(row.ref_id || row['ref.id']).trim() + '|' +
+    var key = getEntryPaymentVendorId(row) + '|' +
             safeString(row.vendor_id).trim() + '|' + entryType;
+    if (entryType === ENTRY_TYPE.PREPAYMENT || entryType === ENTRY_TYPE.PAYABLE) {
+        key += '|ref|' + getEntryReferenceId(row);
+    }
     if (entryType === ENTRY_TYPE.TAX) {
         key += '|' + safeString(row.account_number).trim();
     }
@@ -2074,7 +2284,8 @@ function isEditableDebitAccountEntry(row) {
 }
 
 function isEditableCreditAccountEntry(row) {
-    return normalizeEntryType(row.entry_type) === ENTRY_TYPE.PAYABLE;
+    var type = normalizeEntryType(row.entry_type);
+    return type === ENTRY_TYPE.PAYABLE || type === ENTRY_TYPE.PREPAYMENT;
 }
 
 function replaceAutoExpenseEntries(expenseId, rows) {
@@ -2142,8 +2353,9 @@ function toPaymentEntryRecord(row) {
         currency: row.currency,
         description: row.description,
         'vendor.id': row.vendor_id,
+        'payment.vendor.id': getEntryPaymentVendorId(row),
         type: row.type,
-        'ref.id': row.ref_id || row['ref.id'],
+        'ref.id': getEntryReferenceId(row),
         'ap.code': row.ap_code,
         order: row.order
     };
@@ -2183,12 +2395,14 @@ function deleteAutoExpenseEntries(expenseId) {
 
     while (rc === RC_SUCCESS) {
         var isManual = isUserAddedEntryId(f['id']);
-        var isJunk = !isManual && (!safeString(f['ref.id']).trim() || toNumber(f['amount']) <= 0);
+        var isJunk = !isManual && (!safeString(f['payment.vendor.id']).trim() || toNumber(f['amount']) <= 0);
         if (isJunk || isAutoEntry({
             id: f['id'],
             payment_id: f['payment.id'],
             contract_id: f['contract.id'],
             vendor_id: f['vendor.id'],
+            payment_vendor_id: f['payment.vendor.id'],
+            'payment.vendor.id': f['payment.vendor.id'],
             type: f['type'],
             entry_type: f['entry.type'],
             ref_id: f['ref.id'],
@@ -2599,6 +2813,20 @@ function safeString(value) {
     return String(value);
 }
 
+/** Khóa món dự chi trên esdHTKTpaymentEntry. Không dùng ref.id làm fallback. */
+function getEntryPaymentVendorId(row) {
+    if (!row) return '';
+    return safeString(
+        row.payment_vendor_id || row.paymentVendorId || row['payment.vendor.id']
+    ).trim();
+}
+
+/** Mã tham chiếu nghiệp vụ (trả treo/hoàn ứng), độc lập với mã món dự chi. */
+function getEntryReferenceId(row) {
+    if (!row) return '';
+    return safeString(row.ref_id || row.refId || row['ref.id']).trim();
+}
+
 function normalizeText(value) {
     var text = safeString(value).toLowerCase();
     try {
@@ -2668,16 +2896,43 @@ function handleExpenseInvoiceChange(rec) {
 }
 
 function handleExpenseCostDivisionChange(rec) {
-    if (!rec) return;
-    var expenseId = safeString(rec['payment.id'] || rec['id']).trim();
-    if (!expenseId) return;
+    var currentRec = rec || (typeof vars !== 'undefined' ? vars.$L_file : null);
+    if (!currentRec) {
+        print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange: rec is null/undefined');
+        return;
+    }
+
+    var expenseId = safeString(currentRec['payment.id'] || currentRec.paymentId).trim();
+    if (!expenseId && currentRec['id'] && String(currentRec['id']).indexOf('DC.') === 0) {
+        expenseId = String(currentRec['id']).trim();
+    }
+
+    print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange: expenseId=' + expenseId + ', costDivisionId=' + safeString(currentRec['id']));
+
+    if (!expenseId) {
+        print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange: cannot determine expenseId from rec');
+        return;
+    }
 
     var request = getExpenseRequest(expenseId);
-    if (!request || isGenerationPhaseLocked(request.current_phase)) return;
+    if (!request) {
+        print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange: request not found for expenseId=' + expenseId);
+        return;
+    }
+
+    // Kiểm tra phase nếu có thiết lập khóa chặt chẽ
+    var currentPhase = safeString(request.current_phase || request['current.phase']).toLowerCase().trim();
+    if (currentPhase && isGenerationPhaseLocked(currentPhase)) {
+        print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange: phase is locked: ' + currentPhase);
+        return;
+    }
 
     try {
-        syncExpenseEntryBySourceChange('esdHTKTpaymentCostDivision', rec);
+        print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange: triggering syncExpenseEntryBySourceChange...');
+        var syncRes = syncExpenseEntryBySourceChange('esdHTKTpaymentCostDivision', currentRec);
+        print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange: sync result=' + (syncRes ? JSON.stringify(syncRes) : 'null'));
     } catch (ex) {
+        print('[EXPENSE-TRIGGER] handleExpenseCostDivisionChange ERROR: ' + ex);
         debugExpenseEntry('COST-DIVISION-TRIGGER-ERROR', 'expenseId=' + expenseId + ', ex=' + ex.toString());
     }
 }
@@ -2863,6 +3118,9 @@ function normalizeEditedEntry(raw) {
         currency: safeString(raw.currency).trim(),
         description: safeString(raw.description).trim(),
         vendor_id: safeString(raw.vendor_id).trim(),
+        payment_vendor_id: safeString(
+            raw.payment_vendor_id || raw.paymentVendorId || raw['payment.vendor.id']
+        ).trim(),
         type: TYPE.AP,
         order: toNumber(raw.order),
         ref_id: safeString(raw.ref_id).trim(),
@@ -2878,6 +3136,7 @@ function validateEditedEntry(expenseId, row, index, usedIds) {
     if (usedIds[row.id]) return prefix + 'trùng lặp ID ' + row.id + '.';
     if (row.payment_id !== expenseId) return prefix + 'mã đề nghị không khớp.';
     if (!row.account_number) return prefix + 'chưa chọn tài khoản hạch toán.';
+    if (!row.payment_vendor_id) return prefix + 'thiếu mã món dự chi (payment.vendor.id).';
     if (!(row.amount > 0)) return prefix + 'số tiền phải lớn hơn 0.';
     if (!row.currency) return prefix + 'chưa chọn loại tiền.';
     if (!(row.order > 0)) return prefix + 'số thứ tự (order) phải lớn hơn 0.';
@@ -2971,7 +3230,7 @@ function handleUpdatePaymentVendorAndAccountingSync(rec, oldRec) {
         return;
     }
 
-    if (payment.current_phase !== "initial_kttc") {
+    if (isGenerationPhaseLocked(payment.current_phase)) {
         debugExpenseEntry('TRIGGER-SKIP', 'Phase không hợp lệ: ' + safeString(payment.current_phase));
         return;
     }
@@ -2984,5 +3243,75 @@ function handleUpdatePaymentVendorAndAccountingSync(rec, oldRec) {
         debugExpenseEntry('TRIGGER-DONE', 'paymentId=' + paymentId + ', result=' + JSON.stringify(syncResult));
     } catch (ex) {
         debugExpenseEntry('TRIGGER-ERROR', 'paymentId=' + paymentId + ', error=' + ex.toString());
+    }
+}
+
+/**
+ * Trigger handler cho esdHTKTpayment (After Update)
+ * Đồng bộ trường description từ phiếu Dự chi sang các dòng bút toán
+ * Điều kiện:
+ * - Người dùng cập nhật trường description của payment (newDesc !== oldDesc và newDesc không rỗng)
+ * - Nếu payment chưa có description (rỗng) thì bỏ qua
+ * - Quét các dòng bút toán (esdHTKTpaymentEntry) ứng với mã dự chi
+ * - Dòng nào có description đang rỗng thì fill newDesc vào, dòng đã có description thì giữ nguyên
+ */
+function syncPaymentDescriptionToEntries(record, oldrecord) {
+    var currentRec = record || (typeof vars !== 'undefined' ? (vars.$L_file || vars['$L.file']) : null);
+    var oldRec = oldrecord || (typeof vars !== 'undefined' ? (vars.$L_file_save || vars['$L.file.save']) : null);
+
+    if (!currentRec) return;
+
+    var newDesc = safeString(currentRec["description"]).trim();
+    // Nếu payment chưa có description (rỗng) thì thôi
+    if (!newDesc) return;
+
+    var oldDesc = oldRec ? safeString(oldRec["description"]).trim() : "";
+    // Nếu description không thay đổi thì bỏ qua
+    if (newDesc === oldDesc) return;
+
+    var expenseId = safeString(currentRec["id"]).trim();
+    if (!expenseId) return;
+
+    // Kiểm tra đúng phiếu Dự chi
+    var isExpense = (currentRec["transaction.type"] === "Dự chi") || (expenseId.indexOf("DC.") === 0);
+    if (!isExpense) return;
+
+    try {
+        var fEntry = new SCFile(TABLE_PAYMENT_ENTRY);
+        var query = 'payment.id="' + escapeQueryValue(expenseId) + '"';
+        var rc = fEntry.doSelect(query);
+
+        // Thu thập danh sách id các dòng bút toán có description đang rỗng
+        var entryIdsToUpdate = [];
+        while (rc === RC_SUCCESS) {
+            var curDesc = safeString(fEntry["description"]).trim();
+            if (!curDesc) {
+                entryIdsToUpdate.push(fEntry["id"]);
+            }
+            rc = fEntry.getNext();
+        }
+        closeFile(fEntry);
+
+        // Cập nhật từng dòng có description rỗng
+        var updatedCount = 0;
+        for (var i = 0; i < entryIdsToUpdate.length; i++) {
+            var uEntry = new SCFile(TABLE_PAYMENT_ENTRY);
+            var findRc = uEntry.doSelect('id="' + escapeQueryValue(entryIdsToUpdate[i]) + '"');
+            if (findRc === RC_SUCCESS) {
+                uEntry["description"] = newDesc;
+                var upRc = uEntry.doUpdate();
+                if (upRc === RC_SUCCESS) {
+                    updatedCount++;
+                }
+            }
+            closeFile(uEntry);
+        }
+
+        debugExpenseEntry('SYNC-DESC', 'expenseId=' + expenseId + ', updated=' + updatedCount + '/' + entryIdsToUpdate.length + ' entries');
+    } catch (ex) {
+        debugExpenseEntry('SYNC-DESC-ERROR', 'expenseId=' + expenseId + ', error=' + ex.toString());
+        if (typeof print === 'function') {
+            print('[ERROR] syncPaymentDescriptionToEntries failed for Expense ID: ' + expenseId + ' | Exception: ' + ex);
+        }
     }
 }
