@@ -386,16 +386,16 @@ function buildHTKTPaymentLeadershipLv1Filter(currentUser, hasView, rightsArray, 
 
 
 /**
- * HẬU KIỂM - nhận diện bằng RIGHT chức năng riêng của module Thanh toán.
+ * HẬU KIỂM - nhận diện bằng RIGHT dùng chung cho Thanh toán và Tạm ứng.
  *
- * 0040040003000010 = Hậu kiểm đề nghị thanh toán.
+ * 0040040005000001 = Hậu kiểm HTKT.
  *
  * Không suy luận Hậu kiểm từ quyền Hóa đơn / 0009 / quyền Tạm ứng nữa,
  * tránh nhận diện nhầm Checker/Approver/ApproverFinal hoặc các role mới sau này.
  */
 function isHTKTPaymentPostAuditRole(rightsArray) {
     var rights = uniqueHTKTArray(rightsArray);
-    var RIGHT_PAYMENT_POST_AUDIT = "0040040003000010";
+    var RIGHT_PAYMENT_POST_AUDIT = "0040040005000001";
 
     return rights.indexOf(RIGHT_PAYMENT_POST_AUDIT) >= 0;
 }
@@ -952,8 +952,8 @@ function getPaymentListFilterOptions(input) {
     var rightsArray = getHTKTPaymentApiRights(currentUser, contactInfo);
     // truong them: External action co the khong mang $G.rights cua HTML Viewer.
     var isPostAuditRole =
-        isHTKTPaymentPostAuditRole(rightsArray) ||
-        payload.isPostAuditRole === true;
+        payload.isPostAuditRole === true &&
+        isHTKTPaymentPostAuditRole(rightsArray);
     var dataPermission = getHTKTPaymentApiDataPermission(
         currentUser,
         "00401",
@@ -1152,7 +1152,11 @@ function getPaymentListFilterOptions(input) {
 }
 
 function renderList() {
-    var isFromHK = vars["$L.isFromHK"] ;
+    var wizardName = String(vars["$L.wizard.name"] || vars["$G.HD.Back"] || "").trim().toUpperCase();
+    var isFromHK = String(vars["$L.isFromHK"] || "").trim().toLowerCase() === "true" ||
+        wizardName.indexOf("POST AUDIT") >= 0;
+    var menuContext = isFromHK ? "post_audit" : "create";
+    vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] = menuContext;
 
     var currentUser = vars['$lo.contact.name'];
 
@@ -1214,7 +1218,7 @@ function renderList() {
 
     /*
      * HẬU KIỂM:
-     * - Nhận diện DUY NHẤT bằng right 0040040003000010.
+     * - Nhận diện DUY NHẤT bằng right 0040040005000001.
      * - Không suy luận từ 0009 / quyền Hóa đơn / quyền Tạm ứng.
      * - Không thay initialRole, không tham gia logic xử lý workflow DMMS/KTTC.
      *
@@ -1226,7 +1230,7 @@ function renderList() {
      * Các user cũ (DMMS/KTTC/Checker/Approver/ApproverFinal...) vẫn chạy nguyên
      * buildHTKTPaymentCreatedByFilter() đã chốt.
      */
-    var isPostAuditRole = isHTKTPaymentPostAuditRole(rightsArray);
+    var isPostAuditRole = isFromHK && isHTKTPaymentPostAuditRole(rightsArray);
     var hasPostAuditView = isPostAuditRole;
     // truong them
     var leadershipAccess = getHTKTPaymentLeadershipAccess(rightsArray);
@@ -1264,12 +1268,13 @@ function renderList() {
         );
 
         /*
-         * Gui xuong dung tap LV1 da resolve:
+         * dataPermission.scope la ma phan quyen du lieu hop dong;
+         * dataScopeCode giu ma noi bo de danh sach nhan dien lanh dao.
          * - TSC: toan bo PS ACTIVE cua entity 1010098.
          * - Chi nhanh: entity cua LV1 hien tai.
          */
         dataPermission = {
-            scope: dataFilterInfo.dataScopeCode,
+            scope: "QT_PQDL_04",
             unit: dataFilterInfo.dataScopeUnits
         };
     } else {
@@ -1291,6 +1296,7 @@ function renderList() {
             currentUser: currentUser,
             contactId: currentUser,
             initialRole: initialRole,
+            menuContext: menuContext,
             // Thông tin phụ
             operatorName: smLoginUser,
             fullName: contactInfo.fullName,

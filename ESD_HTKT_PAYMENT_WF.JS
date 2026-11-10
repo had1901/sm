@@ -71,8 +71,21 @@ var HTKT_WF_DSM_STATUS = {
  * 2. CÁC HÀM KIỂM TRA QUYỀN HẠN & TRẠNG THÁI (PERMISSION & ACTION CHECKS)
  * ============================================================================= */
 
-/* HẬU KIỂM không được thao tác các action workflow của hồ sơ Thanh toán. */
+/* Chỉ khóa action khi hồ sơ được mở từ menu Hậu kiểm Thanh toán. */
+function isPaymentPostAuditContext(record) {
+    var localFlag = String(vars["$L.isFromHK"] || "").trim().toLowerCase();
+    if (localFlag === "true") return true;
+    var currentRecord = record || vars.$L_file || vars["$L.file"] || {};
+    if (String(currentRecord.isFromHK || "").trim().toLowerCase() === "true") return true;
+    var recordId = String(currentRecord["payment.id"] || currentRecord.id || "");
+    if (recordId.indexOf("DC.") === 0) {
+        return String(vars["$G.HTKT_DUCHI_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
+    }
+    return String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
+}
+
 function isPostAuditOperator() {
+    if (!isPaymentPostAuditContext()) return false;
     try {
         var currentUser = "";
 
@@ -93,11 +106,21 @@ function isPostAuditOperator() {
 
         if (!currentUser) return false;
 
-        var rights = lib.ESD_PERMS_RIGHTS.permsRight(currentUser) || [];
+        var rights = vars["$G.rights"] || [];
         if (rights && rights.toArray) rights = rights.toArray();
+        if (typeof rights === "string") rights = [rights];
 
         for (var i = 0; i < rights.length; i++) {
-            if (String(rights[i] || "").trim() === "0040040003000010") {
+            if (String(rights[i] || "").trim() === "0040040005000001") {
+                return true;
+            }
+        }
+
+        rights = lib.ESD_PERMS_RIGHTS.permsRight(currentUser) || [];
+        if (rights && rights.toArray) rights = rights.toArray();
+
+        for (var j = 0; j < rights.length; j++) {
+            if (String(rights[j] || "").trim() === "0040040005000001") {
                 return true;
             }
         }
@@ -109,7 +132,7 @@ function isPostAuditOperator() {
 }
 
 function checkShowCancel(record) {
-    return isPostAuditOperator() ? "F" : "T";
+    return isPaymentPostAuditContext(record) ? "F" : "T";
 }
 
 function checkShowPrint(record) {
@@ -177,6 +200,11 @@ function checkCanReturn(record) {
 }
 
 function canEditInCurrenPhase(record) {
+    // Chi xem khi mo tu menu hau kiem, ke ca user co them role tao moi.
+    if (isPaymentPostAuditContext()) {
+        return false;
+    }
+
     var currentUser = vars.$lo_operator["contact.name"];
     var currentPhase = record.current_phase || record["current.phase"];
 
@@ -357,7 +385,7 @@ function createApprovalHistory(record) {
 }
 
 function cancelRequest(record) {
-    if (isPostAuditOperator()) {
+    if (isPaymentPostAuditContext(record)) {
         throw new Error("Cán bộ Hậu kiểm không được thực hiện thao tác này.");
     }
 
@@ -395,6 +423,8 @@ function cancelRequest(record) {
         ); */
     }
 }
+
+
 
 function getReturnToUpdatePhase(record) {
     var initialRole = String(record && record["initial.role"] || "").trim().toLowerCase();

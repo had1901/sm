@@ -411,9 +411,31 @@ function getTabThongTinPheDuyet(endpoint, input, extraData) {
     var payment = vars["$L.file"] || vars.$L_file || extraData;
     var currentUser = String(vars["$lo.contact.name"] ||
         (vars.$lo_operator ? vars.$lo_operator["contact.name"] : "") || "").trim();
+    var paymentId = String(payment && payment.id || "").trim();
+    var isDuChi = /^DC\.[A-Za-z0-9._-]+$/.test(paymentId);
+    var rightPrefix = isDuChi ? "0040040004" : "0040040003";
     var initData = payment
-        ? lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.getPaymentApprovalInitData(payment, currentUser)
+        ? lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.getPaymentApprovalInitData(
+            payment,
+            currentUser,
+            rightPrefix,
+            !isDuChi && String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit"
+        )
         : {};
+    if (!isDuChi) {
+        initData.isFromHK = String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
+    }
+
+    if (isDuChi) {
+        initData.duChiId = initData.paymentId;
+        delete initData.paymentId;
+        return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
+            'HachToanKeToan/DuChi/TabThongTinPheDuyet',
+            '',
+            initData
+        );
+    }
+
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
         'HachToanKeToan/ThanhToan/TabThongTinPheDuyet', '', initData
     );
@@ -468,6 +490,8 @@ function getTabThongTinDeNghi(endpoint, input, extraData) {
         }
     }
 
+    currentRecord = currentRecord || {};
+    currentRecord.isFromHK = String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/ThanhToan/TabThongTinDeNghi', '', currentRecord);
 }
 
@@ -506,6 +530,8 @@ function getTabChiTietThongTinHT(endpoint, input, extraData) {
         }
     }
 
+    currentRecord = currentRecord || {};
+    currentRecord.isFromHK = String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/ThanhToan/TabThongTinHT/ChiTietHachToan', '', currentRecord)
 }
 
@@ -556,6 +582,7 @@ function getTabThongTinHT(endpoint, input, extraData) {
                 currentPhase: currentPhase,
                 userCheckerKttc: userCheckerKttc,
                 initialRole: initialRole,
+                isFromHK: String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit",
                 currentRecord: {
                     id: paymentId,
                     currentPhase: currentPhase,
@@ -632,6 +659,7 @@ function getTabHoSoDinhKem() {
         };
     }
 
+    currentRecord.isFromHK = String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
         'HachToanKeToan/ThanhToan/TabHoSoDinhKem',
         '',

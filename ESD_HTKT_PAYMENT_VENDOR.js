@@ -407,6 +407,23 @@ function getInvoicesBySupplier(input) {
     return invoiceList;
 }
 
+function shouldCheckPaymentInvoice(lastCheckDate) {
+    if (!lastCheckDate) return true;
+
+    try {
+        var checkDate = lastCheckDate instanceof Date
+                ? lastCheckDate
+                : new Date(lastCheckDate);
+        var checkTime = checkDate.getTime();
+        if (isNaN(checkTime)) return true;
+
+        var twoDaysInMilliseconds = 2 * 24 * 60 * 60 * 1000;
+        return new Date().getTime() - checkTime > twoDaysInMilliseconds;
+    } catch (e) {
+        return true;
+    }
+}
+
 function createListInvoinVendor(input) {
     var rawDetails = "";
 
@@ -641,15 +658,17 @@ function createListInvoinVendor(input) {
                             // print("Lỗi khi cập nhật request.id cho hóa đơn id: " + invoiceId);
                         }
 
-                        // Gọi API
-                        try {
-                            var apiResponse = lib.ESD_HTKT_SCHEDULE_OGL.callCheckInvoiceAPI(invFile);
-                            if (apiResponse !== null && apiResponse.success === true) {
-                                invFile['last.check.date'] = new Date();
-                                invFile.doUpdate();
+                        // Chỉ kiểm tra lại khi chưa có kết quả hoặc lần kiểm tra gần nhất đã quá 2 ngày.
+                        if (shouldCheckPaymentInvoice(invFile["last.check.date"])) {
+                            try {
+                                var apiResponse = lib.ESD_HTKT_SCHEDULE_OGL.callCheckInvoiceAPI(invFile);
+                                if (apiResponse !== null && apiResponse.success === true) {
+                                    invFile['last.check.date'] = new Date();
+                                    invFile.doUpdate();
+                                }
+                            } catch (apiErr) {
+                                // print("Lỗi khi gọi API check hóa đơn " + invoiceId + ": " + apiErr.toString());
                             }
-                        } catch (apiErr) {
-                            // print("Lỗi khi gọi API check hóa đơn " + invoiceId + ": " + apiErr.toString());
                         }
 
 

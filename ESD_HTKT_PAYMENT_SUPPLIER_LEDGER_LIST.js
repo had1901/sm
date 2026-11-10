@@ -60,6 +60,9 @@ function getListSupplierLedger(input) {
     var vendorId = String(params.vendorId || "").trim();
     var contractId = String(params.contractId || "").trim();
     var currentPaymentId = String(params.paymentId || "").trim();
+    var paymentVendorId = String(
+            params.paymentVendorId || params.payment_vendor_id || params["payment.vendor.id"] || ""
+    ).trim();
 
     if (!vendorId || !contractId) return [];
 
@@ -83,6 +86,7 @@ function getListSupplierLedger(input) {
 
             "pe.amount AS payment_entry_amount, " +
             "pe.payment.id AS entry_payment_id, " +
+            "pe.payment.vendor.id AS entry_payment_vendor_id, " +
             "p.status AS entry_payment_status, " +
 
             "pe.description AS pe_description, " +
@@ -127,6 +131,9 @@ function getListSupplierLedger(input) {
             var paymentEntryAmount = getNumberField(file, ["payment_entry_amount", "pe.amount"]);
 
             var entryPaymentId = String(file["pe.payment.id"] || "").trim();
+            var entryPaymentVendorId = String(
+                    file["entry_payment_vendor_id"] || file["pe.payment.vendor.id"] || ""
+            ).trim();
             var entryPaymentStatus = String(file["entry_payment_status"] || file["p.status"] || "").trim().toLowerCase();
             var oglStatus = String(file["aip.status"] || "").trim().toLowerCase();
             var peDescription = String(file["pe.description"] || "").trim(); // Lấy description từ payment entry
@@ -148,6 +155,7 @@ function getListSupplierLedger(input) {
                     subType: String(file["subType"] || "").trim(),
                     amount: advanceAmount,
                     contractId: String(file["contractId"] || "").trim(),
+                    paymentVendorId: paymentVendorId,
                     description: "", // Khởi tạo description của đề nghị lần này
                     // Các biến khởi tạo tính toán
                     advance_amount: advanceAmount,
@@ -183,7 +191,8 @@ function getListSupplierLedger(input) {
                     item.refunded_amount += paymentEntryAmount;
                 };
                 // 2. Nếu thuộc Phiếu hiện tại -> "Số tiền hoàn ứng lần này"
-                if (currentPaymentId && entryPaymentId === currentPaymentId) {
+                if (currentPaymentId && entryPaymentId === currentPaymentId &&
+                        (!paymentVendorId || entryPaymentVendorId === paymentVendorId)) {
                     item.current_refund_amount += paymentEntryAmount;
                     if (peDescription) {
                         item.description = peDescription; // Gán description từ payment entry của đề nghị hiện tại
@@ -223,6 +232,9 @@ function getListSupplierLedger(input) {
                     try {
                         var paymentVendorQuery = 'payment.id="' + escapeSmQueryValue(currentPaymentId) +
                                 '" AND vendor.id="' + escapeSmQueryValue(vendorId) + '"';
+                        if (paymentVendorId) {
+                            paymentVendorQuery += ' AND id="' + escapeSmQueryValue(paymentVendorId) + '"';
+                        }
                         if (paymentVendorFile.doSelect(paymentVendorQuery) == RC_SUCCESS) {
                             vendorTransactionDescription = String(paymentVendorFile['transaction.des'] || "").trim();
                         }
@@ -271,11 +283,11 @@ function getListAccountsPayable(input) {
             "ai.data AS ai_data, " +// Để lấy currency
 
             (currentPaymentId ? "currentPaymentEntry.amount AS currentPaymentEntryAmount, " +
-            "currentPaymentEntry.id AS currentPaymentEntryId, " +
-            "currentPaymentEntry.description AS currentPaymentEntryDescription, " +
-            "currentExpenseEntry.amount AS currentExpenseEntryAmount, " +
-            "currentExpenseEntry.id AS currentExpenseEntryId, " +
-            "currentExpenseEntry.description AS currentExpenseEntryDescription, " : "") +
+                    "currentPaymentEntry.id AS currentPaymentEntryId, " +
+                    "currentPaymentEntry.description AS currentPaymentEntryDescription, " +
+                    "currentExpenseEntry.amount AS currentExpenseEntryAmount, " +
+                    "currentExpenseEntry.id AS currentExpenseEntryId, " +
+                    "currentExpenseEntry.description AS currentExpenseEntryDescription, " : "") +
 
             "pv.approved.invoice.amount, " +
             "pv.amount, " +
@@ -307,11 +319,11 @@ function getListAccountsPayable(input) {
                 isExpensePayable ? "currentExpenseEntryAmount" : "currentPaymentEntryAmount"
             ]) : 0;
             var currentPaymentEntryDescription = currentPaymentId ? String(file[
-                isExpensePayable ? "currentExpenseEntryDescription" : "currentPaymentEntryDescription"
-            ] || "").trim() : "";
+                    isExpensePayable ? "currentExpenseEntryDescription" : "currentPaymentEntryDescription"
+                    ] || "").trim() : "";
             var currentPaymentEntryId = currentPaymentId ? String(file[
-                isExpensePayable ? "currentExpenseEntryId" : "currentPaymentEntryId"
-            ] || "").trim() : "";
+                    isExpensePayable ? "currentExpenseEntryId" : "currentPaymentEntryId"
+                    ] || "").trim() : "";
             var refundAmount = getNumberField(file, ["pv.refund.amount"]);
             var paidAmount = getNumberField(file, ["pv.amount"]);
             var payableAmount = getNumberField(file, ["pe.amount"]);
@@ -442,19 +454,19 @@ function buildAccountsPayableQueryScope(vendorId, contractId, currentPaymentId) 
             'AND (ai.sub.type ~= "DU_CHI" OR ' +
             '(pe.ref.id = pv.id AND ai.internal.ref.id = pv.id))) ' +
             (currentPaymentId ? "LEFT JOIN esdHTKTpaymentEntry currentPaymentEntry " +
-            'ON (ai.sub.type = "THANH_TOAN" ' +
-            'AND ai.prepayment.id = currentPaymentEntry.ref.id ' +
-            'AND currentPaymentEntry.payment.id = "' + escapeSmQueryValue(currentPaymentId) + '" ' +
-            'AND currentPaymentEntry.entry.type = "PAYABLE" ' +
-            'AND currentPaymentEntry.account.type = "DEBIT" ' +
-            'AND currentPaymentEntry.vendor.id = "' + escapeSmQueryValue(vendorId) + '") ' +
-            "LEFT JOIN esdHTKTpaymentEntry currentExpenseEntry " +
-            'ON (ai.sub.type = "DU_CHI" ' +
-            'AND ai.internal.ref.id = currentExpenseEntry.ref.id ' +
-            'AND currentExpenseEntry.payment.id = "' + escapeSmQueryValue(currentPaymentId) + '" ' +
-            'AND currentExpenseEntry.entry.type = "PAYABLE" ' +
-            'AND currentExpenseEntry.account.type = "DEBIT" ' +
-            'AND currentExpenseEntry.vendor.id = "' + escapeSmQueryValue(vendorId) + '") ' : "") +
+                    'ON (ai.sub.type = "THANH_TOAN" ' +
+                    'AND ai.prepayment.id = currentPaymentEntry.ref.id ' +
+                    'AND currentPaymentEntry.payment.id = "' + escapeSmQueryValue(currentPaymentId) + '" ' +
+                    'AND currentPaymentEntry.entry.type = "PAYABLE" ' +
+                    'AND currentPaymentEntry.account.type = "DEBIT" ' +
+                    'AND currentPaymentEntry.vendor.id = "' + escapeSmQueryValue(vendorId) + '") ' +
+                    "LEFT JOIN esdHTKTpaymentEntry currentExpenseEntry " +
+                    'ON (ai.sub.type = "DU_CHI" ' +
+                    'AND ai.internal.ref.id = currentExpenseEntry.ref.id ' +
+                    'AND currentExpenseEntry.payment.id = "' + escapeSmQueryValue(currentPaymentId) + '" ' +
+                    'AND currentExpenseEntry.entry.type = "PAYABLE" ' +
+                    'AND currentExpenseEntry.account.type = "DEBIT" ' +
+                    'AND currentExpenseEntry.vendor.id = "' + escapeSmQueryValue(vendorId) + '") ' : "") +
             'WHERE (ai.sub.type = "THANH_TOAN" OR ai.sub.type = "DU_CHI") ' +
             'AND ai.contract.id = "' + escapeSmQueryValue(contractId) + '" ' +
             'AND ai.vendor.id = "' + escapeSmQueryValue(vendorId) + '" ' +
@@ -742,15 +754,25 @@ function saveListPaymentEntryRefund(input) {
             var description = feeData['description'] || "";
             var refId = feeData['prepaymentId'] || "";
             var apCode = feeData['apCode'];
+            var paymentVendorId = String(
+                    feeData['paymentVendorId'] || feeData['payment_vendor_id'] || feeData['payment.vendor.id'] || ""
+            ).trim();
+            var isExpenseRequest = String(paymentId).indexOf("DC.") === 0;
 
-            if (paymentId === "" || vendorId === "") {
+            if (paymentId === "" || vendorId === "" || (currentRefund > 0 && refId === "") ||
+                    (isExpenseRequest && paymentVendorId === "")) {
                 // print("Bỏ qua dòng số " + (i + 1) + " do thiếu thông tin paymentId hoặc vendorId");
                 failedIds.push(paymentId || ("dòng " + (i + 1)));
                 continue;
             }
 
             var entryFile = new SCFile("esdHTKTpaymentEntry");
-            var query = "payment.id=\"" + paymentId + "\" AND vendor.id=\"" + vendorId + "\" AND ref.id=\"" + refId + "\"";
+            var query = "payment.id=\"" + escapeSmQueryValue(paymentId) +
+                    "\" AND vendor.id=\"" + escapeSmQueryValue(vendorId) +
+                    "\" AND ref.id=\"" + escapeSmQueryValue(refId) + "\"";
+            if (isExpenseRequest && paymentVendorId) {
+                query += " AND payment.vendor.id=\"" + escapeSmQueryValue(paymentVendorId) + "\"";
+            }
 
             var rcEntry = entryFile.doSelect(query);
 
@@ -775,6 +797,7 @@ function saveListPaymentEntryRefund(input) {
                     entryFile["amount"] = currentRefund;
                     entryFile["description"] = description;
                     entryFile["ap.code"] = apCode;
+                    if (isExpenseRequest && paymentVendorId) entryFile["payment.vendor.id"] = paymentVendorId;
                     var rcUpdate = entryFile.doUpdate();
 
                     if (rcUpdate == RC_SUCCESS) {
@@ -810,6 +833,7 @@ function saveListPaymentEntryRefund(input) {
                     newEntryFile['id'] = newId;
                     newEntryFile['payment.id'] = paymentId;
                     newEntryFile['vendor.id'] = vendorId;
+                    if (isExpenseRequest && paymentVendorId) newEntryFile['payment.vendor.id'] = paymentVendorId;
                     newEntryFile['entry.type'] = "PREPAYMENT";
                     newEntryFile['ledger.type'] = "Standard";
                     newEntryFile['account.type'] = "ASSET";
@@ -1362,7 +1386,7 @@ function getSupplierDebtSummary(input) {
     }
     //anhtc fix
     summary.tongPhaiTra += totalAdvanceTax;
-    
+
     // Trường 2: Tổng tiền đã thanh toán = Tổng ĐNTT đã hạch toán + Tổng thuế ĐNTƯ đã hạch toán
     summary.tongDaThanhToan = totalPaymentCompleted + totalAdvanceTax;
 

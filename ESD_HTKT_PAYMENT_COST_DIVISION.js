@@ -767,12 +767,14 @@ function getCostDivision(input) {
     var list = [];
     var paymentId = "";
     var vendorId = "";
+    var refId = "";
 
     try {
         var rawDetails = extractRawDetails(input);
         var queryObj = {};
         if (rawDetails) queryObj = JSON.parse(rawDetails);
         paymentId = queryObj.paymentId || queryObj["payment.id"] || queryObj.payment_id || "";
+        refId = queryObj.refId || queryObj["ref.id"] || queryObj.ref_id || "";
         vendorId =
                 queryObj.vendorId ||
                 queryObj["vendor.id"] ||
@@ -790,6 +792,7 @@ function getCostDivision(input) {
     var fieldMappings = [
         ["id", "id", "S"],
         ["payment.id", "paymentId", "S"],
+        ["ref.id", "refId", "S"],
         ["vendor.id", "vendorId", "S"],
         ["entry.type", "entryType", "S"],
         ["account.type", "accountType", "S"],
@@ -804,9 +807,15 @@ function getCostDivision(input) {
         ["amount", "amount", "N"]
     ];
 
+    var isExpense = isExpenseRequest(paymentId);
     var query = 'payment.id="' + escapeQueryValue(paymentId) + '"';
-    if (vendorId) {
+    // Nếu là Dự chi (DC) và có refId (món dự chi) thì lọc theo ref.id
+    if (isExpense && refId) {
+        query += ' and ref.id="' + escapeQueryValue(refId) + '"';
+    } else if (vendorId) {
         query += ' and vendor.id="' + escapeQueryValue(vendorId) + '"';
+    } else if (refId) {
+        query += ' and ref.id="' + escapeQueryValue(refId) + '"';
     }
 
     var f = new SCFile("esdHTKTpaymentCostDivision", SCFILE_READONLY);
@@ -838,7 +847,28 @@ function createCostDivision(input) {
 
     try {
         var parsedData = JSON.parse(rawDetails);
-        var dataList = Array.isArray(parsedData) ? parsedData : [parsedData];
+        var dataList = [];
+        if (Array.isArray(parsedData)) {
+            dataList = parsedData;
+        } else if (parsedData && Array.isArray(parsedData.data)) {
+            dataList = parsedData.data;
+        } else if (parsedData && Array.isArray(parsedData.details)) {
+            dataList = parsedData.details;
+        } else if (parsedData && parsedData.data) {
+            dataList = [parsedData.data];
+        } else if (parsedData) {
+            dataList = [parsedData];
+        }
+
+        var batchPaymentId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.paymentId || parsedData["payment.id"] || parsedData.payment_id || "")
+                : "";
+        var batchRefId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.refId || parsedData["ref.id"] || parsedData.ref_id || "")
+                : "";
+        var batchVendorId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.vendorId || parsedData["vendor.id"] || parsedData.vendor_id || parsedData.supplierId || parsedData["supplier.id"] || "")
+                : "";
 
         var totalSuccess = 0;
         var totalFailed = 0;
@@ -848,6 +878,16 @@ function createCostDivision(input) {
 
         for (var i = 0; i < dataList.length; i++) {
             var item = dataList[i];
+            if (!item) continue;
+            if (!item.paymentId && batchPaymentId) {
+                item.paymentId = batchPaymentId;
+            }
+            if (!item.refId && batchRefId) {
+                item.refId = batchRefId;
+            }
+            if (!item.vendorId && batchVendorId) {
+                item.vendorId = batchVendorId;
+            }
             var itemResult = processSingleCostDivision(item);
 
             if (!itemResult.success) {
@@ -904,15 +944,31 @@ function updateCostDivision(input) {
         if (!id)
             return { success: false, message: "Thiếu id bản ghi cần cập nhật" };
 
+        var f = new SCFile("esdHTKTpaymentCostDivision");
+        var rcSelect = f.doSelect('id="' + escapeQueryValue(id) + '"');
+
+        if (rcSelect !== RC_SUCCESS) {
+            try {
+                if (f) f.doClose();
+            } catch (e) {}
+            return {
+                success: false,
+                message: "Không tìm thấy bản ghi cần sửa với id: " + id
+            };
+        }
+
+        var targetUnitId = data.unitId !== undefined ? data.unitId : f["unit.id"];
+
         if (data.department !== undefined) {
-            var deptValidation = validateDepartment(data.department);
+            var deptValidation = validateDepartment(data.department, targetUnitId);
             if (!deptValidation.isValid) {
+                try { if (f) f.doClose(); } catch (e) {}
                 return {
                     success: false,
                     message:
                             "Mã phòng ban '" +
                             data.department +
-                            "' không tồn tại trong danh mục esdDMentity"
+                            "' không tồn tại trong danh mục esdDMcostCenter"
                 };
             }
             if (data.departmentName === undefined)
@@ -922,6 +978,7 @@ function updateCostDivision(input) {
         if (data.accountNumber !== undefined) {
             var accValidation = validateAccount(data.accountNumber);
             if (!accValidation.isValid) {
+                try { if (f) f.doClose(); } catch (e) {}
                 return {
                     success: false,
                     message:
@@ -936,19 +993,6 @@ function updateCostDivision(input) {
                 data.accountType = accValidation.accountType;
         }
 
-        var f = new SCFile("esdHTKTpaymentCostDivision");
-        var rcSelect = f.doSelect('id="' + escapeQueryValue(id) + '"');
-
-        if (rcSelect !== RC_SUCCESS) {
-            try {
-                if (f) f.doClose();
-            } catch (e) {}
-            return {
-                success: false,
-                message: "Không tìm thấy bản ghi cần sửa với id: " + id
-            };
-        }
-
         var targetDept =
                 data.department !== undefined ? data.department : f["department"];
         var targetTransCode =
@@ -957,7 +1001,10 @@ function updateCostDivision(input) {
                         : f["transaction.code"];
         var targetVendorId =
                 data.vendorId !== undefined ? data.vendorId : f["vendor.id"];
+        var targetRefId =
+                data.refId !== undefined ? data.refId : (data["ref.id"] !== undefined ? data["ref.id"] : f["ref.id"]);
         var paymentId = f["payment.id"];
+        var isExpense = isExpenseRequest(paymentId);
 
         if (targetDept && paymentId) {
             var fDup = new SCFile("esdHTKTpaymentCostDivision");
@@ -971,12 +1018,16 @@ function updateCostDivision(input) {
                     '" and id!="' +
                     escapeQueryValue(id) +
                     '"';
-            if (targetVendorId) {
+            if (isExpense && targetRefId) {
+                dupQuery += ' and ref.id="' + escapeQueryValue(targetRefId) + '"';
+            } else if (!isExpense && targetVendorId) {
                 dupQuery += ' and vendor.id="' + escapeQueryValue(targetVendorId) + '"';
             }
             var rcDup = fDup.doSelect(dupQuery);
 
             if (rcDup === RC_SUCCESS) {
+                if (data.refId !== undefined) fDup["ref.id"] = data.refId;
+                else if (data["ref.id"] !== undefined) fDup["ref.id"] = data["ref.id"];
                 if (data.vendorId !== undefined) fDup["vendor.id"] = data.vendorId;
                 if (data.department !== undefined)
                     fDup["department"] = data.department;
@@ -988,7 +1039,7 @@ function updateCostDivision(input) {
                     fDup["account.name"] = data.accountName;
                 if (data.accountType !== undefined)
                     fDup["account.type"] = data.accountType;
-                if (data.amount !== undefined) fDup["amount"] = Number(data.amount);
+                if (data.amount !== undefined) fDup["amount"] = toNumber(data.amount);
 
                 if (data.unitId !== undefined) fDup["unit.id"] = data.unitId;
                 if (data.unitName !== undefined) fDup["unit.name"] = data.unitName;
@@ -1022,6 +1073,8 @@ function updateCostDivision(input) {
             } catch (e) {}
         }
 
+        if (data.refId !== undefined) f["ref.id"] = data.refId;
+        else if (data["ref.id"] !== undefined) f["ref.id"] = data["ref.id"];
         if (data.vendorId !== undefined) f["vendor.id"] = data.vendorId;
         if (data.department !== undefined) f["department"] = data.department;
         if (data.departmentName !== undefined)
@@ -1030,7 +1083,7 @@ function updateCostDivision(input) {
             f["account.number"] = data.accountNumber;
         if (data.accountName !== undefined) f["account.name"] = data.accountName;
         if (data.accountType !== undefined) f["account.type"] = data.accountType;
-        if (data.amount !== undefined) f["amount"] = Number(data.amount);
+        if (data.amount !== undefined) f["amount"] = toNumber(data.amount);
 
         if (data.unitId !== undefined) f["unit.id"] = data.unitId;
         if (data.unitName !== undefined) f["unit.name"] = data.unitName;
@@ -1070,17 +1123,47 @@ function deleteCostDivision(input) {
     }
 
     try {
-        var dataList = JSON.parse(rawDetails);
+        var parsedData = JSON.parse(rawDetails);
+        var dataList = [];
+        if (Array.isArray(parsedData)) {
+            dataList = parsedData;
+        } else if (parsedData && Array.isArray(parsedData.data)) {
+            dataList = parsedData.data;
+        } else if (parsedData && Array.isArray(parsedData.details)) {
+            dataList = parsedData.details;
+        } else if (parsedData && parsedData.data) {
+            dataList = [parsedData.data];
+        } else if (parsedData) {
+            dataList = [parsedData];
+        }
+
+        var batchPaymentId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.paymentId || parsedData["payment.id"] || parsedData.payment_id || "")
+                : "";
+        var batchRefId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.refId || parsedData["ref.id"] || parsedData.ref_id || "")
+                : "";
+        var batchVendorId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.vendorId || parsedData["vendor.id"] || parsedData.vendor_id || parsedData.supplierId || parsedData["supplier.id"] || "")
+                : "";
+
         var totalSuccess = 0;
         var totalFailed = 0;
         var results = [];
 
         for (var i = 0; i < dataList.length; i++) {
             var item = dataList[i];
+            if (!item) continue;
             var id = item.id || "";
 
             if (!id) return { success: false, message: "Thiếu id bản ghi cần xóa" };
 
+            var itemRefId =
+                    item.refId ||
+                    item["ref.id"] ||
+                    item.ref_id ||
+                    batchRefId ||
+                    "";
             var itemVendorId =
                     item.vendorId ||
                     item["vendor.id"] ||
@@ -1088,18 +1171,23 @@ function deleteCostDivision(input) {
                     item["vendor_id"] ||
                     item.supplierId ||
                     item["supplier.id"] ||
+                    batchVendorId ||
                     "";
             var itemPaymentId =
                     item.paymentId ||
                     item["payment.id"] ||
                     item.payment_id ||
+                    batchPaymentId ||
                     "";
 
+            var isExpense = isExpenseRequest(itemPaymentId);
             var queryDel = 'id="' + escapeQueryValue(id) + '"';
             if (itemPaymentId) {
                 queryDel += ' and payment.id="' + escapeQueryValue(itemPaymentId) + '"';
             }
-            if (itemVendorId) {
+            if (isExpense && itemRefId) {
+                queryDel += ' and ref.id="' + escapeQueryValue(itemRefId) + '"';
+            } else if (!isExpense && itemVendorId) {
                 queryDel += ' and vendor.id="' + escapeQueryValue(itemVendorId) + '"';
             }
 
@@ -1171,10 +1259,45 @@ function importCostDivision(input) {
 
     try {
         var parsedData = JSON.parse(rawDetails);
-        var dataList = Array.isArray(parsedData.data)
-                ? parsedData.data
-                : [parsedData.data];
-        var paymentId = parsedData.paymentId;
+        var dataList = [];
+        if (Array.isArray(parsedData)) {
+            dataList = parsedData;
+        } else if (parsedData && Array.isArray(parsedData.data)) {
+            dataList = parsedData.data;
+        } else if (parsedData && Array.isArray(parsedData.details)) {
+            dataList = parsedData.details;
+        } else if (parsedData && Array.isArray(parsedData.rows)) {
+            dataList = parsedData.rows;
+        } else if (parsedData && parsedData.data) {
+            dataList = [parsedData.data];
+        } else if (parsedData) {
+            dataList = [parsedData];
+        }
+
+        var paymentId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.paymentId || parsedData["payment.id"] || parsedData.payment_id || "")
+                : "";
+        if (!paymentId && dataList.length > 0 && dataList[0]) {
+            paymentId = dataList[0].paymentId || dataList[0]["payment.id"] || dataList[0].payment_id || "";
+        }
+
+        var batchRefId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.refId || parsedData["ref.id"] || parsedData.ref_id || "")
+                : "";
+        if (!batchRefId && dataList.length > 0 && dataList[0]) {
+            batchRefId = dataList[0].refId || dataList[0]["ref.id"] || dataList[0].ref_id || "";
+        }
+
+        var batchVendorId = (parsedData && !Array.isArray(parsedData))
+                ? (parsedData.vendorId || parsedData["vendor.id"] || parsedData.vendor_id || parsedData.supplierId || parsedData["supplier.id"] || "")
+                : "";
+        if (!batchVendorId && dataList.length > 0 && dataList[0]) {
+            batchVendorId = dataList[0].vendorId || dataList[0]["vendor.id"] || dataList[0].vendor_id || "";
+        }
+
+        var currentUser = (parsedData && !Array.isArray(parsedData) && parsedData.currentUser)
+                ? parsedData.currentUser
+                : (vars['$lo.contact.name'] ? vars['$lo.contact.name'] : "");
 
         var creatorUnit = getCreatorAccountingUnit(paymentId);
 
@@ -1188,6 +1311,7 @@ function importCostDivision(input) {
             };
         }
 
+        var isExpense = isExpenseRequest(paymentId);
         var totalValid = 0;
         var totalInvalid = 0;
         var totalSuccess = 0;
@@ -1201,8 +1325,20 @@ function importCostDivision(input) {
 
         for (var i = 0; i < dataList.length; i++) {
             var item = dataList[i];
+            if (!item) continue;
 
-            if (creatorUnit.value !== item.unitId) {
+            // Gán paymentId, refId, vendorId từ payload nếu item chưa có
+            if (!item.paymentId && paymentId) {
+                item.paymentId = paymentId;
+            }
+            if (!item.refId && batchRefId) {
+                item.refId = batchRefId;
+            }
+            if (!item.vendorId && batchVendorId) {
+                item.vendorId = batchVendorId;
+            }
+
+            if (safeString(creatorUnit.value).trim() !== safeString(item.unitId).trim()) {
                 totalInvalid++;
                 results.push({
                     success: false,
@@ -1220,9 +1356,10 @@ function importCostDivision(input) {
                 continue;
             }
 
+            var scopeId = isExpense ? (item.refId || batchRefId || "") : (item.vendorId || batchVendorId || "");
             var key =
-                    item.paymentId + "|" +
-                    (item.vendorId || "") + "|" +
+                    (item.paymentId || paymentId) + "|" +
+                    scopeId + "|" +
                     item.department + "|" +
                     item.transactionCode + "|" +
                     item.unitId + "|" +
@@ -1257,7 +1394,7 @@ function importCostDivision(input) {
         if (totalInvalid > 0) {
             return {
                 success: false,
-                message: totalInvalid + " bản ghi ko hợp lệ.",
+                message: totalInvalid + " bản ghi không hợp lệ.",
                 details: results
             };
         }
@@ -1274,7 +1411,9 @@ function importCostDivision(input) {
 
         return {
             success: totalFailed === 0,
-            message: totalFailed === 0 ? totalFailed + " bản ghi thất bại" : "import thành công",
+            message: totalFailed === 0
+                    ? "Import thành công " + totalSuccess + " bản ghi"
+                    : "Import thất bại: " + totalFailed + " bản ghi lỗi (" + totalSuccess + " thành công)",
             details: results
         };
     } catch (e) {
@@ -1300,6 +1439,7 @@ function saveSingleCostDivision(data) {
 
     if (data.id) f["id"] = data.id;
     f["payment.id"] = data.paymentId;
+    if (data.refId || data["ref.id"]) f["ref.id"] = data.refId || data["ref.id"];
     f["vendor.id"] = data.vendorId || "";
     f["entry.type"] = data.entryType || "";
 
@@ -1310,7 +1450,7 @@ function saveSingleCostDivision(data) {
     f["department"] = data.department;
     f["department.name"] = data.departmentName;
 
-    f["amount"] = Number(data.amount || 0);
+    f["amount"] = toNumber(data.amount || 0);
 
     f["unit.id"] = data.unitId;
     f["unit.name"] = data.unitName;
@@ -1529,6 +1669,7 @@ function validateSingleCostDivision(data) {
     }
 
     var paymentId = data.paymentId || data["payment.id"] || data.payment_id || "";
+    var itemRefId = data.refId || data["ref.id"] || data.ref_id || "";
     var itemVendorId =
             data.vendorId ||
             data["vendor.id"] ||
@@ -1537,6 +1678,7 @@ function validateSingleCostDivision(data) {
             data.supplierId ||
             data["supplier.id"] ||
             "";
+    var isExpense = isExpenseRequest(paymentId);
     var f = new SCFile("esdHTKTpaymentCostDivision", SCFILE_READONLY);
     var existingId = "";
 
@@ -1560,7 +1702,9 @@ function validateSingleCostDivision(data) {
                 '" and account.number="' +
                 escapeQueryValue(accountNum) +
                 '"';
-        if (itemVendorId) {
+        if (isExpense && itemRefId) {
+            query += ' and ref.id="' + escapeQueryValue(itemRefId) + '"';
+        } else if (!isExpense && itemVendorId) {
             query += ' and vendor.id="' + escapeQueryValue(itemVendorId) + '"';
         }
         var rcSelect = f.doSelect(query);
@@ -1584,10 +1728,11 @@ function validateSingleCostDivision(data) {
                 getTransFromNamePrefix(transactionValidation.branchName) || "",
         accountNumber: accountNum,
         unitId: unitId,
-        amount: Number(data.amount || 0),
+        amount: toNumber(data.amount || 0),
         department: deptCode,
         transactionCode: transCode,
         paymentId: paymentId,
+        refId: itemRefId,
         vendorId: itemVendorId,
         entryType: data.entryType || "",
         id: isDuplicate ? existingId : data.id || ""
@@ -1678,6 +1823,7 @@ function processSingleCostDivision(data) {
     }
 
     var paymentId = data.paymentId || data["payment.id"] || data.payment_id || "";
+    var refId = data.refId || data["ref.id"] || data.ref_id || "";
     var itemVendorId =
             data.vendorId ||
             data["vendor.id"] ||
@@ -1700,6 +1846,7 @@ function processSingleCostDivision(data) {
         } catch (e) {}
     }
 
+    var isExpense = isExpenseRequest(paymentId);
     var isDuplicate = false;
     var duplicateId = "";
     if (paymentId && deptCode && unitId && transCode) {
@@ -1716,7 +1863,9 @@ function processSingleCostDivision(data) {
                 '" and account.number="' +
                 escapeQueryValue(accountNum) +
                 '"';
-        if (itemVendorId) {
+        if (isExpense && refId) {
+            queryDup += ' and ref.id="' + escapeQueryValue(refId) + '"';
+        } else if (!isExpense && itemVendorId) {
             queryDup += ' and vendor.id="' + escapeQueryValue(itemVendorId) + '"';
         }
         var rcDup = fCheck.doSelect(queryDup);
@@ -1747,6 +1896,7 @@ function processSingleCostDivision(data) {
         }
 
         fUpdateB["payment.id"] = paymentId;
+        if (refId) fUpdateB["ref.id"] = refId;
         fUpdateB["vendor.id"] = itemVendorId || fUpdateB["vendor.id"] || "";
         fUpdateB["entry.type"] = data.entryType || fUpdateB["entry.type"] || "";
         fUpdateB["account.number"] = accountNum;
@@ -1754,7 +1904,7 @@ function processSingleCostDivision(data) {
         fUpdateB["account.type"] = data.accountType || accValidation.accountType;
         fUpdateB["department"] = deptCode;
         fUpdateB["department.name"] = data.departmentName || deptValidation.name;
-        fUpdateB["amount"] = Number(data.amount || 0);
+        fUpdateB["amount"] = toNumber(data.amount || 0);
         fUpdateB["unit.id"] = unitId;
         fUpdateB["unit.name"] = data.unitName || unitValidation.branchName;
         fUpdateB["transaction.code"] = transCode;
@@ -1814,6 +1964,7 @@ function processSingleCostDivision(data) {
 
     if (originalId) f["id"] = originalId;
     f["payment.id"] = paymentId;
+    if (refId) f["ref.id"] = refId;
     f["vendor.id"] = itemVendorId || f["vendor.id"] || "";
     f["entry.type"] = data.entryType || f["entry.type"] || "";
     f["account.number"] = accountNum;
@@ -1821,7 +1972,7 @@ function processSingleCostDivision(data) {
     f["account.type"] = data.accountType || accValidation.accountType;
     f["department"] = deptCode;
     f["department.name"] = data.departmentName || deptValidation.name;
-    f["amount"] = Number(data.amount || 0);
+    f["amount"] = toNumber(data.amount || 0);
     f["unit.id"] = unitId;
     f["unit.name"] = data.unitName || unitValidation.branchName;
     f["transaction.code"] = transCode;
@@ -2080,6 +2231,24 @@ function getBranchCodeFromEntityCode(value) {
         return code;
     }
     return code;
+}
+
+/**
+ * Phân biệt phiếu đề nghị là Dự chi (DC) hay Thanh toán (TT)
+ * Dựa vào tiền tố ID ("DC." vs "TT.") hoặc trường transaction.type trong esdHTKTpayment.
+ */
+function isExpenseRequest(paymentId) {
+    var id = safeString(paymentId).trim().toUpperCase();
+    if (id.indexOf("DC.") === 0) return true;
+    if (id.indexOf("TT.") === 0) return false;
+
+    if (id) {
+        var transType = selectOne(TABLE_PAYMENT, 'id="' + escapeQueryValue(id) + '"', function (record) {
+            return readText(record, "transaction.type");
+        });
+        if (transType && transType.toLowerCase() === "dự chi") return true;
+    }
+    return false;
 }
 
 function getPaymentRequest(paymentId) {
