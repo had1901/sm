@@ -378,6 +378,23 @@ function getInvoicesBySupplier(input) {
 }
 
 
+function shouldCheckPrepaymentInvoice(lastCheckDate) {
+    if (!lastCheckDate) return true;
+
+    try {
+        var checkDate = lastCheckDate instanceof Date
+                ? lastCheckDate
+                : new Date(lastCheckDate);
+        var checkTime = checkDate.getTime();
+        if (isNaN(checkTime)) return true;
+
+        var twoDaysInMilliseconds = 2 * 24 * 60 * 60 * 1000;
+        return new Date().getTime() - checkTime > twoDaysInMilliseconds;
+    } catch (e) {
+        return true;
+    }
+}
+
 function createListInvoinVendor(input) {
     var rawDetails = "";
 
@@ -591,19 +608,22 @@ function createListInvoinVendor(input) {
                 continue;
             }
 
-            // 2. Gọi API kiểm tra hóa đơn
-            var apiSuccess = false;
+            // 2. Chỉ gọi API khi chưa kiểm tra hoặc lần kiểm tra gần nhất đã quá 2 ngày.
+            var needCheckInvoice = shouldCheckPrepaymentInvoice(invFile["last.check.date"]);
+            var apiSuccess = !needCheckInvoice;
             var apiErrorReason = "Kiểm tra API thất bại";
 
-            try {
-                var apiResponse = lib.ESD_HTKT_SCHEDULE_OGL.callCheckInvoiceAPI(invFile);
-                if (apiResponse && apiResponse.success === true) {
-                    apiSuccess = true;
-                } else if (apiResponse && apiResponse.message) {
-                    apiErrorReason = apiResponse.message;
+            if (needCheckInvoice) {
+                try {
+                    var apiResponse = lib.ESD_HTKT_SCHEDULE_OGL.callCheckInvoiceAPI(invFile);
+                    if (apiResponse && apiResponse.success === true) {
+                        apiSuccess = true;
+                    } else if (apiResponse && apiResponse.message) {
+                        apiErrorReason = apiResponse.message;
+                    }
+                } catch (apiErr) {
+                    apiErrorReason = apiErr.toString();
                 }
-            } catch (apiErr) {
-                apiErrorReason = apiErr.toString();
             }
 
             if (!apiSuccess) {
@@ -622,7 +642,9 @@ function createListInvoinVendor(input) {
 
                 // Cập nhật thông tin hóa đơn gốc
                 invFile["request.id"] = itemRec["prepayment.id"];
-                invFile['last.check.date'] = new Date();
+                if (needCheckInvoice) {
+                    invFile['last.check.date'] = new Date();
+                }
                 invFile.doUpdate();
 
                 // --- KIỂM TRA HẠN MỨC 5 TRIỆU (Đưa kết quả vào checkStatusList) ---
@@ -2248,6 +2270,10 @@ function updateRemainingAmountForPendingTickets(record) {
     } catch (e) {}
 }
 
+
+
+
+
 /** OGL/site XDCB dùng chung cho TT/DC và caller XDCB khác khi đã kiểm tra quyền riêng.
  * Caller cung cấp master NCC S6 + mapping đơn vị thật. Hàm này chỉ vấn tin/tạo site,
  * lưu site/master S6 và gán vendor.site.id; không đọc HĐ, không đổi tiền/phase hoặc tiến độ S4.
@@ -2359,3 +2385,4 @@ function syncXdcbVendorSite(record, vendor, mapping, actor) {
         return { success: false, message: String(error.message || error) };
     }
 }
+

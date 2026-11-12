@@ -145,6 +145,11 @@ function run() {
                 var data = lib.ESD_HTKT_REPORT.getListLiabilities(input);
                 result = { success: true, data: data };
                 break;
+            case 'getListSlaTracking':
+                var data = lib.ESD_HTKT_REPORT.getListSlaTracking(input);
+                result = { success: true, data: data };
+                break;
+                
             case 'getListVendor':
                 lib.ESD_HTKT_REPORT.getListVendor(input);
                 break;

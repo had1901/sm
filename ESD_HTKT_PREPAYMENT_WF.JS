@@ -34,7 +34,8 @@ var VENDOR_SITE_SOURCE = {
     QLTS: "QLTS"
 };
 
-var HTKT_SLA_RETURN_CONTEXT_VARIABLE = "$L.htkt.sla.prepayment.return.contexts";
+var HTKT_SLA_RETURN_CONTEXT_VARIABLE = "$G.htkt.sla.prepayment.return.contexts";
+
 
 var NEXT_PHASE_MAP = {
     "initial_dmms": "dmms_initiated",
@@ -177,7 +178,8 @@ function checkShowPrint(record) {
 
 /* Condition hiển thị option "Xóa" trên esdHTKTprepayment.view. */
 function checkShowCancel(record) {
-    return isPostAuditOperator(record) ? "F" : "T";
+//    return isPostAuditOperator(record) ? "F" : "T";
+return isPostAuditContext(record) ? "F" : "T";
 }
 
 function checkShowApproval(record) {

@@ -7,6 +7,17 @@ function getTabThongTinPheDuyet(endpoint, input, extraData) {
     var currentUser = String(vars["$lo.contact.name"] ||
         (vars.$lo_operator ? vars.$lo_operator["contact.name"] : "") || "").trim();
     var approvalLib = lib.ESD_HTKT_PREPAYMENT_LOAD_APRROVAL_COMBOBOX;
+    var localPostAuditFlag = String(vars["$L.isFromHK"] == null ? "" : vars["$L.isFromHK"]).trim().toLowerCase();
+    // Khi SM mở chi tiết, biến $L của wizard danh sách có thể không còn.
+    // Dùng ngữ cảnh menu đã lưu trong session; cờ local nếu có được ưu tiên.
+    var isFromHK = localPostAuditFlag ? localPostAuditFlag === "true" :
+        String(vars["$G.HTKT_PREPAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
+    // Tab phê duyệt chỉ khóa theo menu; quyền hậu kiểm không khóa menu thường.
+    var menuContext = isFromHK ? "post_audit" : "create";
+    print("[HTKT_PREPAYMENT][APPROVAL_TAB_CONTEXT] localIsFromHK=" +
+        localPostAuditFlag +
+        " globalMenuContext=" + String(vars["$G.HTKT_PREPAYMENT_MENU_CONTEXT"] || "") +
+        " resolvedMenuContext=" + menuContext);
     var prepaymentId = String(prepayment && prepayment.id || "").trim();
     var initData = {};
 
@@ -16,7 +27,8 @@ function getTabThongTinPheDuyet(endpoint, input, extraData) {
         try {
             var fresh = approvalLib.getPrepaymentApprovalData({
                 prepaymentId: prepaymentId,
-                currentUser: currentUser
+                currentUser: currentUser,
+                menuContext: menuContext
             });
             if (fresh && fresh.success && fresh.data) {
                 initData = fresh.data;
@@ -25,8 +37,14 @@ function getTabThongTinPheDuyet(endpoint, input, extraData) {
     }
 
     if (!initData.prepaymentId && prepayment) {
-        initData = approvalLib.getPrepaymentApprovalInitData(prepayment, currentUser);
+        initData = approvalLib.getPrepaymentApprovalInitData(
+            prepayment,
+            currentUser,
+            menuContext
+        );
     }
+    initData.menuContext = menuContext;
+    initData.isFromHK = isFromHK;
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
         'TamUngMuaSam/ThongTinPheDuyet', '', initData
     );
@@ -296,7 +314,7 @@ function getHTKTPrepaymentLeadershipAccess(rightsArray) {
     var RIGHT_APPROVE_KTTC = "0040040002000006";
 
     return {
-        isApprovalDmms: rights.indexOf(RIGHT_APPROVE_DMMS) >= 0,
+            isApprovalDmms: rights.indexOf(RIGHT_APPROVE_DMMS) >= 0,
         isApprovalKttc: rights.indexOf(RIGHT_APPROVE_KTTC) >= 0
     };
 }
@@ -307,7 +325,8 @@ function getHTKTPrepaymentLeadershipAccess(rightsArray) {
  * Quy tắc bổ sung:
  * - Chỉ cần có approval_dmms HOẶC approval_kttc.
  * - Xem toàn bộ hồ sơ có unit.lv1 thuộc Data Permission đã resolve.
- * - Không giới hạn theo initial.role hoặc actor workflow hiện tại.
+ * - Lãnh đạo chỉ có approval_dmms: chỉ xem phiếu initial.role=dmms.
+ * - Có approval_kttc: giữ phạm vi xem hiện tại, không giới hạn initial.role.
  *
  * Không có right lãnh đạo hoặc không resolve được scope => không mở rộng dữ liệu.
  */
@@ -317,7 +336,7 @@ function getHTKTPrepaymentLeadershipAccess(rightsArray) {
  *
  * Quy tắc phân miền theo tổ chức hiện tại:
  * - User thuộc TSC (entity.code=1010098): xem toàn bộ PS ACTIVE của TSC.
- * - User thuộc Chi nhánh: chỉ xem toàn bộ phiếu của đúng LV1 Chi nhánh đó.
+ * - User thuộc Chi nhánh: xem phiếu theo entity.code của Chi nhánh đó.
  * - Không trộn thêm unit Data Permission nằm ngoài miền tổ chức hiện tại.
  */
 function resolveHTKTPrepaymentLeadershipDataPermission(dataPermission, currentLv1) {
@@ -356,7 +375,8 @@ function resolveHTKTPrepaymentLeadershipDataPermission(dataPermission, currentLv
 
     return {
         scope: "QT_PQDL_04",
-        unit: [safeCurrentLv1]
+        unit: currentEntityCode ? [currentEntityCode] : [],
+        entityCode: currentEntityCode
     };
 }
 
@@ -398,8 +418,8 @@ function buildHTKTPrepaymentLeadershipVisibilityClause(currentUser, rightsArray,
     if (!safeCurrentUser || (!leadership.isApprovalDmms && !leadership.isApprovalKttc)) {
         return "";
     }
-    if (resolvedDataPermission && resolvedDataPermission.entityCode === "1010098") {
-        return 'entity.code="1010098"';
+    if (resolvedDataPermission && resolvedDataPermission.entityCode === "") {
+        return "";
     }
 
     /*
@@ -430,10 +450,12 @@ function buildHTKTPrepaymentLeadershipVisibilityClause(currentUser, rightsArray,
      * );
      */
     // truong them
-    var permissionQuery = buildHTKTPrepaymentLeadershipLv1Query(
-        permissionScope,
-        permissionUnits
-    );
+    var permissionQuery = resolvedDataPermission && resolvedDataPermission.entityCode ?
+        'entity.code="' + qHTKT(resolvedDataPermission.entityCode) + '"' :
+        buildHTKTPrepaymentLeadershipLv1Query(
+            permissionScope,
+            permissionUnits
+        );
 
     permissionQuery = String(permissionQuery == null ? "" : permissionQuery).trim();
 
@@ -441,13 +463,11 @@ function buildHTKTPrepaymentLeadershipVisibilityClause(currentUser, rightsArray,
         return "";
     }
 
-    /*
-     * Code cu:
-     * - approval_kttc loc initial.role=(dmms OR kttc).
-     * - approval_dmms chi loc initial.role=dmms.
-     * - chi user co dong thoi hai right moi bo loc initial.role.
-     */
-    // truong them
+    // Lanh dao DMMS chi xem phieu DMMS khoi tao trong pham vi don vi.
+    if (leadership.isApprovalDmms && !leadership.isApprovalKttc) {
+        return '(' + permissionQuery + ') AND initial.role="dmms"';
+    }
+
     return permissionQuery === "true" ?
         "true" :
         "(" + permissionQuery + ")";
@@ -566,7 +586,9 @@ function buildHTKTPrepaymentCreatedByFilter(currentUser, hasView, rightsArray, d
          */
         // truong them
         result.dataScope =
-            "Lanh dao DMMS hoac KTTC xem toan bo ho so theo unit.lv1 trong Data Permission";
+            leadership.isApprovalDmms && !leadership.isApprovalKttc ?
+            "Lanh dao DMMS xem phieu DMMS khoi tao trong pham vi don vi" :
+            "Lanh dao KTTC xem toan bo ho so theo entity.code cua don vi";
         result.dataScopeCode =
             "HTKT_PREPAYMENT_DRAFT_AWARE_RELATED_USER_WITH_LEADERSHIP";
         /*
@@ -576,12 +598,13 @@ function buildHTKTPrepaymentCreatedByFilter(currentUser, hasView, rightsArray, d
          */
         // truong them
         result.dataScopeField = "unit.lv1";
-        if (leadershipDataPermission.entityCode === "1010098") {
+        if (leadershipDataPermission.entityCode) {
             result.dataScopeField = "entity.code";
         }
+        // NextJS dung dataScopeField de nhan dien entity.code; initial.role loc trong defaultFilter.
         /*
          * Đồng bộ metadata gửi xuống NextJS với đúng scope lãnh đạo:
-         * - Chi nhánh: đúng LV1 hiện tại của user.
+         * - Chi nhánh: entity.code của LV1 hiện tại của user.
          * - TSC: toàn bộ PS ACTIVE thuộc entity.code = 1010098.
          *
          * Reuse leadershipDataPermission đã resolve phía trên, không query lại
@@ -603,16 +626,16 @@ function buildHTKTPrepaymentCreatedByFilter(currentUser, hasView, rightsArray, d
 }
 
 /**
- * HẬU KIỂM - nhận diện bằng RIGHT chức năng riêng của module Tạm ứng.
+ * HẬU KIỂM - nhận diện bằng RIGHT dùng chung cho Tạm ứng và Thanh toán.
  *
- * 0040040002000010 = Hậu kiểm đề nghị tạm ứng.
+ * 0040040005000001 = Hậu kiểm HTKT.
  *
  * Không suy luận Hậu kiểm từ tổ hợp quyền 0009 / quyền Hóa đơn nữa,
  * tránh nhận diện nhầm Checker/Approver/ApproverFinal hoặc các role mới sau này.
  */
 function isHTKTPostAuditRole(rightsArray) {
     var rights = uniqueHTKTArray(rightsArray);
-    var RIGHT_PREPAYMENT_POST_AUDIT = "0040040002000010";
+    var RIGHT_PREPAYMENT_POST_AUDIT = "0040040005000001";
 
     return rights.indexOf(RIGHT_PREPAYMENT_POST_AUDIT) >= 0;
 }
@@ -723,7 +746,7 @@ function getHTKTActivePsCodesByEntityCode(entityCode) {
  *
  * 2. QT_PQDL_04 + entity.code khác 1010098:
  *    - Hậu kiểm Chi nhánh/đơn vị.
- *    - Chỉ xem đúng LV1 của currentUser.
+ *    - Chỉ xem entity.code ứng với LV1 của currentUser.
  *
  * 3. QT_PQDL_04 + entity.code = 1010098:
  *    - Hậu kiểm Trụ sở chính.
@@ -784,7 +807,8 @@ function buildHTKTPrepaymentPostAuditLv1Filter(currentUser, hasView, contactInfo
      * Xác định miền theo entity.code, KHÔNG suy luận theo prefix 0999....
      *
      * - entity.code = 1010098 => Trụ sở chính.
-     * - entity.code khác / không map => xử lý như scope LV1 thông thường.
+     * - entity.code khác => lọc theo entity của Chi nhánh.
+     * - Không map được => không mở quyền xem.
      *
      * Chỉ xét mapping ACTIVE trong getHTKTActiveEntityCodeByPsCode().
      */
@@ -793,19 +817,22 @@ function buildHTKTPrepaymentPostAuditLv1Filter(currentUser, hasView, contactInfo
             safeLv1
         );
 
+    if (!currentEntityCode) {
+        return result;
+    }
+
     if (currentEntityCode !== HEAD_OFFICE_ENTITY_CODE) {
-        // CASE 2 - Hậu kiểm Chi nhánh/đơn vị: chỉ đúng LV1 của currentUser.
-        // NextJS áp dataScopeUnits sau khi nhận initData, giống Thanh toán.
-        result.defaultFilter = "true";
+        // CASE 2 - Hậu kiểm Chi nhánh: entity của đơn vị người đăng nhập.
+        result.defaultFilter = 'entity.code="' + qHTKT(currentEntityCode) + '"';
 
         result.dataScope =
             "Khoi/CN/DVSN - Hau kiem";
         result.dataScopeCode =
             "QT_PQDL_04";
         result.dataScopeField =
-            "unit.lv1";
+            "entity.code";
         result.dataScopeUnits =
-            [safeLv1];
+            [currentEntityCode];
 
         return result;
     }
@@ -1392,8 +1419,8 @@ function getHTKTPrepaymentOptionScope(currentUser, forcePostAuditRole) {
      */
     // truong them
     var postAuditRole =
-        isHTKTPostAuditRole(rightsArray) ||
-        forcePostAuditRole === true;
+        forcePostAuditRole === true &&
+        isHTKTPostAuditRole(rightsArray);
     var hasAuthenticatedUser =
         String(currentUser == null ? "" : currentUser).trim() !== "";
     var hasInvoiceView =
@@ -1493,8 +1520,7 @@ function sortHTKTFilterOptions(options) {
     return options;
 }
 
-// Compact action phải tự áp scope sau khi renderList chuyển defaultFilter
-// Hậu kiểm QT_PQDL_04 thành "true". Scope này được SM resolve lại theo user.
+// Compact action dùng scope được SM resolve lại theo người đăng nhập.
 function buildHTKTPrepaymentCompactQuery(scopeInfo) {
     var scopeCode = String(scopeInfo && scopeInfo.dataScopeCode || "").trim();
     var scopeField = String(scopeInfo && scopeInfo.dataScopeField || "").trim();
@@ -1825,19 +1851,31 @@ function renderList() {
 
     /*
      * HẬU KIỂM:
-     * - Nhận diện DUY NHẤT bằng right 0040040002000010.
+     * - Nhận diện DUY NHẤT bằng right 0040040005000001.
      * - Không suy luận từ 0009 / quyền Hóa đơn.
      * - Không thay initialRole, không tham gia logic xử lý workflow DMMS/KTTC.
      *
      * Scope dữ liệu Hậu kiểm:
      * - QT_PQDL_06: toàn hệ thống.
-     * - QT_PQDL_04 + entity.code != 1010098: đúng Chi nhánh/LV1.
+     * - QT_PQDL_04 + entity.code != 1010098: entity của Chi nhánh người đăng nhập.
      * - QT_PQDL_04 + entity.code = 1010098: toàn Trụ sở chính.
      *
      * Các user cũ (DMMS/KTTC/Checker/Approver/ApproverFinal...) vẫn chạy nguyên
      * buildHTKTPrepaymentCreatedByFilter() đã chốt UAT.
      */
-    var isPostAuditRole = isHTKTPostAuditRole(rightsArray);
+    var wizardName = String(
+        vars["$L.wizard.name"] ||
+        vars["$G.HD.Back"] ||
+        ""
+    ).trim().toUpperCase();
+    var isFromHK = String(vars["$L.isFromHK"] || "").trim().toLowerCase() === "true";
+    var menuContext = isFromHK || wizardName.indexOf("POST AUDIT") >= 0 ? "post_audit" : "create";
+    // $L thuộc wizard danh sách; tab chi tiết sẽ đọc lại menu này từ $G.
+    // Mỗi lần vào danh sách đều ghi lại để menu thường xóa context hậu kiểm cũ.
+    vars["$G.HTKT_PREPAYMENT_MENU_CONTEXT"] = menuContext;
+
+    var isPostAuditRole = menuContext === "post_audit" &&
+        isHTKTPostAuditRole(rightsArray);
     var hasPostAuditView = isPostAuditRole;
     var dataFilterInfo;
 
@@ -1870,6 +1908,7 @@ function renderList() {
     }
 
     var defaultFilter = dataFilterInfo.defaultFilter;
+    defaultFilter = '(' + defaultFilter + ') AND status ~= "cancelled"';
     var dataScope = dataFilterInfo.dataScope;
 
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
@@ -1882,10 +1921,13 @@ function renderList() {
             currentUser: currentUser,
             contactId: currentUser,
             initialRole: initialRole,
+            menuContext: menuContext,
+            isFromHK: isFromHK,
             // Thông tin phụ
             operatorName: smLoginUser,
             fullName: contactInfo.fullName,
             branchCode: contactInfo.branchCode,
+            entityCode: getHTKTActiveEntityCodeByPsCode(contactInfo.lv1),
 
             unit: {
                 lv1: contactInfo.lv1,
@@ -1911,7 +1953,7 @@ function renderList() {
 
             // Metadata bổ sung cho 2 role lãnh đạo; không thay đổi permission cũ.
             leadershipAccess: getHTKTPrepaymentLeadershipAccess(rightsArray),
-            // truong them: giu ket qua nhan dien right 0040040002000010
+            // truong them: giu ket qua nhan dien right 0040040005000001
             // cho request compact chay tach khoi HTML Viewer session.
             isPostAuditRole: isPostAuditRole,
 
@@ -1954,6 +1996,7 @@ function renderTabSugesstionInfomation(endpoint, input, extraData) {
         if (vars.$L_file) {
             var prepaymentId = vars.$L_file["id"];
             var currentPhase = vars.$L_file["current.phase"];
+            var contractId = vars.$L_file["contract.id"];
             var initialRole = vars.$L_file["initial.role"];
 
             // Nếu thiếu phase hoặc role nhưng có prepayment.id, thực hiện query để lấy từ bảng esdHTKTprepayment
@@ -1975,6 +2018,7 @@ function renderTabSugesstionInfomation(endpoint, input, extraData) {
             currentRecord = {
                 "id": vars.$L_file["id"],
                 "currentPhase": currentPhase,
+                "contractId": contractId,
                 "initialRole": initialRole,
                 "userCheckerKttc": vars.$L_file["user.checker.kttc"],
                 "userCheckerDmms": vars.$L_file["user.checker.dmms"],
@@ -1991,6 +2035,8 @@ function renderTabSugesstionInfomation(endpoint, input, extraData) {
         }
     }
 
+    currentRecord = currentRecord || {};
+    currentRecord.isFromHK = String(vars["$G.fromHK"] || "").trim().toLowerCase() === "true";
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/ThongTinDeNghi', '', currentRecord);
 }
 
@@ -2066,6 +2112,8 @@ function renderTabAttachment(endpoint, input, extraData) {
         }
     }
 
+    currentRecord = currentRecord || {};
+    currentRecord.isFromHK = String(vars["$G.fromHK"] || "").trim().toLowerCase() === "true";
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/TabHoSoDinhKem', '', currentRecord);
 }
 
@@ -2115,6 +2163,7 @@ function renderTabAccounting(endpoint, input, extraData) {
             currentPhase: currentPhase,
             userCheckerKttc: userCheckerKttc,
             initialRole: initialRole,
+            isFromHK: String(vars["$G.fromHK"] || "").trim().toLowerCase() === "true",
 
             currentRecord: {
                 id: transactionId,
@@ -2218,22 +2267,20 @@ function renderCostCenterCategory() {
 function renderGlAccountCategory() {
     return renderCategoryList('esdDMglAccount');
 }
-//function renderSiteNCCOGLCategory() {
-//    return renderCategoryList('esdHTKTvendorSite');
-//}
+
 function renderSiteNCCOGLCategory() {
     // 1. Cấu hình cột hiển thị
     var configTable = [
-        { field: 'supplier.id', name: 'Mã NCC', width: '15%' },
-        { field: 'tax.code', name: 'Mã số thuế', width: '15%' },
+        { field: 'supplier.id', name: 'Mã NCC', width: '12%' },
+        { field: 'tax.code', name: 'Mã số thuế', width: '12%' },
         { field: 'ogl.site.code', name: 'Site NCC (OGL)', width: '15%' },
-        { field: 'ogl.entity', name: 'Mã đơn vị', width: '15%' },
-        { field: 'debit.account', name: 'Tài khoản ghi nợ (OGL)', width: '20%' },
-        { field: 'credit.account', name: 'Tài khoản ghi có (OGL)', width: '20%' }
+        { field: 'ogl.entity', name: 'Mã đơn vị', width: '12%' },
+        { field: 'debit.account', name: 'Tài khoản ghi nợ (OGL)', width: '18%' },
+        { field: 'credit.account', name: 'Tài khoản ghi có (OGL)', width: '18%' },
+        { field: 'source', name: 'Nguồn tạo', width: '13%' }
     ];
     
-    // Bổ sung 'site_query' vào escapeFields để chống lỗi
-    var escapeFields = ['vendor_id', 'supplier_id', 'tax_code', 'ogl_site_code', 'ogl_entity', 'debit_account', 'credit_account', 'site_query'];
+    var escapeFields = ['vendor_id', 'supplier_id', 'tax_code', 'ogl_site_code', 'ogl_entity', 'debit_account', 'credit_account', 'source'];
     var raw_data = [];
     var f = new SCFile('esdHTKTvendorSite', SCFILE_READONLY);
     var rc = f.doSelect(true);
@@ -2244,17 +2291,27 @@ function renderSiteNCCOGLCategory() {
     while (rc == RC_SUCCESS) {
         var rawDebit = f['debit.account'] || "";
         var rawCredit = f['credit.account'] || "";
+        
+        // Đọc trường source theo đúng 2 giá trị chuẩn: QLTS / OGL
+        var rawSource = String(f['source'] || "").trim().toUpperCase();
+        var displaySource = "";
+        
+        if (rawSource === "QLTS") {
+            displaySource = "QLTS";
+        } else if (rawSource === "OGL") {
+            displaySource = "OGL";
+        } else {
+            displaySource = rawSource;
+        }
 
         var row = {
             vendor_id: f['vendor.id'], 
             ogl_site_code: f['ogl.site.code'],
-            ogl_entity: f['ogl.entity'],
+            ogl_entity: f['ogl.entity'], 
             debit_account: rawDebit.split('.').length > 2 ? rawDebit.split('.')[2] : rawDebit,
-            credit_account: rawCredit.split('.').length > 2 ? rawCredit.split('.')[2] : rawCredit
+            credit_account: rawCredit.split('.').length > 2 ? rawCredit.split('.')[2] : rawCredit,
+            source: displaySource
         };
-
-        // TẠO QUERY ĐỂ MỞ ĐÚNG BẢN GHI SITE NÀY KHI CLICK
-        row.site_query = 'vendor.id="' + row.vendor_id + '" and ogl.site.code="' + row.ogl_site_code + '"';
 
         // Tra cứu chéo thông tin từ esdHTKTvendor
         if (row.vendor_id) {
@@ -2306,10 +2363,6 @@ function renderSiteNCCOGLCategory() {
             <link rel="stylesheet" href="../js/sl/css/buttons.dataTables.css">
             <link rel="stylesheet" href="../js/sl/css/base.css">
             <link rel="stylesheet" href="../js/sl/css/iconhpt.css">
-            <style>
-                a.link-ticket { color: #007bff; text-decoration: underline; cursor: pointer; }
-                a.link-ticket:hover { color: #0056b3; }
-            </style>
         </head>
         <body>
           <table id="tableID" class="display" style="width:100%">
@@ -2324,43 +2377,8 @@ function renderSiteNCCOGLCategory() {
             <script src="../js/sl/js/buttons.html5.min.js"></script>
             <script src="../js/sl/js/utils/defaultDatatable.js"></script>
           <script>
-            function openTaskDetails(fileName, queryString) {
-                var builder = parent.cwc.getDetailURLBuilder();
-                builder.addParam('ctx', 'docEngine');
-                builder.addParam('wflink', 'true');
-                builder.addParam('file', fileName);
-                builder.addParam('query', queryString);
-                
-                // Gọi đích danh Form bạn vừa tạo
-                builder.addParam('format', 'esdHTKTvendorSite.g');
-                
-                var wfUrl = builder.toURL();
-                parent.cwc.updateActiveTab(wfUrl);
-            }
-
-            function setupLinkClickEvent(selector, fileName, dataAttr) {
-                $(document).on('click', selector, function (e) {
-                    e.preventDefault(); 
-                    var queryString = $(this).data(dataAttr); 
-                    if (queryString) {
-                        openTaskDetails(fileName, decodeURIComponent(queryString));
-                    }
-                });
-            }
-
             var raw_data = ${JSON.stringify(raw_data)};
             var columnsConfig = ${JSON.stringify(dynamicColumns)};
-
-            if (columnsConfig.length > 0) {
-                columnsConfig[0].render = function (data, type, row, meta) {
-                    if (type === "display" && data) {
-                        // Gọi site_query đã được tạo từ backend
-                        var dataClick = encodeURIComponent(row.site_query);
-                        return '<a class="link-ticket" data-dm-id="' + dataClick + '" href="javascript:void(0);">' + data + '</a>';
-                    }
-                    return data || '';
-                };
-            }
             
             const tableOptions = getDefaultDataTableOptions(raw_data, {
               order: [[0, 'asc']],
@@ -2382,12 +2400,10 @@ function renderSiteNCCOGLCategory() {
                     sheetName: 'Danh sach Site NCC OGL',
                   }]
                 }
-              },
+              }
             });
             
             const table = new DataTable('#tableID', tableOptions);
-            
-            setupLinkClickEvent('a.link-ticket', 'esdHTKTvendorSite', 'dm-id');
           </script>
         </body>
         </html>`;

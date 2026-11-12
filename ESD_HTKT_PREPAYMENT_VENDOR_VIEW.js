@@ -83,6 +83,10 @@ function renderTabInvoice(endpoint, input, extraData) {
         }
     }
 
+    if (currentRecord && typeof currentRecord === 'object' && !Array.isArray(currentRecord)) {
+        currentRecord.isFromHK = String(vars["$G.HTKT_PREPAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
+    }
+
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/ThongTinDeNghi/TabHoaDon', '', currentRecord);
 }
 
