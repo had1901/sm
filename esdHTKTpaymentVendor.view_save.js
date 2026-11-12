@@ -1,3 +1,8 @@
+// Nguồn/giới hạn NCC S4 kiểm tra lại trước Save; không đổi bind tiền/validate TT hiện tại.
+var isTtXdcbSave = false;
+try {
+    isTtXdcbSave = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file);
+    if (isTtXdcbSave) lib.ESD_HTKT_PAYMENT_VENDOR.preparePaymentXdcbSave(vars.$L_file);
 // =========================================================================
 // 1. CHUẨN BỊ VÀ GÁN DỮ LIỆU VÀO RECORD TRƯỚC KHI XỬ LÝ
 // =========================================================================
@@ -55,8 +60,17 @@ if (errorMss && errorMss.length > 0) {
         }
     }
 
+    if (!vars.$G_hasError && isTtXdcbSave) {
+        var xdcbSync = lib.ESD_HTKT_PAYMENT_VENDOR.savePaymentXdcbSupplier(vars.$L_file);
+        if (!xdcbSync.success) print("Đồng bộ NCC/Site TT XDCB chưa thành công: " + xdcbSync.message);
+    }
     if (!vars.$G_hasError) {
         // Dữ liệu hợp lệ hoàn toàn (cả validate nghiệp vụ lẫn tài khoản Vietinbank)
         // Tiếp tục các bước xử lý tiếp theo nếu có
     }
+}
+} catch (xdcbSaveError) {
+    vars.$G_hasError = true;
+    vars.$G_errMsg = String(xdcbSaveError.message || xdcbSaveError);
+    vars.$L_action = "do nothing";
 }

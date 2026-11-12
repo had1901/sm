@@ -50,7 +50,12 @@ if (isExpense) {
     vars.$totalPaidAmount = contractInfo.totalPaidAmount;
     vars.$contractRemainingAmount = contractInfo.remainingAmount;
 } else if (isPayment) {
-    lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentVendorInfo(vars.$L_file);
+    // TT S4 nhận mảng trong scope DS; HHDV giữ lời gọi và cách bind loader S2 cũ.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
+        arrVendors = lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentXdcbVendorInfo(vars.$L_file);
+    } else {
+        lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentVendorInfo(vars.$L_file);
+    }
     vars.$canEditAmount = vars.$canEditObj;
 }
 
@@ -64,7 +69,8 @@ if (entityInfo && entityInfo.entity && entityInfo.oglBranchCode) {
             // Site XDCB chỉ hiển thị đúng hạng mục; không chọn nhầm site HHDV cùng NCC.
             var sourceContext = isExpense
                 ? lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(vars.$L_file, "", false) : null;
-            if (sourceContext && sourceContext.category === "XDCB") {
+            if ((sourceContext && sourceContext.category === "XDCB") ||
+                    (isPayment && lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file))) {
                 var xdcbSiteConfig = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB");
                 var xdcbSite = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSite(
                     vars.$L_file.vendor_id, vars.$branchCode, xdcbSiteConfig.siteCode);

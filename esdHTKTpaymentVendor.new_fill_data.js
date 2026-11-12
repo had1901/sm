@@ -12,6 +12,18 @@
 //}
 
 
+// TT XDCB chỉ cập nhật biến lựa chọn, không gọi lại DS hoặc ghi master khi chọn.
+if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
+    try {
+        lib.ESD_HTKT_PAYMENT_VENDOR.selectPaymentXdcbSupplier(vars.$L_file, vars.$supplierId);
+        vars.$G_hasError = false;
+        vars.$G_errMsg = "";
+    } catch (xdcbError) {
+        vars.$G_hasError = true;
+        vars.$G_errMsg = String(xdcbError.message || xdcbError);
+        vars.$L_action = "do nothing";
+    }
+} else {
 
 var supplierPaymentId = String(vars.$L_file["payment.id"] || vars.$L_file.payment_id || vars.$G_payment_id || "").trim();
 
@@ -59,6 +71,7 @@ if (supplierPaymentId.indexOf("DC.") === 0 &&
         vars.$G_supplier_id = findVendor["supplier.id"];
         vars.$L_file["transaction.des"] = vars.$G_description;
     }
+}
 }
 
 

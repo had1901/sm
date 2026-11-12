@@ -55,7 +55,13 @@ vars.$remainingContractValue = "0";   // (3) Tổng giá trị HĐ/KMS còn lạ
 
 var contractId = vars.$L_file.contract_id;
 
-if (contractId) {
+if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
+    // TT XDCB: hiển thị tổng nguồn S4, không dùng total.paid.amount của HĐ S2.
+    var sourceMoney = lib.ESD_HTKT_PAYMENT_VENDOR.getPaymentXdcbContractInfo(vars.$L_file);
+    vars.$totalContractAmount = sourceMoney.totalValue;
+    vars.$totalPrepaymentAndPayment = sourceMoney.totalPaidAmount;
+    vars.$remainingContractValue = sourceMoney.remainingAmount;
+} else if (contractId) {
     try {
         var totalPrepaymentAndPayment = "0";
 

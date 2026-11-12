@@ -44,9 +44,26 @@ function savePaymentVendorRecord(record) {
     return isSaved;
 }
 
-var isXDCB = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(vars.$L_file, "", false).category === "XDCB";
+// DO dùng chung: chỉ phiếu DC mới kiểm tra context Dự chi; TT XDCB có guard nguồn/quyền riêng.
+var supplierPaymentId = String(
+    vars.$L_file["payment.id"] || vars.$L_file.payment_id || vars.$G_payment_id || ""
+).trim();
+var isXDCB = supplierPaymentId.indexOf("DC.") === 0 &&
+    lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(vars.$L_file, "", false).category === "XDCB";
 
-if (isXDCB) {
+if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
+    // TT XDCB: điền NCC S4 và giữ lựa chọn nháp; master/site được xử lý sau validate ở DO Lưu.
+    // Không gọi hàm lưu ngay bên dưới để tránh ghi DB khi TT chưa qua kiểm tra tiền/tài khoản.
+    try {
+        lib.ESD_HTKT_PAYMENT_VENDOR.selectPaymentXdcbSupplier(vars.$L_file, vars.$supplierId);
+        vars.$G_hasError = false;
+        vars.$G_errMsg = "";
+    } catch (xdcbError) {
+        vars.$G_hasError = true;
+        vars.$G_errMsg = String(xdcbError.message || xdcbError);
+        vars.$L_action = "do nothing";
+    }
+} else if (isXDCB) {
     try {
         lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.selectExpenseSupplier(vars.$L_file, vars.$supplierId);
         vars.$G_hasError = false;

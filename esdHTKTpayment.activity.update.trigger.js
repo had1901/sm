@@ -47,6 +47,9 @@ function mapPaymentToPayload(rec, extraData) {
  */
 function handlePhaseChangeUpdate(rec, oldRec) {
     if (!rec) return;
+    // TT XDCB chưa bật đồng bộ tiến độ S4. Giữ workflow/hạch toán phía dưới,
+    // chỉ ngăn helper tiến độ S2 nhận ID HĐ/NCC của S4 ở mọi lần đổi phase.
+    if (String(rec["original.contract.category"] || "").toUpperCase() === "XDCB") return;
     
     var phase = rec["current.phase"] || "";
     var old = (oldRec && oldRec["current.phase"]) ? oldRec["current.phase"] : "";

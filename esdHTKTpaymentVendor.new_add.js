@@ -1,3 +1,8 @@
+// Nguồn/giới hạn NCC S4 kiểm tra lại trước Save; không đổi bind tiền/validate TT hiện tại.
+var isTtXdcbSave = false;
+try {
+    isTtXdcbSave = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file);
+    if (isTtXdcbSave) lib.ESD_HTKT_PAYMENT_VENDOR.preparePaymentXdcbSave(vars.$L_file);
 var errorMss = lib.ESD_HTKT_PAYMENT_WF.validateVendorAndPaymentDetails(vars.$L_file);
 
 if (errorMss && errorMss.length > 0) {    
@@ -37,6 +42,13 @@ if (errorMss && errorMss.length > 0) {
     } 
 
     if (!vars.$G_hasError) {
+        var $vendorId;
+        if (isTtXdcbSave) {
+            // Chỉ sau validate và kiểm tra tài khoản TT mới lưu master S6 theo MST và thử đồng bộ site.
+            var xdcbSync = lib.ESD_HTKT_PAYMENT_VENDOR.savePaymentXdcbSupplier(vars.$L_file);
+            $vendorId = vars.$L_file['vendor.id'];
+            if (!xdcbSync.success) print("Đồng bộ NCC/Site TT XDCB chưa thành công: " + xdcbSync.message);
+        } else {
         // 1. Tìm hoặc thêm Vendor (Chỉ tạo mới khi chưa có)
         var itemVendor = new SCFile('esdHTKTvendor');
         var queryVendor = `vendor.number = "${vars.$taxCode}" and supplier.id = "${vars.$supplierId}"`;
@@ -61,9 +73,10 @@ if (errorMss && errorMss.length > 0) {
             itemVendor.doAction('add');
         }
         
+        }
         // 2. GÁN DỮ LIỆU CHO PAYMENT VENDOR ($L_file)
         vars.$L_file['vendor.id']               = $vendorId;
-        vars.$L_file['vendor.site.id']          = vars.$oglSiteSode;
+        if (!isTtXdcbSave) vars.$L_file['vendor.site.id'] = vars.$oglSiteSode;
         vars.$L_file['currency']                = vars.$currency;
         vars.$L_file['approved.invoice.amount'] = vars.$approvedInvoiceAmount;
         vars.$L_file['amount']                  = vars.$amount;
@@ -89,4 +102,9 @@ if (errorMss && errorMss.length > 0) {
             vars.$L_action = "save";
         }
     }
+}
+} catch (xdcbSaveError) {
+    vars.$G_hasError = true;
+    vars.$G_errMsg = String(xdcbSaveError.message || xdcbSaveError);
+    vars.$L_action = "do nothing";
 }

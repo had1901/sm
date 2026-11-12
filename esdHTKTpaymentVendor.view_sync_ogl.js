@@ -1,3 +1,20 @@
+// Nút đồng bộ TT XDCB dùng quyền KTTC và site riêng; nhánh HHDV phía dưới giữ nguyên.
+if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
+    vars.$G_hasError = false;
+    try {
+        var context = lib.ESD_HTKT_PAYMENT_VENDOR.getPaymentXdcbContext(vars.$L_file, true);
+        if (!context.canSync) throw new Error("Không có quyền đồng bộ site tại bước hiện tại.");
+        var synced = lib.ESD_HTKT_PAYMENT_VENDOR.syncPaymentXdcbVendorToOgl(vars.$L_file);
+        if (!synced.success) throw new Error(synced.message);
+        if (vars.$L_file.doUpdate() !== RC_SUCCESS) throw new Error("Không lưu được site lên dòng NCC TT.");
+        vars.$vendorSiteOptValue = [vars.$L_file['vendor.site.id']];
+        vars.$vendorSiteOptDisp = [lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB").siteCode];
+        vars.$canEditSite = true;
+    } catch (syncError) {
+        vars.$G_hasError = true;
+        vars.$G_errMsg = String(syncError.message || syncError);
+    }
+} else {
 var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
 var itemFile = new SCFile("esdHTKTvendor");
 var itemQuery = `id="${vars.$L_file['vendor.id']}"`;
@@ -31,4 +48,5 @@ if (rcItem == RC_SUCCESS) {
 function updateVendorSiteIdForPaymentVendor(vendorSiteId) {
     vars.$L_file['vendor.site.id'] = vendorSiteId;
     vars.$L_file.doUpdate()
+}
 }
