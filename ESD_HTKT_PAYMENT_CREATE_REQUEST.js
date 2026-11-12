@@ -60,6 +60,15 @@ function createPaymentRequest(input) {
 
         var contractList = JSON.parse(rawData);
         var contractData = contractList[0];
+        if (!contractData) {
+            throw new Error("Chưa chọn HĐ để tạo phiếu TT.");
+        }
+        var contractCategory = String(contractData.contractCategory || "HHDV").trim().toUpperCase();
+        if (contractCategory !== "HHDV" && contractCategory !== "XDCB") {
+            throw new Error("Hạng mục TT không hợp lệ.");
+        }
+        contractData.contractCategory = contractCategory;
+        var xdcbContract = null;
 
         var menuContext = String(contractData.menuContext || "").trim().toLowerCase();
         var isFromHK = contractData.isFromHK === true ||
@@ -74,12 +83,40 @@ function createPaymentRequest(input) {
         var sourceContractId = String(contractData.sourceContractId || contractData['sourceContractId'] || contractData['id'] || '').trim();
         var contractId = String(contractData.contractId || contractData['contractId'] || contractData['id'] || '').trim();
 
+        if (contractCategory === "XDCB") {
+            // Client chỉ chọn khóa. SM đọc lại SHTL -> HĐ thật bằng actor đã được server xác thực.
+            var xdcbResult = lib.ESD_HTKT_EXPENSE_CONTRACT.getPaymentXdcbContract(
+                { 
+                    details: {
+                        currentUser: htktCreatePay_resolveCurrentUser(contractData),
+                        contractId: contractData.id
+                    }
+                }
+            );
+
+            if (!xdcbResult || !xdcbResult.success) {
+                throw new Error(xdcbResult && xdcbResult.message || "Không đọc được HĐ XDCB.");
+            } 
+
+            xdcbContract = xdcbResult.data;
+            sourceContractId = contractId = xdcbContract.id;
+            contractData.name = xdcbContract.name;
+            contractData.totalValue = xdcbContract.contractAmount;
+            contractData.currency = xdcbContract.currency;
+            contractData['purchase.order'] = contractData.purchaseOrder = "";
+
+            if (!contractData.currency) {
+                throw new Error("HĐ XDCB chưa có loại tiền.");
+            } 
+        }
         contractData.sourceContractId = sourceContractId;
         contractData.contractId = contractId;
 
         if (sourceContractId) {
             try {
-                var remainingContractValue = calculateContractRemainingValue(sourceContractId);
+                var remainingContractValue = contractCategory === "XDCB"
+                    ? xdcbContract.remainingAmount 
+                    : calculateContractRemainingValue(sourceContractId);
                 var remainingRefundValue = calculateContractRemainingRefund(sourceContractId);
                 var remainingPayableValue = calculateContractRemainingPayable(sourceContractId);
 
@@ -170,7 +207,11 @@ function createPaymentRequest(input) {
 
             //Đồng bộ giá trị Tạm ứng/Thanh toán giữa Squad 6 và Squad 2
             try {
-                lib.ESD_HD_Integration.createContractPayment(paymentRec);
+                // S4 chưa bật tiến độ; không gửi phiếu XDCB vào nguồn S2.
+                if (contractCategory !== "XDCB") {
+                    lib.ESD_HD_Integration.createContractPayment(paymentRec);
+                } 
+                // TODO TT-XDCB: đồng bộ S4 sẽ nối sau khi chốt sự kiện/payload và chống cộng trùng.
             } catch (ex) {
                 // print("[ERROR] Đồng bộ createContractPayment thất bại cho ID: " + paymentRec["id"] + " | Detail: " + ex);
             }
@@ -239,7 +280,7 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
 
     paymentRec['created.at'] = new Date();
     paymentRec['created.by'] = contractData['createdBy'];
-    paymentRec['currency'] = "VND";
+    paymentRec['currency'] = contractData.contractCategory === 'XDCB' ? contractData.currency : 'VND';
     paymentRec['total.contract.amount'] = contractData['totalValue'] || 0;
     paymentRec['source.contract.id'] = contractData.sourceContractId || contractData['sourceContractId'] || contractData['id'] || "";
     paymentRec['contract.id'] = contractData.contractId || contractData['contractId'] || contractData['id'] || "";
@@ -247,11 +288,19 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
     paymentRec['contract.name'] = contractData['name'];
 
     // Map nghiệp vụ sản phẩm theo process.id của hợp đồng (esdHDcontract)
+//    var productCategory = htktCreatePay_getProductCategoryByContract(
+//            paymentRec['source.contract.id'] || paymentRec['contract.id']
+//    );
+    
+    // Lưu hạng mục HHDV/XDCB đã được chuẩn hóa và kiểm tra ở createPaymentRequest();
+    // nghiệp vụ SLA (esdDMmsProcess.type) lưu vào product.type.
+    paymentRec['original.contract.category'] = contractData.contractCategory;
+    // product.type chỉ lấy esdDMmsProcess.type theo esdHDcontract.process.id (kể cả hợp đồng XDCB).
     var productCategory = htktCreatePay_getProductCategoryByContract(
             paymentRec['source.contract.id'] || paymentRec['contract.id']
     );
     if (productCategory) {
-        paymentRec['original.contract.category'] = productCategory;
+        paymentRec['product.type'] = productCategory;
     }
 
     paymentRec['current.phase'] = "start";
@@ -539,6 +588,21 @@ function listPurchaseContracts(input) {
         return {
             success: false,
             message: "Không xác định được người tạo phiếu thanh toán."
+        };
+    }
+
+    // Chỉ request TT chọn XDCB đi qua SHTL. HHDV giữ toàn bộ query/PO/phạm vi S2 phía dưới.
+    var selectedCategory = String(params.contractCategory || "HHDV").trim().toUpperCase();
+    if (selectedCategory === "XDCB") {
+        params.currentUser = currentUser;
+        return lib.ESD_HTKT_EXPENSE_CONTRACT.listPaymentXdcbContracts({ details: params });
+    }
+    
+    if (selectedCategory !== "HHDV") {
+        return { 
+            success: false, 
+            data: [], 
+            message: "Hạng mục TT không hợp lệ." 
         };
     }
 

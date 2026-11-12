@@ -92,6 +92,17 @@ function totalContractSuppliers(input) {
         return totalSuppliers;
     }
 
+    var countParams = input.queryString || input.details || "{}";
+    if (typeof countParams === "string") {
+        countParams = JSON.parse(countParams);
+    }
+    if (countParams.paymentId && isPaymentXdcb({ "payment.id": countParams.paymentId })) {
+        var countContext = getPaymentXdcbContext({ "payment.id": countParams.paymentId }, false);
+        if (contractId && String(contractId) !== String(countContext.payment["contract.id"])) {
+            throw new Error("HĐ không thuộc phiếu TT.");
+        } 
+        return getPaymentXdcbSuppliers({ "payment.id": countParams.paymentId }).length;
+    }
     if (!contractId) return totalSuppliers;
 
     var vendorFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
@@ -182,6 +193,9 @@ function getListPaymentVendor(input) {
 
 
 function getPaymentRemainingAmount(paymentId) {
+    if (isPaymentXdcb({ "payment.id": paymentId })) {
+        return getPaymentXdcbRemainingAmounts(paymentId);
+    }
     var resultList = [];
 
     if (!paymentId) {
@@ -509,6 +523,11 @@ function createListInvoinVendor(input) {
             };
         }
 
+        // TT S4 kiểm tra đúng dòng NCC trước khi tính/gắn hóa đơn; không lấy số dư cộng các NCC.
+        var xdcbInvoiceLimit = isPaymentXdcb({ "payment.id": paymentId })
+            ? getPaymentXdcbInvoiceLimit(checkVendorFile, paymentId, vendorId) 
+            : null;
+
         // Bước 2.2: Tính tổng grandTotal của tất cả hóa đơn MỚI được chọn từ popup
         for (var k = 0; k < dataObj.length; k++) {
             var gTotal = String(dataObj[k]['grandTotal'] || "0");
@@ -542,7 +561,7 @@ function createListInvoinVendor(input) {
         }
 
         // Bước 2.5: Kiểm tra vượt quá số tiền còn lại của khoản thanh toán (Remaining Amount)
-        var remainingData = getPaymentRemainingAmount(paymentId);
+        var remainingData = xdcbInvoiceLimit !== null ? xdcbInvoiceLimit : getPaymentRemainingAmount(paymentId);
         var totalRemainingAmount = "0";
 
         if (Array.isArray(remainingData)) {
@@ -1134,7 +1153,9 @@ function syncVendorOglFromPayment(record) {
         var paymentVendorRc = itemPaymentVendor.doSelect(`payment.id = "${record.id}"`);
         while (paymentVendorRc == RC_SUCCESS) {
             if (!itemPaymentVendor['ogl.sync.status']) {
-                var result = lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(itemPaymentVendor,
+                var result = isPaymentXdcb(itemPaymentVendor) 
+                        ? syncPaymentXdcbVendorToOgl(itemPaymentVendor) 
+                        : lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(itemPaymentVendor,
                         branchCode,
                         entityCode,
                         record['user.checker.kttc'] || vars.$lo_operator["contact.name"]);
@@ -1268,6 +1289,10 @@ function getContractInfo(contractId) {
 }
 
 function loadPaymentVendorInfo(record) {
+    // Guard theo loại phiếu/category đã lưu; HHDV tiếp tục loader S2 phía dưới.
+    if (isPaymentXdcb(record)) {
+        return loadPaymentXdcbVendorInfo(record);
+    }
     var itemFile = new SCFile("esdHTKTpaymentVendor");
 
     var itemQuery =
@@ -2028,4 +2053,538 @@ function handleVendorChangeUpdate(record) {
         }
     }
 }
+
+
+
+
+
+
+// ============================================================================
+// TT XDCB: phiếu cha -> SHTL -> HĐ gốc -> NCC -> master/site S6.
+// Các entrypoint DC/TU không gọi nhánh này; tiến độ S4 chưa bật.
+// ============================================================================
+/** Chỉ nhận nhánh TT XDCB từ phiếu cha đã lưu; không phân nguồn bằng biến NCC/client. */
+function isPaymentXdcb(record) {
+    var id = String(
+        (record &&
+            (record["payment.id"] ||
+                record.payment_id ||
+                (record["transaction.type"] === "Thanh toán" ? record.id : ""))) ||
+            ""
+    ).trim();
+
+    if (id.indexOf("TT.") !== 0) {
+        return false;
+    }
+
+    var parent = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
+        "esdHTKTpayment",
+        'id="' + escapePaymentVendorQueryValue(id) + '"',
+        ["id", "transaction.type", "original.contract.category"],
+        true
+    );
+    return (
+        parent["transaction.type"] === "Thanh toán" &&
+        String(parent["original.contract.category"] || "").toUpperCase() === "XDCB"
+    );
+}
+
+/** Giữ đúng điều kiện sửa NCC/site của loader TT cũ, không dùng guard/phase của Dự chi. */
+function getPaymentXdcbContext(record, requireEdit, currentUser) {
+    var id = String(
+        record["payment.id"] ||
+            record.payment_id ||
+            (record["transaction.type"] === "Thanh toán" ? record.id : "") ||
+            ""
+    ).trim();
+
+    var parent = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
+        "esdHTKTpayment",
+        'id="' + escapePaymentVendorQueryValue(id) + '"',
+        [
+            "id",
+            "transaction.type",
+            "original.contract.category",
+            "contract.id",
+            "current.phase",
+            "initial.role",
+            "created.by",
+            "user.checker.kttc",
+            "unit.lv1",
+            "unit.lv2",
+            "description"
+        ],
+        true
+    );
+    if (
+        id.indexOf("TT.") !== 0 ||
+        parent["transaction.type"] !== "Thanh toán" ||
+        String(parent["original.contract.category"] || "").toUpperCase() !== "XDCB"
+    ) {
+        throw new Error("Phiếu không phải Thanh toán XDCB.");
+    }
+
+    var actor = String(currentUser || (vars.$lo_operator && vars.$lo_operator["contact.name"]) || "").trim();
+    var actorKey = actor.toLowerCase();
+    var creatorKey = String(parent["created.by"] || "").toLowerCase();
+    var checkerKey = String(parent["user.checker.kttc"] || "").toLowerCase();
+    var kttc = parent["current.phase"] === "initial_kttc" &&
+               (checkerKey === actorKey || (creatorKey === actorKey && parent["initial.role"] === "kttc"));
+    var canEdit =
+        !!actor &&
+        (kttc ||
+            (parent["current.phase"] === "initial_dmms" &&
+                creatorKey === actorKey &&
+                parent["initial.role"] === "dmms"));
+    // Dùng cùng bộ nhận diện Hậu kiểm của TT: thêm vai trò tạo phiếu không mở quyền sửa từ menu Hậu kiểm.
+    var postAudit =
+        lib.ESD_HTKT_PAYMENT_WF &&
+        typeof lib.ESD_HTKT_PAYMENT_WF.isPaymentPostAuditContext === "function" &&
+        lib.ESD_HTKT_PAYMENT_WF.isPaymentPostAuditContext(record);
+    if (postAudit) canEdit = false;
+    if (requireEdit && !canEdit) {
+        throw new Error("Không có quyền sửa NCC tại bước hiện tại của phiếu Thanh toán.");
+    }
+    if (record["contract.id"] && String(record["contract.id"]) !== String(parent["contract.id"])) {
+        throw new Error("HĐ của dòng NCC khác HĐ trên phiếu TT.");
+    }
+    return {
+        payment: parent,
+        actor: actor,
+        canEdit: canEdit,
+        canSync: canEdit && kttc
+    };
+}
+
+/** Tiền S4: chỉ tính khi có đủ due/paid; field trống giữ trống như DC, không tự coi là 0.
+ * Phần tiền hồ sơ TH2 chưa dùng; xem docs/thanh-toan-xdcb-pending.md.
+ */
+function paymentXdcbRemaining(due, paid) {
+    var money = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseXdcbMoney;
+    if (money(due) === null || money(paid) === null) return "";
+    if (Number(due) < 0 || Number(paid) < 0) throw new Error("Số tiền nguồn S4 không hợp lệ.");
+    var remaining = lib.ESD_HTKT_Utils.subtractStringsManual(String(due), String(paid));
+    return lib.ESD_HTKT_Utils.compareMoneyStrings(remaining, "0") < 0 ? "0" : remaining;
+}
+
+/** Đọc HĐ S4 theo khóa đã lưu trên TT, tính số còn lại từ contract.amount và total.amount.paid. */
+function getPaymentXdcbContractInfo(record) {
+    var context = getPaymentXdcbContext(record, false);
+    var id = String(context.payment["contract.id"] || "");
+    if (record["contract.id"] && String(record["contract.id"]) !== id)
+        throw new Error("HĐ của món không khớp phiếu Thanh toán.");
+    var contract = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
+        "esdXDCBrepairProjectCtr",
+        'id="' + escapePaymentVendorQueryValue(id) + '"',
+        [
+            "id",
+            "contract.name",
+            "contract.amount",
+            "currency",
+            "effective.date",
+            "repair.id",
+            "construction.id",
+            "type.budget",
+            "tender.package.id",
+            "tax.code",
+            "vendor.name",
+            "vendor.address",
+            "bank.account",
+            "bank.name",
+            "total.amount.paid"
+        ],
+        true
+    );
+    return {
+        id: id,
+        name: contract["contract.name"],
+        category: "HD_GT",
+        categoryName: "Hợp đồng",
+        totalValue: contract["contract.amount"],
+        currency: contract.currency,
+        startDate: contract["effective.date"],
+        totalPaidAmount: contract["total.amount.paid"] == null ? "" : contract["total.amount.paid"],
+        remainingAmount: paymentXdcbRemaining(contract["contract.amount"], contract["total.amount.paid"]),
+        sourceContract: contract
+    };
+}
+
+/** Phiếu TT đã lưu -> HĐ trên phiếu -> SHTL TH1/TH2 -> nguồn NCC S4.
+ * Không nhận HĐ tùy ý từ client và không cần quyền tạo DC. Quyền sửa do context TT kiểm tra.
+ * TH2 tạm gộp theo HĐ/MST như DC; không chọn hồ sơ, không dùng amount của hồ sơ làm hạn mức.
+ */
+function getPaymentXdcbSuppliers(record) {
+    var info = getPaymentXdcbContractInfo(record);
+    var result = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseContractReadDigitizations(
+        {
+            contractId: info.id,
+            start: 1,
+            count: 1,
+            sortField: "id",
+            sortOrder: "asc"
+        },
+        "true"
+    );
+    // Scope ở đây chỉ là HĐ đã lưu trên phiếu đã được phép sửa/xem, không phải API mở toàn bộ S4.
+    if (!result || !result.success || result.data.length !== 1 || result.data[0].id !== info.id) {
+        throw new Error((result && result.message) || "HĐ TT không còn nguồn SHTL hợp lệ/Đang thực hiện.");
+    }
+    info.sourceContract.digitizationReferences = result.data[0].digitizationReferences;
+    var rows = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(info.sourceContract);
+    if (
+        lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSupplierSource(info.sourceContract) ===
+        "CONTRACT"
+    ) {
+        rows[0]["bank.number"] = info.sourceContract["bank.account"];
+        rows[0]["bank.name"] = info.sourceContract["bank.name"];
+        rows[0]["remaining.amount"] = info.remainingAmount;
+    } else {
+        // Resolver DC đã đọc due/paid đúng dòng Contractor; không query lồng lại từng NCC.
+        for (var i = 0; i < rows.length; i++) {
+            rows[i]["remaining.amount"] = paymentXdcbRemaining(
+                rows[i]["total.amount.due"],
+                rows[i]["total.amount.paid"]
+            );
+        }
+    }
+    return rows;
+}
+
+/** Đối chiếu ID lựa chọn và MST với nguồn S4; không chấp nhận tên/MST tự sửa trên form. */
+function resolvePaymentXdcbSupplier(record, supplierId, tax) {
+    var rows = getPaymentXdcbSuppliers(record);
+    for (var i = 0; i < rows.length; i++) {
+        if (
+            (supplierId || tax) &&
+            (!supplierId || String(rows[i]["supplier.id"]) === String(supplierId)) &&
+            (!tax || String(rows[i]["tax.code"]) === String(tax))
+        )
+            return rows[i];
+    }
+    throw new Error("NCC/MST không thuộc nguồn NCC của HĐ Thanh toán XDCB.");
+}
+
+/** Khóa bản nháp chỉ theo món/HĐ/NCC đã lưu/người xử lý/phase; không cache số tiền. */
+function paymentXdcbDraftKey(record, context) {
+    return JSON.stringify([
+        context.payment.id,
+        String(record.id || ""),
+        context.payment["contract.id"],
+        String(record["vendor.id"] || ""),
+        context.actor,
+        context.payment["current.phase"],
+        context.payment["initial.role"]
+    ]);
+}
+
+/** Giữ quy tắc TT cũ: không thêm lại cùng NCC vào phiếu; S4 đối chiếu bằng MST thay supplier.id S2. */
+function paymentXdcbSupplierUsed(record, tax) {
+    var file = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+    try {
+        var rc = file.doSelect('payment.id="' + escapePaymentVendorQueryValue(record["payment.id"]) + '"');
+        while (rc === RC_SUCCESS) {
+            if (String(file.id) !== String(record.id || "") && file["vendor.id"]) {
+                var master = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(
+                    file["vendor.id"]
+                );
+                if (String(master["vendor.number"]) === String(tax)) return true;
+            }
+            rc = file.getNext();
+        }
+        if (rc !== RC_NO_MORE) throw new Error("Không kiểm tra đủ các NCC đã có trên phiếu Thanh toán.");
+    } finally {
+        file.doClose();
+    }
+    return false;
+}
+
+/** Nạp form TT XDCB; giữ lựa chọn chưa lưu khi quay lại và bấm Không ở popup xác nhận. */
+function loadPaymentXdcbVendorInfo(record) {
+    var context = getPaymentXdcbContext(record, false);
+    var rows;
+    try {
+        rows = getPaymentXdcbSuppliers(record);
+    } catch (sourceError) {
+        // Dòng đã lưu vẫn xem được nếu HĐ đổi trạng thái/SHTL chưa unload; Save luôn kiểm tra lại nguồn.
+        if (!record["vendor.id"]) throw sourceError;
+        var saved = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(record["vendor.id"]);
+        rows = [
+            {
+                "supplier.id": saved["vendor.number"],
+                "supplier.name": saved["vendor.name"],
+                "tax.code": saved["vendor.number"],
+                address: saved.address,
+                "remaining.amount": record["contract.amount"]
+            }
+        ];
+    }
+    if (!record["vendor.id"])
+        rows = rows.filter(function (row) {
+            return !paymentXdcbSupplierUsed(record, row["tax.code"]);
+        });
+    var key = paymentXdcbDraftKey(record, context);
+    var raw = vars["$L.payment.xdcb.supplier.draft"];
+    if (!raw && String(vars.$proceed).toLowerCase() === "no")
+        raw = vars["$payment.xdcb.supplier.cancel.draft"];
+    var selected = null;
+    var validDraft = false;
+    try {
+        var draft = raw
+            ? JSON.parse(raw && typeof raw.getText === "function" ? raw.getText() : String(raw))
+            : null;
+        if (draft && draft.key === key && context.canEdit) {
+            selected = resolvePaymentXdcbSupplier(record, draft.supplierId, "");
+            validDraft = true;
+        }
+    } catch (draftError) {
+        /* Bản nháp cũ/không hợp lệ không dùng thay NCC đã lưu. */
+    }
+    if (!validDraft) {
+        vars["$L.payment.xdcb.supplier.draft"] = "";
+        vars["$payment.xdcb.supplier.cancel.draft"] = "";
+        raw = null;
+    }
+    if (!selected && record["vendor.id"]) {
+        var master = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(record["vendor.id"]);
+        for (var savedIndex = 0; savedIndex < rows.length; savedIndex++) {
+            if (String(rows[savedIndex]["tax.code"]) === String(master["vendor.number"]))
+                selected = rows[savedIndex];
+        }
+        // Màn view TT cũ chỉ hiển thị NCC đã lưu; không mở thêm nghiệp vụ đổi NCC tại đây.
+        rows = [selected];
+    }
+    if (!selected) {
+        vars["$L.payment.xdcb.supplier.draft"] = "";
+        vars["$payment.xdcb.supplier.cancel.draft"] = "";
+    }
+    vars.$supplierdisplays = rows.map(function (row) {
+        return row["supplier.name"];
+    });
+    vars.$suppliervalues = rows.map(function (row) {
+        return row["supplier.id"];
+    });
+    vars.$supplierId = selected ? selected["supplier.id"] : "";
+    vars.$G_supplier_id = vars.$supplierId;
+    vars.$supplierName = selected ? selected["supplier.name"] : "";
+    vars.$supplierAddress = selected ? selected.address || "" : "";
+    vars.$taxCode = selected ? selected["tax.code"] : "";
+    vars.$unitLv1 = context.payment["unit.lv1"];
+    vars.$unitLv2 = context.payment["unit.lv2"];
+    vars.$currency = record.currency || getPaymentXdcbContractInfo(record).currency;
+    vars.$remainingAmount = selected ? selected["remaining.amount"] : "";
+    vars.$canEditObj = context.canEdit;
+    vars.$showSyncVendorOgl = context.canSync;
+    vars.$canEditSite = context.canSync && record["ogl.sync.status"] === true;
+    vars.$isCNvendorType = record["vendor.type"] === "CN";
+    if (!raw) {
+        vars.$amount = record.amount == null ? 0 : record.amount;
+        vars.$approvedInvoiceAmount = record["approved.invoice.amount"] || 0;
+        vars.$refundAmount = record["refund.amount"] || 0;
+        vars.$payableAmount = record["payable.amount"] || 0;
+    }
+    return rows;
+}
+
+/** Điền NCC vừa chọn và thông tin ngân hàng có thật; ngân hàng không map được để user chọn như TT cũ. */
+function selectPaymentXdcbSupplier(record, supplierId) {
+    var context = getPaymentXdcbContext(record, true);
+    var supplier = resolvePaymentXdcbSupplier(record, supplierId, "");
+    var draft = JSON.stringify({
+        key: paymentXdcbDraftKey(record, context),
+        supplierId: supplier["supplier.id"]
+    });
+    vars["$L.payment.xdcb.supplier.draft"] = draft;
+    vars["$payment.xdcb.supplier.cancel.draft"] = draft;
+    vars.$supplierId = supplier["supplier.id"];
+    vars.$G_supplier_id = supplier["supplier.id"];
+    vars.$supplierName = supplier["supplier.name"];
+    vars.$taxCode = supplier["tax.code"];
+    vars.$remainingAmount = supplier["remaining.amount"];
+    record["beneficiary.account"] = supplier["bank.number"] || "";
+    record["beneficiary.bank"] = "";
+    // Đổi NCC/STK thì kết quả kiểm tra tên tài khoản cũ không còn áp dụng.
+    record["beneficiary.name"] = "";
+    record["check.name.success"] = false;
+    record["bank.branch.code"] = "";
+    record["bank.name"] = supplier["bank.name"] || "";
+    var banks = lib.ESD_HTKT_ACCOUNTING_UTILS.getBankDroplist();
+    var sourceBank = String(supplier["bank.name"] || "")
+        .trim()
+        .toLowerCase();
+    for (var i = 0; sourceBank && i < banks.length; i++) {
+        if (
+            String(banks[i].name || "")
+                .trim()
+                .toLowerCase() === sourceBank
+        ) {
+            record["beneficiary.bank"] = banks[i].code + "|" + banks[i].citad + "|" + banks[i].napas;
+            break;
+        }
+    }
+    return supplier;
+}
+
+/** Kiểm tra lại nguồn NCC trước Save, để nguyên các giá trị tiền/phương thức do DO TT hiện tại kiểm tra. */
+function preparePaymentXdcbSave(record) {
+    var context = getPaymentXdcbContext(record, true);
+    var supplier = resolvePaymentXdcbSupplier(record, vars.$supplierId, vars.$taxCode);
+    if (paymentXdcbSupplierUsed(record, supplier["tax.code"]))
+        throw new Error("NCC đã có trên phiếu Thanh toán.");
+    record["contract.id"] = context.payment["contract.id"];
+    record.currency = getPaymentXdcbContractInfo(record).currency;
+    vars.$currency = record.currency;
+    vars.$supplierName = supplier["supplier.name"];
+    vars.$taxCode = supplier["tax.code"];
+    vars.$remainingAmount = supplier["remaining.amount"];
+    // Giữ giới hạn TT đang có. Nguồn tiền rỗng giữ trống, không mượn hạn mức HĐ thay cho NCC.
+    record["contract.amount"] = supplier["remaining.amount"];
+    var amount = Number(String(vars.$amount == null ? "" : vars.$amount).replace(/,/g, ""));
+    var limit = supplier["remaining.amount"];
+    if (limit !== "" && amount > Number(limit))
+        throw new Error("Số tiền đề nghị TT vượt số tiền còn lại của NCC.");
+    return supplier;
+}
+
+/** Sau validate TT mới lưu master NCC S6 theo MST; không ghi ID Contractor vào supplier.id S2. */
+function savePaymentXdcbSupplier(record) {
+    var supplier = preparePaymentXdcbSave(record);
+    var context = getPaymentXdcbContext(record, true);
+    var vendorId = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.ensureExpenseXdcbVendor(supplier, context.actor);
+    if (record["vendor.id"] && String(record["vendor.id"]) !== String(vendorId))
+        record["vendor.site.id"] = "";
+    record["vendor.id"] = vendorId;
+    var result = syncPaymentXdcbVendorToOgl(record);
+    vars.$vendorSiteOptValue = result.success ? [record["vendor.site.id"]] : [];
+    vars.$vendorSiteOptDisp = result.success
+        ? [lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB").siteCode]
+        : [];
+    vars.$oglSiteCode = result.success ? vars.$vendorSiteOptDisp[0] : "";
+    vars.$canEditSite = context.canSync && result.success;
+    vars["$L.payment.xdcb.supplier.draft"] = "";
+    vars["$payment.xdcb.supplier.cancel.draft"] = "";
+    return result;
+}
+
+/** Đồng bộ NCC/site như nhánh S4 đang chạy, nhưng dùng quyền TT và cấu hình site XDCB. */
+function syncPaymentXdcbVendorToOgl(record) {
+    record["ogl.sync.status"] = false;
+    try {
+        // TT tự kiểm tra phase, HĐ và NCC; dùng chung duy nhất đoạn vấn tin/tạo/lưu site.
+        var context = getPaymentXdcbContext(record, true);
+        var master = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(record["vendor.id"]);
+        resolvePaymentXdcbSupplier(record, "", master["vendor.number"]);
+        var mapping = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(context.payment["unit.lv1"]);
+        return lib.ESD_HTKT_PREPAYMENT_VENDOR.syncXdcbVendorSite(record, master, mapping, context.actor);
+    } catch (error) {
+        return { success: false, message: String(error.message || error) };
+    }
+}
+
+/** Gắn hóa đơn TT XDCB dùng đúng hạn mức NCC của dòng đã lưu, không cộng hạn mức các NCC khác.
+ * Chỉ áp nguồn S4; công thức/kiểm tra hóa đơn S2 phía dưới giữ nguyên.
+ */
+function getPaymentXdcbInvoiceLimit(record, paymentId, vendorId) {
+    getPaymentXdcbContext(record, true);
+    if (
+        String(record["payment.id"]) !== String(paymentId) ||
+        String(record["vendor.id"]) !== String(vendorId)
+    ) {
+        throw new Error("Dòng NCC/hóa đơn không thuộc phiếu TT đã chọn.");
+    }
+    var master = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(record["vendor.id"]);
+    var supplier = resolvePaymentXdcbSupplier(record, "", master["vendor.number"]);
+    if (supplier["remaining.amount"] === "")
+        throw new Error("Nguồn S4 chưa đủ tiền cần TT/đã TT của NCC để kiểm tra hóa đơn.");
+    return supplier["remaining.amount"];
+}
+
+/** Chuyển bước TT XDCB kiểm tra lại nguồn/NCC và số dư mới nhất; không tự đổi phase/quyền hay bút toán. */
+function validatePaymentXdcbVendors(record) {
+    var errors = [];
+    var file = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+    try {
+        var rc = file.doSelect('payment.id="' + escapePaymentVendorQueryValue(record.id) + '"');
+        while (rc === RC_SUCCESS) {
+            var master = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(file["vendor.id"]);
+            var supplier = resolvePaymentXdcbSupplier(file, "", master["vendor.number"]);
+            if (
+                supplier["remaining.amount"] !== "" &&
+                lib.ESD_HTKT_Utils.compareMoneyStrings(
+                    String(file.amount || "0"),
+                    supplier["remaining.amount"]
+                ) > 0
+            ) {
+                errors.push(
+                    "Số tiền TT của NCC " + supplier["supplier.name"] + " vượt số tiền còn lại nguồn S4."
+                );
+            }
+            rc = file.getNext();
+        }
+        if (rc !== RC_NO_MORE) throw new Error("Không đọc đủ các NCC TT XDCB.");
+    } catch (error) {
+        errors.push(String(error.message || error));
+    } finally {
+        file.doClose();
+    }
+    return errors.length ? errors : null;
+}
+
+/** Trả cấu trúc số dư mà gắn hóa đơn/TT đang dùng, nhưng lấy NCC/tiền từ S4.
+ * Các giá trị tiền TT, hoàn ứng và quyền vẫn giữ nghĩa hiện tại; không JOIN supplier.id của S2.
+ */
+function getPaymentXdcbRemainingAmounts(paymentId) {
+    var context = getPaymentXdcbContext({ "payment.id": paymentId }, false);
+    var suppliers = getPaymentXdcbSuppliers({ "payment.id": paymentId });
+    var file = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+    var rows = [];
+    try {
+        var rc = file.doSelect('payment.id="' + escapePaymentVendorQueryValue(paymentId) + '"');
+        while (rc === RC_SUCCESS) {
+            var master = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(file["vendor.id"]);
+            var supplier = null;
+            for (var i = 0; i < suppliers.length; i++) {
+                if (String(suppliers[i]["tax.code"]) === String(master["vendor.number"]))
+                    supplier = suppliers[i];
+            }
+            if (!supplier) throw new Error("NCC đã lưu không thuộc HĐ TT XDCB.");
+            var site = file["vendor.site.id"]
+                ? lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
+                      "esdHTKTvendorSite",
+                      'id="' +
+                          escapePaymentVendorQueryValue(file["vendor.site.id"]) +
+                          '" and vendor.id="' +
+                          escapePaymentVendorQueryValue(master.id) +
+                          '"',
+                      ["id", "ogl.site.code", "ogl.sync.status"],
+                      false
+                  )
+                : null;
+            rows.push({
+                supplier_id: supplier["supplier.id"],
+                supplier_name: supplier["supplier.name"],
+                payment_method: file["payment.method"],
+                amount: file.amount,
+                remaining_amount: supplier["remaining.amount"],
+                tax_code: master["vendor.number"],
+                ogl_sync_status: file["ogl.sync.status"],
+                ogl_site_code: site ? site["ogl.site.code"] : "",
+                hvs_ogl_sync_status: site ? site["ogl.sync.status"] : false,
+                vendor_site_id: site ? site.id : "",
+                currency: file.currency,
+                unit_lv1: context.payment["unit.lv1"],
+                unit_lv2: context.payment["unit.lv2"],
+                current_phase: context.payment["current.phase"],
+                created_by: context.payment["created.by"],
+                initial_role: context.payment["initial.role"],
+                user_checker_kttc: context.payment["user.checker.kttc"]
+            });
+            rc = file.getNext();
+        }
+        if (rc !== RC_NO_MORE) throw new Error("Không đọc đủ số dư các dòng NCC TT XDCB.");
+    } finally {
+        file.doClose();
+    }
+    return rows;
+}
+
 

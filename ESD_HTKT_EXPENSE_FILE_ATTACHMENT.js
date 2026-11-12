@@ -289,39 +289,7 @@ function listExpenseSourceDocuments(input) {
             return { success: true, data: oldRows, contractCategory: "HHDV" };
         }
         var source = expenseSourceDocumentContext(params, context, actor);
-        var rows = [];
-        var seen = {};
-        for (var start = 0; start < source.ids.length; start += 100) {
-            var conditions = [];
-            var ids = source.ids.slice(start, start + 100);
-            for (var n = 0; n < ids.length; n++)
-                conditions.push('parent.id="' + sourceDocumentQuote(ids[n]) + '"');
-            var query = "(" + conditions.join(" or ") + ') and status="So hoa thanh cong"';
-            var docs = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseDigitizationReadRows(
-                "esdHDtlks",
-                query,
-                [
-                    "id",
-                    "name",
-                    "sizeKb",
-                    "created.at",
-                    "executor",
-                    "doc.id",
-                    "parent.id",
-                    "attach.id",
-                    "document.type",
-                    "status"
-                ],
-                "expense-source-documents",
-                sourceDocumentRow
-            );
-            for (var d = 0; d < docs.length; d++) {
-                if (!seen["$" + docs[d].id]) {
-                    rows.push(docs[d]);
-                    seen["$" + docs[d].id] = true;
-                }
-            }
-        }
+        var rows = readShtlSourceDocuments(source.ids);
         return { success: true, data: rows, contractCategory: "XDCB" };
     } catch (error) {
         return { success: false, data: [], message: String(error.message || error) };
@@ -434,4 +402,47 @@ function sourceDocumentText(value) {
 /** Escape giá trị cho native query; không nhận tên bảng/field từ client. */
 function sourceDocumentQuote(value) {
     return sourceDocumentText(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/** Reader SHTL dùng chung TT/DC: caller đã xác minh quyền/nguồn trước khi truyền ID.
+ * Không truy ngược HĐ, không ghi DB/ECM. DC giữ size byte; TT đổi DTO sang kB theo UI đang dùng.
+ */
+function readShtlSourceDocuments(ids, sizeUnit) {
+    var rows = [];
+    var seen = {};
+    for (var start = 0; start < ids.length; start += 100) {
+        var conditions = [];
+        var batchIds = ids.slice(start, start + 100);
+        for (var n = 0; n < batchIds.length; n++)
+            conditions.push('parent.id="' + sourceDocumentQuote(batchIds[n]) + '"');
+        var query = "(" + conditions.join(" or ") + ') and status="So hoa thanh cong"';
+        var docs = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseDigitizationReadRows(
+            "esdHDtlks",
+            query,
+            [
+                "id",
+                "name",
+                "sizeKb",
+                "created.at",
+                "executor",
+                "doc.id",
+                "parent.id",
+                "attach.id",
+                "document.type",
+                "status"
+            ],
+            "expense-source-documents",
+            sourceDocumentRow
+        );
+        for (var d = 0; d < docs.length; d++) {
+            if (!seen["$" + docs[d].id]) {
+                rows.push(docs[d]);
+                seen["$" + docs[d].id] = true;
+            }
+        }
+    }
+    if (sizeUnit === "KB") {
+        for (var i = 0; i < rows.length; i++) rows[i].size = rows[i].sizeKb;
+    }
+    return rows;
 }

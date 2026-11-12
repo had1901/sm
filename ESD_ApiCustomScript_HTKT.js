@@ -191,6 +191,16 @@ function run() {
                 result = lib.ESD_HTKT_ACCOUNTING_ERROR_HANDLING.saveAccountingErrorsResult(input);
                 break;
 
+            // TT: nguồn tài liệu theo category thật; DC giữ các action riêng hiện có.
+            case "listPaymentSourceDocuments":
+                result = lib.ESD_HTKT_PAYMENT_FILE_ATTACHMENT.listPaymentSourceDocuments(input);
+                break;
+            case "addPaymentSourceDocuments":
+                result = lib.ESD_HTKT_PAYMENT_FILE_ATTACHMENT.addPaymentSourceDocuments(input);
+                break;
+            case "deletePaymentSourceDocument":
+                result = lib.ESD_HTKT_PAYMENT_FILE_ATTACHMENT.deletePaymentSourceDocument(input);
+                break;
             case 'listFileAttachment':
                 lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listFileAttachment(input);
                 break;

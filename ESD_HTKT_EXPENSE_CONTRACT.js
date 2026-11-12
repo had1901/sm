@@ -2,7 +2,7 @@
  * ScriptLibrary: ESD_HTKT_EXPENSE_CONTRACT
  * Dự chi: phiếu cha -> quyền/phạm vi -> SHTL -> HĐ thật -> resolver NCC S4.
  * TH1: SHTL.id.contract = HĐ.id. TH2: SHTL.id.contract = hồ sơ.id -> hồ sơ.ctr.id = HĐ.id.
- * Chỉ đổi nguồn Dự chi XDCB; HHDV ủy quyền S2, reader Thanh toán/Tạm ứng giữ nguyên.
+ * Dự chi và Thanh toán có entrypoint/quyền riêng, dùng chung reader SHTL; HHDV/S2 và Tạm ứng giữ đường cũ.
  */
 
 /** Nguồn HĐ được xác định từ phiếu đã lưu, không lấy từ lựa chọn phía client. */
@@ -404,7 +404,7 @@ function expenseDigitizationContractPlan(params, scopeQuery) {
         '((not null(repair.id) and repair.id~="") and (null(construction.id) or construction.id=""))';
     var construction =
         '((not null(construction.id) and construction.id~="") and (null(repair.id) or repair.id=""))';
-    // Dự chi XDCB chỉ chọn HĐ Đang thực hiện; SHTL không làm thay đổi điều kiện trạng thái này.
+    // DC/TT XDCB chỉ chọn HĐ Đang thực hiện; SHTL không làm thay đổi điều kiện trạng thái này.
     var conditions = [
         "(null(deleted.flag) or deleted.flag=false)",
         'status="Đang thực hiện"',
@@ -498,7 +498,8 @@ function listPaymentXdcbContracts(input) {
         if (sort && !Object.prototype.hasOwnProperty.call(sortMap, sort)) {
             throw expenseContractError("INVALID_SORT_FIELD", "Cột sắp xếp HĐ XDCB không hợp lệ.");
         }
-        var result = expenseContractReadXdcb({
+        var result = expenseContractReadDigitizations({
+            contractId: params.contractId,
             start: params.start, 
             count: params.count, 
             keyword: params.keyword,
@@ -533,6 +534,35 @@ function listPaymentXdcbContracts(input) {
             message: String(error.message || error) 
         };
     }
+}
+
+/** TT trước tạo phiếu: đọc lại HĐ qua SHTL và quyền TT; trả HĐ thật, không chọn/lưu HS-HĐ. */
+function getPaymentXdcbContract(input) {
+    var params = expenseContractParams(input);
+    var id = expenseContractText(params.contractId);
+    if (!id) {
+        return { 
+            success: false, 
+            data: null, 
+            message: "Thiếu ID HĐ XDCB." 
+        };
+    } 
+    params.contractId = id;
+    params.start = 1;
+    params.count = 1;
+
+    var result = listPaymentXdcbContracts({ details: params });
+    if (!result.success || !result.data || result.data.length !== 1 || result.data[0].id !== id) {
+        return {
+            success: false,
+            data: null,
+            message: result.message || "HĐ XDCB không còn đủ điều kiện trong phạm vi được chọn."
+        };
+    }
+    return { 
+        success: true, 
+        data: result.data[0] 
+    };
 }
 
 /** Đếm/lọc/phân trang S4 dùng chung; scopeQuery đã được entrypoint kiểm tra theo đúng loại phiếu. */

@@ -1078,6 +1078,11 @@ function validateVendorAndPaymentDetails(record) {
 //}
 
 function validateVendorAndPaymentDetailsOnWorkflow(record) {
+    // TT XDCB kiểm tra lại nguồn/NCC và số dư S4; quyền, phase và phê duyệt giữ ở workflow hiện tại.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+        var sourceErrors = lib.ESD_HTKT_PAYMENT_VENDOR.validatePaymentXdcbVendors(record);
+        if (sourceErrors && sourceErrors.length) return sourceErrors;
+    }
     var paymentId = String(record.id || "");
     var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
     var rc = vendor.doSelect('payment.id="' + paymentId + '"');
