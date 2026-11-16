@@ -414,10 +414,25 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
      *    - require.check.level1 / require.check.level2
      *    - user.approver.final
      */
+    /*
+     * Giống Tạm ứng: quyền tái phân công chỉ thuộc cán bộ đang được gán làm
+     * Phê duyệt ĐMMS / Phê duyệt KTTC trên chính phiếu. Functional Right
+     * 0005/0006 chỉ dùng cho quyền xem sớm; user có right nhưng không nằm trong
+     * luồng của phiếu không được sửa combobox. Không tái phân công ở bước tạo mới.
+     */
+    var isPaymentCreationPhase =
+            !phase ||
+            phase === "start" ||
+            (role === "dmms" && phase === "initial_dmms") ||
+            (role === "kttc" && phase === "initial_kttc");
+    var isAssignedApprovalDmms = !!actor && actor === approverDmms;
+    var isAssignedApprovalKttc = !!actor && actor === approverKttc;
+
     var canDmmsLeaderReassign =
             !reassignmentClosed &&
+            !isPaymentCreationPhase &&
             role === "dmms" &&
-            isApprovalDmms;
+            isAssignedApprovalDmms;
 
     /*
      * Quyền tái phân công của Lãnh đạo KTTC không phụ thuộc initial.role.
@@ -429,7 +444,8 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
      */
     var canKttcLeaderReassign =
             !reassignmentClosed &&
-            isApprovalKttc;
+            !isPaymentCreationPhase &&
+            isAssignedApprovalKttc;
 
     var fieldAccess = {};
 
@@ -1103,7 +1119,8 @@ function runPaymentApprovalApi(details, save) {
                 readPaymentApprovalValue(payment, field);
         // KTTC tiếp nhận được chọn lại người xử lý cho các bước KTTC tại
         // initial_kttc, kể cả hồ sơ do ĐMMS khởi tạo đã có giá trị dự kiến.
-        var initialKttcSelection = isDuChi && apiAccess.canEditLevel2 === true &&
+        // Áp dụng cho cả Thanh toán (giống Tạm ứng) và Dự chi.
+        var initialKttcSelection = apiAccess.canEditLevel2 === true &&
                 readPaymentApprovalValue(payment, "current.phase").toLowerCase() === "initial_kttc" &&
                 (field === "user.approver.kttc" || field === "user.checker.final" ||
                         field === "user.approver.final");
@@ -1111,7 +1128,7 @@ function runPaymentApprovalApi(details, save) {
         // Thanh toán already passed its own field-access checks above. Dự chi
         // additionally passes its existing leadership/reason checks below.
         var isSlaReassignment = !isDuChi && !isCheckbox && !!previousApprovalValue &&
-                previousApprovalValue !== value;
+                previousApprovalValue !== value && !initialKttcSelection;
 
         if (isDuChi && !isCheckbox && previousApprovalValue &&
                 previousApprovalValue !== value && !isDuChiApprovalCreation(payment) &&

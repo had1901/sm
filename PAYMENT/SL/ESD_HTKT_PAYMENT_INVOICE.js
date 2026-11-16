@@ -207,6 +207,7 @@ function deletePaymentInvoice(input) {
 
         if (rcInv === RC_SUCCESS) {
             invFile["request.id"] = null;
+            invFile["deduction.type"] = null;
 
             var rcUpdate = invFile.doUpdate();
 
@@ -351,6 +352,7 @@ function unlinkAllInvoicesOnPaymentCancel(paymentId) {
             }
             if (currentOwner === id) {
                 invoiceFile["request.id"] = null;
+                invoiceFile["deduction.type"] = null;
                 var updateRc = invoiceFile.doUpdate();
                 if (updateRc != RC_SUCCESS && updateRc !== true) {
                     throw new Error("Không thể xóa request.id của hóa đơn " + currentInvoiceId);

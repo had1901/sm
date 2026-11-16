@@ -211,6 +211,12 @@ function nextId1(name) {
     return String(nextNumber || "");
 }
 
+
+
+
+
+
+
 // ============================================================================
 // TT XDCB - TÀI LIỆU NGUỒN SHTL. Không gọi entrypoint DC, không sao chép/xóa file ECM.
 // TH2 qua hồ sơ để tìm HĐ, gộp nguồn SHTL theo HĐ như DC; chưa lưu khóa hồ sơ S6.

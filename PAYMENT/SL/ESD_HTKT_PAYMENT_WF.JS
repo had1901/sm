@@ -1083,6 +1083,7 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
         var sourceErrors = lib.ESD_HTKT_PAYMENT_VENDOR.validatePaymentXdcbVendors(record);
         if (sourceErrors && sourceErrors.length) return sourceErrors;
     }
+    
     var paymentId = String(record.id || "");
     var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
     var rc = vendor.doSelect('payment.id="' + paymentId + '"');
@@ -1139,9 +1140,11 @@ function validateInvoices(paymentId) {
     }
 
     try { prepInvoiceFile.doClose(); } catch (e) {}
-
     if (hasInvalidInvoice) {
-        errorMss.push("Đề nghị thanh toán đang chứa hóa đơn quá hạn kiểm tra. Vui lòng kiểm tra lại các hóa đơn");
+        // Dự chi dùng chung thư viện chuyển bước này; nhận diện theo mã phiếu DC.*
+        errorMss.push(htktWfIsExpense({ id: paymentId })
+                ? "Phiếu Dự chi đang chứa hóa đơn quá hạn kiểm tra. Vui lòng kiểm tra lại các hóa đơn."
+                : "Đề nghị thanh toán đang chứa hóa đơn quá hạn kiểm tra. Vui lòng kiểm tra lại các hóa đơn");
     }
 
     return errorMss.length > 0 ? errorMss : null;

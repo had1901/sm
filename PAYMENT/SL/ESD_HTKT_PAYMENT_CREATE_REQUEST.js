@@ -60,13 +60,14 @@ function createPaymentRequest(input) {
 
         var contractList = JSON.parse(rawData);
         var contractData = contractList[0];
+        
         if (!contractData) {
             throw new Error("Chưa chọn HĐ để tạo phiếu TT.");
-        }
+        } 
         var contractCategory = String(contractData.contractCategory || "HHDV").trim().toUpperCase();
         if (contractCategory !== "HHDV" && contractCategory !== "XDCB") {
             throw new Error("Hạng mục TT không hợp lệ.");
-        }
+        } 
         contractData.contractCategory = contractCategory;
         var xdcbContract = null;
 
@@ -82,7 +83,7 @@ function createPaymentRequest(input) {
         // =========================================================================
         var sourceContractId = String(contractData.sourceContractId || contractData['sourceContractId'] || contractData['id'] || '').trim();
         var contractId = String(contractData.contractId || contractData['contractId'] || contractData['id'] || '').trim();
-
+        
         if (contractCategory === "XDCB") {
             // Client chỉ chọn khóa. SM đọc lại SHTL -> HĐ thật bằng actor đã được server xác thực.
             var xdcbResult = lib.ESD_HTKT_EXPENSE_CONTRACT.getPaymentXdcbContract(
@@ -109,6 +110,7 @@ function createPaymentRequest(input) {
                 throw new Error("HĐ XDCB chưa có loại tiền.");
             } 
         }
+
         contractData.sourceContractId = sourceContractId;
         contractData.contractId = contractId;
 
@@ -336,8 +338,8 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
 /**
  * Nghiệp vụ sản phẩm của phiếu thanh toán:
  *   esdHDcontract.process.id = esdDMmsProcess.code -> esdDMmsProcess.type
- *   -> esdHTKTpayment.original.contract.category
- * Engine SLA so original.contract.category với esdHTKTslaConfig.product.type, nên
+ *   -> esdHTKTpayment.product.type
+ * Engine SLA so esdHTKTpayment.product.type với esdHTKTslaConfig.product.type, nên
  * product.type trên cấu hình SLA phải trùng đúng esdDMmsProcess.type.
  * Trả về "" nếu không tìm thấy hợp đồng / process.id / danh mục; khi đó SLA Thanh toán
  * dùng cấu hình "Tất cả".
@@ -590,7 +592,7 @@ function listPurchaseContracts(input) {
             message: "Không xác định được người tạo phiếu thanh toán."
         };
     }
-
+    
     // Chỉ request TT chọn XDCB đi qua SHTL. HHDV giữ toàn bộ query/PO/phạm vi S2 phía dưới.
     var selectedCategory = String(params.contractCategory || "HHDV").trim().toUpperCase();
     if (selectedCategory === "XDCB") {

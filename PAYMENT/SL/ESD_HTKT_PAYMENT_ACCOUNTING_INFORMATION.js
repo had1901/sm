@@ -126,6 +126,10 @@ function generatePaymentAccountingInformation(paymentId, previewOnly) {
         var payloadResults = buildVendorPayloads(payment, vendors[i], vendorEntries,
                 contextResult.data, accountingDate);
         if (!payloadResults.success) return payloadResults;
+        var hasPayable = hasPayableAssetEntry(vendorEntries);
+        for (var payloadIndex = 0; payloadIndex < payloadResults.data.length; payloadIndex++) {
+            payloadResults.data[payloadIndex].hasPayable = hasPayable;
+        }
         diagnostics.push({
             vendorId: vendors[i].vendor_id,
             approvedInvoiceAmount: vendors[i].approved_invoice_amount,
@@ -266,6 +270,16 @@ function summarizeEntryTypes(entries) {
     return uniqueText(result);
 }
 
+function hasPayableAssetEntry(entries) {
+    for (var i = 0; i < entries.length; i++) {
+        if (safeString(entries[i].entry_type).trim().toUpperCase() === 'PAYABLE' &&
+                safeString(entries[i].account_type).trim().toUpperCase() === 'ASSET') {
+            return true;
+        }
+    }
+    return false;
+}
+
 function buildVendorPayloads(payment, vendorRow, entries, context, accountingDate) {
     var result = [];
     var apLines = [];
@@ -403,7 +417,8 @@ function buildAccountingInformationRow(payment, item, createdTime) {
         data: JSON.stringify(item.payload), status: STATUS_CREATED, message: '', response: '',
         'transaction.id': '', 'ref.id': '', 'ap.code': '', 'batch.name': '',
         'created.time': createdTime, 'checked.time': null,
-        amount: item.amount, 'contract.id': payment.contract_id
+        amount: item.amount, 'contract.id': payment.contract_id,
+        'has.payable': item.hasPayable === true
     };
 }
 

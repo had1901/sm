@@ -442,8 +442,46 @@ function getTabThongTinPheDuyet(endpoint, input, extraData) {
 }
 
 
+/** Debug: in process.id của hợp đồng (esdHDcontract) gắn với phiếu đang mở. Không chặn mở phiếu khi lỗi.
+ * Gọi được không tham số từ Display Screen esdHTKTpayment, Initialization Expressions:
+ *   $L.void=jscall("ESD_HTKT_PAYMENT_VIEW.printPaymentContractProcessId")
+ * Trả về process.id (chuỗi rỗng nếu không đọc được).
+ */
+function printPaymentContractProcessId(paymentId, contractId) {
+    var contractFile;
+    var processId = "";
+    try {
+        var formRecord = vars["$L.file"];
+        if (!paymentId && formRecord) paymentId = formRecord["id"];
+        if (!contractId && formRecord) contractId = formRecord["contract.id"];
+        // $L.file chưa là phiếu thanh toán (VD init của màn khác): bỏ qua, không in "undefined".
+        if (!paymentId) return processId;
+        contractId = String(contractId || "").trim();
+        if (!contractId) {
+            print("[HTKT_PAYMENT_VIEW] Phiếu " + paymentId + ": không có contract.id");
+            return;
+        }
+        contractFile = new SCFile("esdHDcontract", SCFILE_READONLY);
+        var rc = contractFile.doSelect("id=\"" + String(contractId).replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"");
+        if (rc == RC_SUCCESS) {
+            processId = String(contractFile["process.id"] === null || contractFile["process.id"] === undefined ? "" : contractFile["process.id"]);
+            print("[HTKT_PAYMENT_VIEW] Phiếu " + paymentId + " | contract.id=" + contractId +
+                " | esdHDcontract.process.id=" + processId);
+        } else {
+            print("[HTKT_PAYMENT_VIEW] Phiếu " + paymentId + ": không tìm thấy esdHDcontract id=" + contractId + " (RC=" + rc + ")");
+        }
+    } catch (e) {
+        print("[HTKT_PAYMENT_VIEW] Lỗi đọc esdHDcontract.process.id: " + e);
+    } finally {
+        try { if (contractFile) contractFile.doClose(); } catch (eClose) { }
+    }
+    return processId;
+}
+
 function getTabThongTinDeNghi(endpoint, input, extraData) {
     var currentRecord = extraData;
+    var debugContractProcessId = vars.$L_file
+        ? printPaymentContractProcessId(vars.$L_file["id"], vars.$L_file["contract.id"]) : "";
 
     if (!currentRecord || (Array.isArray(currentRecord) && currentRecord.length === 0) || (typeof currentRecord === 'object' && Object.keys(currentRecord).length === 0)) {
         if (vars.$L_file) {
@@ -492,6 +530,8 @@ function getTabThongTinDeNghi(endpoint, input, extraData) {
 
     currentRecord = currentRecord || {};
     currentRecord.isFromHK = String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
+    // Debug: xem được trong DevTools (initData của trang Next) khi print không hiện trong chuông.
+    currentRecord.debugContractProcessId = debugContractProcessId;
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('HachToanKeToan/ThanhToan/TabThongTinDeNghi', '', currentRecord);
 }
 
