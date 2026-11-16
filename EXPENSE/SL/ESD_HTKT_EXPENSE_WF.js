@@ -6,8 +6,8 @@
  * - validateFromCbDmmsToCbKttc: kiểm tra dữ liệu tại bước cán bộ ĐMMS.
  * - validateFromCbKttc: kiểm tra hạch toán, hóa đơn và thông tin phê duyệt tại bước KTTC.
  *
- * Dự chi không kiểm tra phương thức thanh toán, không đối chiếu số tiền hoàn ứng
- * và không đối chiếu phương thức thanh toán giữa các nhà cung cấp.
+ * Dự chi không kiểm tra phương thức thanh toán giữa các nhà cung cấp.
+ * Số tiền hoàn ứng được đối chiếu độc lập theo từng món dự chi qua payment.vendor.id.
  */
 /* =============================================================================
  * 4. TẦNG VALIDATION NGHIỆP VỤ (BUSINESS VALIDATIONS)
@@ -159,6 +159,17 @@ function validateFromCbKttc() {
                 "Hóa đơn bắt buộc chọn loại khấu trừ"
         );
     }
+
+    // Mỗi phiếu có thể có nhiều món, kể cả nhiều món cùng NCC. Vì vậy phải
+    // đối chiếu refund.amount theo payment.vendor.id, không được gom theo vendor.id.
+    var refundMatchResult = validateAllExpenseItemsRefundMatch(paymentId);
+    if (refundMatchResult.success !== true) {
+        errorMss.push(
+                refundMatchResult.error ||
+                "Số tiền hoàn ứng lần này của món dự chi không khớp với bút toán hoàn ứng."
+        );
+    }
+
     // Validate thông tin phê duyệt
     if (!record["user.approver.kttc"]) {
         errorMss.push("Chưa chọn cán bộ Phê duyệt KTTC");
@@ -267,6 +278,145 @@ function validateRequiredEsdHTKTpaymentEntry(paymentId) {
     } finally {
         try { f.doClose(); } catch (e) {}
     }
+}
+
+/**
+ * Đối chiếu số tiền hoàn ứng của tất cả món Dự chi với các bút toán PREPAYMENT.
+ *
+ * Khóa đối chiếu bắt buộc là:
+ *   payment.id + payment.vendor.id (id của esdHTKTpaymentVendor)
+ *
+ * Không dùng vendor.id vì một phiếu có thể có nhiều món của cùng một NCC.
+ */
+function validateAllExpenseItemsRefundMatch(paymentId) {
+    var safePaymentId = String(paymentId || "").trim();
+    if (!safePaymentId) {
+        return { success: false, error: "Thiếu mã phiếu để kiểm tra hoàn ứng." };
+    }
+
+    var itemFile = null;
+    var entryFile = null;
+    var itemMap = {};
+    var itemOrder = [];
+    var errors = [];
+    var mismatchedItemIds = [];
+
+    try {
+        itemFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+        var itemQuery = 'payment.id="' + escapeExpenseWorkflowQueryValue(safePaymentId) + '"';
+        var itemRc = itemFile.doSelect(itemQuery);
+
+        while (itemRc == RC_SUCCESS) {
+            var paymentVendorId = String(itemFile["id"] || itemFile["internal.ref.id"] || "").trim();
+            var refundAmount = parseExpenseWorkflowMoney(itemFile["refund.amount"], true);
+
+            if (!paymentVendorId) {
+                errors.push("Có món Dự chi thiếu mã định danh.");
+            } else if (itemMap[paymentVendorId]) {
+                errors.push("Trùng mã món Dự chi " + paymentVendorId + ".");
+            } else {
+                itemMap[paymentVendorId] = {
+                    id: paymentVendorId,
+                    headerRefundAmount: refundAmount,
+                    entryRefundAmount: 0
+                };
+                itemOrder.push(paymentVendorId);
+                if (!isFinite(refundAmount) || refundAmount < 0) {
+                    errors.push(
+                        "Món " + paymentVendorId + ": Số hoàn ứng không hợp lệ."
+                );
+                }
+            }
+
+            itemRc = itemFile.getNext();
+        }
+
+        if (itemRc != RC_NO_MORE) {
+            return {
+                success: false,
+                error: "Không đọc được danh sách món Dự chi. Code: " + itemRc
+            };
+        }
+
+        entryFile = new SCFile("esdHTKTpaymentEntry", SCFILE_READONLY);
+        var entryQuery = 'payment.id="' + escapeExpenseWorkflowQueryValue(safePaymentId) +
+                '" and entry.type="PREPAYMENT"';
+        var entryRc = entryFile.doSelect(entryQuery);
+
+        while (entryRc == RC_SUCCESS) {
+            var entryId = String(entryFile["id"] || "").trim();
+            var entryPaymentVendorId = String(entryFile["payment.vendor.id"] || "").trim();
+            var entryAmount = parseExpenseWorkflowMoney(entryFile["amount"], false);
+            var entryLabel = entryId ? "Bút toán hoàn ứng " + entryId : "Bút toán hoàn ứng";
+
+            if (!entryPaymentVendorId) {
+                errors.push(entryLabel + ": Thiếu mã món Dự chi.");
+            } else if (!itemMap[entryPaymentVendorId]) {
+                errors.push(
+                        entryLabel + ": Món " + entryPaymentVendorId + " không thuộc phiếu."
+                );
+            } else if (!isFinite(entryAmount) || entryAmount < 0) {
+                errors.push(entryLabel + " có số tiền không hợp lệ.");
+            } else {
+                itemMap[entryPaymentVendorId].entryRefundAmount += entryAmount;
+            }
+
+            entryRc = entryFile.getNext();
+        }
+
+        if (entryRc != RC_NO_MORE) {
+            return {
+                success: false,
+                error: "Không đọc được bút toán hoàn ứng. Code: " + entryRc
+            };
+        }
+
+        for (var i = 0; i < itemOrder.length; i++) {
+            var item = itemMap[itemOrder[i]];
+            if (!isFinite(item.headerRefundAmount) || item.headerRefundAmount < 0) continue;
+
+            var headerAmountForCompare = Math.round(item.headerRefundAmount * 100000);
+            var entryAmountForCompare = Math.round(item.entryRefundAmount * 100000);
+            if (headerAmountForCompare !== entryAmountForCompare) {
+                mismatchedItemIds.push(item.id);
+            }
+        }
+
+        if (mismatchedItemIds.length > 0) {
+            errors.push(
+                    (mismatchedItemIds.length === 1 ? "Món dự chi " : "Các món dự chi ") +
+                    mismatchedItemIds.join(", ") +
+                    ": Số tiền hoàn ứng tại tab Công nợ không khớp với số tiền hoàn ứng lần này."
+            );
+        }
+
+        return errors.length > 0
+                ? { success: false, error: errors.join("\n") }
+                : { success: true };
+    } catch (error) {
+        return {
+            success: false,
+            error: "Lỗi kiểm tra hoàn ứng: " + String(error.message || error)
+        };
+    } finally {
+        try { if (itemFile) itemFile.doClose(); } catch (closeItemError) {}
+        try { if (entryFile) entryFile.doClose(); } catch (closeEntryError) {}
+    }
+}
+
+function parseExpenseWorkflowMoney(value, emptyAsZero) {
+    if (value === null || value === undefined || String(value).trim() === "") {
+        return emptyAsZero ? 0 : NaN;
+    }
+    var normalized = String(value).replace(/,/g, "").trim();
+    if (!normalized) return emptyAsZero ? 0 : NaN;
+    return Number(normalized);
+}
+
+function escapeExpenseWorkflowQueryValue(value) {
+    return String(value || "")
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"');
 }
 
 function validateRequiredEsdHTKTpaymentInvoice(paymentId) {
@@ -716,7 +866,7 @@ function prepareApprovalForSignature(record) {
             }
             return documentResult || htktWfFail("DOCUMENT_NOT_FOUND", "Không tìm thấy bản trình ký Dự chi.");
         }
-        
+
         var document = documentResult.data;
         var status = String(document && document.status || "").trim().toUpperCase();
         if (!document || !document.id || !document.ecmObjectId || status !== "CURRENT") {
@@ -797,6 +947,19 @@ function updateNextStatus(record, previousRecord) {
     // function. Tạm ứng SIT uses oldrecord to detect the phase being left.
     if (!previousRecord && typeof oldrecord !== "undefined") previousRecord = oldrecord;
     var oldPhase = previousRecord && htktWfPhase(previousRecord) || phase;
+
+    // Chặn cả các process gọi trực tiếp hàm chuyển bước, trước mọi thay đổi trạng thái,
+    // sinh bản trình ký và ghi lịch sử. Throw để Process Definition không bỏ qua lỗi.
+    if (oldPhase === HTKT_WF_PHASE.INITIAL_DMMS || oldPhase === HTKT_WF_PHASE.INITIAL_KTTC) {
+        var invoiceErrors = validateInvoices(String(record["id"] || record.id || ""));
+        if (invoiceErrors && invoiceErrors.length > 0) {
+            var invoiceErrorMessage = invoiceErrors.join("\n");
+            vars.$G_hasError = true;
+            vars.$G_errMsg = invoiceErrorMessage;
+            throw new Error(invoiceErrorMessage);
+        }
+    }
+
     var nextStatus = HTKT_EXPENSE_NEXT_STATUS[phase];
     if (!expenseId || !nextStatus) {
         return htktWfFail("INVALID_WORKFLOW_PHASE", "Phiếu Dự chi không ở bước xử lý được hỗ trợ.");

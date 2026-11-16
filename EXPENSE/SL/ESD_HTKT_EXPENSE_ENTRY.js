@@ -396,32 +396,29 @@ function getListExpenseEntry(details) {
         return generatedResult;
     }
 
-    // Những lần sau: DB đã có bút toán -> Dọn dẹp dòng rác (nếu có) và sinh từng thằng 1 khi có thay đổi
+    // Những lần sau: DB đã có bút toán -> Dọn dẹp dòng rác (nếu có) và chỉ sinh lại cho món chưa có hoặc bị lệch cân đối Nợ/Có
     deleteJunkExpenseEntries(expenseId);
     savedEntries = getSavedExpenseEntries(expenseId);
 
     var needsUpdate = false;
     var savedVendorMap = {};
-    var savedTaxMap = {};
-    var savedTaxAmountMap = {};
-    var savedCostAmountMap = {};
-    var savedPayableAmountMap = {};
+    var savedDebitAmountMap = {};
+    var savedCreditAmountMap = {};
     var savedPrepaymentMap = {};
     for (var sIdx = 0; sIdx < savedEntries.length; sIdx++) {
         var sRow = savedEntries[sIdx];
         var savedPaymentVendorId = getEntryPaymentVendorId(sRow);
         if (savedPaymentVendorId) {
             savedVendorMap[savedPaymentVendorId] = true;
-            var sEntryType = normalizeEntryType(sRow.entry_type);
-            if (sEntryType === ENTRY_TYPE.TAX) {
-                savedTaxMap[savedPaymentVendorId] = true;
-                savedTaxAmountMap[savedPaymentVendorId] = (savedTaxAmountMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
-            } else if (sEntryType === ENTRY_TYPE.COST) {
-                savedCostAmountMap[savedPaymentVendorId] = (savedCostAmountMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
-            } else if (sEntryType === ENTRY_TYPE.PAYABLE && !getEntryReferenceId(sRow)) {
-                savedPayableAmountMap[savedPaymentVendorId] = (savedPayableAmountMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
-            } else if (sEntryType === ENTRY_TYPE.PREPAYMENT) {
-                savedPrepaymentMap[savedPaymentVendorId] = (savedPrepaymentMap[savedPaymentVendorId] || 0) + toNumber(sRow.amount);
+            var sAccountSide = getAccountingSide(sRow.account_type);
+            var sAmount = toNumber(sRow.amount);
+            if (sAccountSide === 'debit') {
+                savedDebitAmountMap[savedPaymentVendorId] = (savedDebitAmountMap[savedPaymentVendorId] || 0) + sAmount;
+            } else if (sAccountSide === 'credit') {
+                savedCreditAmountMap[savedPaymentVendorId] = (savedCreditAmountMap[savedPaymentVendorId] || 0) + sAmount;
+            }
+            if (normalizeEntryType(sRow.entry_type) === ENTRY_TYPE.PREPAYMENT) {
+                savedPrepaymentMap[savedPaymentVendorId] = (savedPrepaymentMap[savedPaymentVendorId] || 0) + sAmount;
             }
         }
     }
@@ -443,19 +440,12 @@ function getListExpenseEntry(details) {
             continue;
         }
 
-        var taxInfo = getExpenseInvoiceTaxInfo(expenseId, vItem, targetVendors.length);
-        var currentHasTax = taxInfo.hasDeductibleTax && taxInfo.totalDeductibleTax > 0;
-        var savedHasTax = !!savedTaxMap[pVendorId];
-        var expectedTax = currentHasTax ? taxInfo.totalDeductibleTax : 0;
-        var expectedCost = Math.max(0, toNumber(vItem.amount) + selectedRefund - expectedTax);
-        var expectedPayable = Math.max(0, toNumber(vItem.amount));
-        var coreAmountChanged =
-                Math.abs((savedTaxAmountMap[pVendorId] || 0) - expectedTax) > MONEY_EPSILON ||
-                Math.abs((savedCostAmountMap[pVendorId] || 0) - expectedCost) > MONEY_EPSILON ||
-                Math.abs((savedPayableAmountMap[pVendorId] || 0) - expectedPayable) > MONEY_EPSILON;
+        // Giữ nguyên các dòng tự sinh đã được KTTC chỉnh sửa và lưu cân đối; chỉ sinh lại khi món chưa có dòng hoặc bị lệch Nợ/Có (vd: sau chọn hoàn ứng).
+        var vendorDebit = savedDebitAmountMap[pVendorId] || 0;
+        var vendorCredit = savedCreditAmountMap[pVendorId] || 0;
+        var isVendorUnbalanced = Math.abs(vendorDebit - vendorCredit) > MONEY_EPSILON;
 
-        // Món chưa đủ dòng lõi, thuế thay đổi hoặc số tiền lõi lệch với các khoản hoàn ứng đã chọn -> sinh lại đúng món đó.
-        if (!savedVendorMap[pVendorId] || currentHasTax !== savedHasTax || coreAmountChanged) {
+        if (!savedVendorMap[pVendorId] || isVendorUnbalanced) {
             if (!isGenerationPhaseLocked(currentPhase)) {
                 syncExpenseEntryForSingleVendor(expenseId, pVendorId);
                 needsUpdate = true;
@@ -836,7 +826,7 @@ function syncExpenseEntryForSingleVendor(expenseId, paymentVendorId) {
 function syncExpenseEntryNowByInputDetails(details) {
     var expenseId = safeString(details.expenseId || details.paymentId || details.id).trim();
     var paymentVendorId = safeString(
-        details.paymentVendorId || details.payment_vendor_id || details['payment.vendor.id']
+            details.paymentVendorId || details.payment_vendor_id || details['payment.vendor.id']
     ).trim();
 
     debugExpenseEntry(
@@ -2218,25 +2208,45 @@ function getExpenseEntryFields() {
 }
 
 function mergeEditableAutoEntryFields(savedEntries, expectedEntries) {
-    var savedMap = {};
+    var savedExactMap = {};
+    var savedBaseMap = {};
+    var usedSavedIndices = {};
     var result = [];
 
     for (var i = 0; i < savedEntries.length; i++) {
         var saved = savedEntries[i];
         if (!isAutoEntry(saved)) continue;
 
-        var savedEntryKey = makeAutoEntryMatchKey(saved);
-        if (!savedEntryKey) continue;
+        var exactKey = makeAutoEntryMatchKey(saved);
+        if (exactKey) {
+            if (!savedExactMap[exactKey]) savedExactMap[exactKey] = [];
+            savedExactMap[exactKey].push(i);
+        }
 
-        if (!savedMap[savedEntryKey]) savedMap[savedEntryKey] = [];
-        savedMap[savedEntryKey].push(saved);
+        var baseKey = makeAutoEntryBaseMatchKey(saved);
+        if (baseKey) {
+            if (!savedBaseMap[baseKey]) savedBaseMap[baseKey] = [];
+            savedBaseMap[baseKey].push(i);
+        }
+    }
+
+    function popUnusedMatch(indexList) {
+        if (!indexList) return null;
+        while (indexList.length > 0) {
+            var idx = indexList.shift();
+            if (!usedSavedIndices[idx]) {
+                usedSavedIndices[idx] = true;
+                return savedEntries[idx];
+            }
+        }
+        return null;
     }
 
     for (var j = 0; j < expectedEntries.length; j++) {
         var expected = copyObject({}, expectedEntries[j]);
-        var expectedEntryKey = makeAutoEntryMatchKey(expected);
-        var matches = savedMap[expectedEntryKey] || [];
-        var matched = matches.length > 0 ? matches.shift() : null;
+        var expectedExactKey = makeAutoEntryMatchKey(expected);
+        var expectedBaseKey = makeAutoEntryBaseMatchKey(expected);
+        var matched = popUnusedMatch(savedExactMap[expectedExactKey]) || popUnusedMatch(savedBaseMap[expectedBaseKey]);
 
         if (matched) {
             expected.id = safeString(matched.id);
@@ -2253,7 +2263,7 @@ function mergeEditableAutoEntryFields(savedEntries, expectedEntries) {
                     expected.account_name =
                             savedAccountNumber === generatedAccountNumber
                                     ? expected.account_name
-                                    : getGlAccountName(savedAccountNumber);
+                                    : (getGlAccountName(savedAccountNumber) || safeString(matched.account_name).trim());
                 }
             }
         }
@@ -2264,7 +2274,7 @@ function mergeEditableAutoEntryFields(savedEntries, expectedEntries) {
     return result;
 }
 
-function makeAutoEntryMatchKey(row) {
+function makeAutoEntryBaseMatchKey(row) {
     var entryType = normalizeEntryType(row.entry_type);
     if (!entryType) return '';
 
@@ -2273,19 +2283,27 @@ function makeAutoEntryMatchKey(row) {
     if (entryType === ENTRY_TYPE.PREPAYMENT || entryType === ENTRY_TYPE.PAYABLE) {
         key += '|ref|' + getEntryReferenceId(row);
     }
-    if (entryType === ENTRY_TYPE.TAX) {
+    return key;
+}
+
+function makeAutoEntryMatchKey(row) {
+    var key = makeAutoEntryBaseMatchKey(row);
+    if (!key) return '';
+
+    if (normalizeEntryType(row.entry_type) === ENTRY_TYPE.TAX) {
         key += '|' + safeString(row.account_number).trim();
     }
     return key;
 }
 
 function isEditableDebitAccountEntry(row) {
-    return normalizeEntryType(row.entry_type) === ENTRY_TYPE.COST;
+    var type = normalizeEntryType(row.entry_type);
+    return type === ENTRY_TYPE.COST || type === ENTRY_TYPE.TAX || type === ENTRY_TYPE.OTHER;
 }
 
 function isEditableCreditAccountEntry(row) {
     var type = normalizeEntryType(row.entry_type);
-    return type === ENTRY_TYPE.PAYABLE || type === ENTRY_TYPE.PREPAYMENT;
+    return type === ENTRY_TYPE.PAYABLE || type === ENTRY_TYPE.PREPAYMENT || type === ENTRY_TYPE.OTHER;
 }
 
 function replaceAutoExpenseEntries(expenseId, rows) {
@@ -2817,7 +2835,7 @@ function safeString(value) {
 function getEntryPaymentVendorId(row) {
     if (!row) return '';
     return safeString(
-        row.payment_vendor_id || row.paymentVendorId || row['payment.vendor.id']
+            row.payment_vendor_id || row.paymentVendorId || row['payment.vendor.id']
     ).trim();
 }
 
@@ -3074,10 +3092,43 @@ function normalizeEditedEntries(expenseId, entries, savedEntries) {
     }
 
     for (var i = 0; i < entries.length; i++) {
-        var row = normalizeEditedEntry(entries[i]);
+        var raw = entries[i] || {};
+        var row = normalizeEditedEntry(raw);
         var savedRow = savedById[row.id];
-        if (!row.contract_id && savedRow) {
-            row.contract_id = safeString(savedRow.contract_id || savedRow['contract.id']).trim();
+
+        if (savedRow) {
+            if (!row.contract_id) {
+                row.contract_id = safeString(savedRow.contract_id || savedRow['contract.id']).trim();
+            }
+            if (!row.branch) {
+                row.branch = safeString(savedRow.branch).trim();
+            }
+            if (!row.department) {
+                row.department = safeString(savedRow.department).trim();
+            }
+            if (!row.transaction_office) {
+                row.transaction_office = safeString(savedRow.transaction_office || savedRow['transaction.code']).trim();
+            }
+            if (!row.vendor_id) {
+                row.vendor_id = safeString(savedRow.vendor_id || savedRow['vendor.id']).trim();
+            }
+            if (!row.payment_vendor_id) {
+                row.payment_vendor_id = getEntryPaymentVendorId(savedRow);
+            }
+            if (!row.ap_code && raw.ap_code === undefined && raw['ap.code'] === undefined) {
+                row.ap_code = safeString(savedRow.ap_code || savedRow['ap.code']).trim();
+            }
+            if (!row.accounting_request_id && raw.accounting_request_id === undefined && raw['accounting.request.id'] === undefined) {
+                row.accounting_request_id = safeString(savedRow.accounting_request_id || savedRow['accounting.request.id']).trim();
+            }
+            if (!row.ref_id && raw.ref_id === undefined && raw.refId === undefined && raw['ref.id'] === undefined) {
+                row.ref_id = getEntryReferenceId(savedRow);
+            }
+        }
+
+        row.branch = formatSegment1(row.branch, GL_DEFAULT_ENTITY_CODE);
+        if (row.account_number && !row.account_name) {
+            row.account_name = getGlAccountName(row.account_number);
         }
 
         if (!savedIds[row.id] || usedIds[row.id]) {
@@ -3104,28 +3155,28 @@ function normalizeEditedEntries(expenseId, entries, savedEntries) {
 function normalizeEditedEntry(raw) {
     return {
         id: safeString(raw.id).trim(),
-        payment_id: safeString(raw.payment_id || raw.expense_id).trim(),
+        payment_id: safeString(raw.payment_id || raw.expense_id || raw['payment.id']).trim(),
         contract_id: safeString(raw.contract_id || raw['contract.id']).trim(),
-        entry_type: normalizeEntryType(raw.entry_type),
+        entry_type: normalizeEntryType(raw.entry_type || raw['entry.type']),
         ledger_type: LEDGER_TYPE.STANDARD,
-        account_type: toStoredAccountType(raw.account_type),
-        account_number: safeString(raw.account_number).trim(),
-        account_name: safeString(raw.account_name).trim(),
-        branch: formatSegment1(raw.branch, GL_DEFAULT_ENTITY_CODE),
+        account_type: toStoredAccountType(raw.account_type || raw['account.type']),
+        account_number: safeString(raw.account_number || raw['account.number']).trim(),
+        account_name: safeString(raw.account_name || raw['account.name']).trim(),
+        branch: safeString(raw.branch).trim(),
         department: safeString(raw.department).trim(),
-        transaction_office: safeString(raw.transaction_office).trim(),
+        transaction_office: safeString(raw.transaction_office || raw['transaction.code']).trim(),
         amount: toNumber(raw.amount),
         currency: safeString(raw.currency).trim(),
         description: safeString(raw.description).trim(),
-        vendor_id: safeString(raw.vendor_id).trim(),
+        vendor_id: safeString(raw.vendor_id || raw['vendor.id']).trim(),
         payment_vendor_id: safeString(
-            raw.payment_vendor_id || raw.paymentVendorId || raw['payment.vendor.id']
+                raw.payment_vendor_id || raw.paymentVendorId || raw['payment.vendor.id']
         ).trim(),
         type: TYPE.AP,
         order: toNumber(raw.order),
-        ref_id: safeString(raw.ref_id).trim(),
-        ap_code: safeString(raw.ap_code).trim(),
-        accounting_request_id: safeString(raw.accounting_request_id).trim()
+        ref_id: safeString(raw.ref_id || raw.refId || raw['ref.id']).trim(),
+        ap_code: safeString(raw.ap_code || raw['ap.code']).trim(),
+        accounting_request_id: safeString(raw.accounting_request_id || raw['accounting.request.id']).trim()
     };
 }
 

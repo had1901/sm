@@ -130,6 +130,64 @@ function createListInvoinVendor(input) {
             };
         }
 
+        var vendorContractId = normalizeExpenseVendorValue(vendorFile["contract.id"]);
+        if (vendorContractId) {
+            var existingLinkedAmount = "0";
+            var linkedSumFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
+            try {
+                var linkedSumSql = 'SELECT i.grand.total FROM esdHTKTinvoice i ' +
+                        'JOIN esdHTKTpaymentInvoice pi ON (pi.invoice.id = i.id) ' +
+                        'WHERE pi.ref.id="' + escapeExpenseVendorQueryValue(paymentVendorId) + '"';
+                var linkedSumRc = linkedSumFile.doSelect(linkedSumSql);
+                while (linkedSumRc === RC_SUCCESS) {
+                    existingLinkedAmount = addExpenseMoney(
+                            existingLinkedAmount,
+                            linkedSumFile["grand.total"] || linkedSumFile[0] || "0"
+                    );
+                    linkedSumRc = linkedSumFile.getNext();
+                }
+            } finally {
+                closeExpenseVendorFile(linkedSumFile);
+            }
+
+            var incomingAmount = "0";
+            var seenIncomingIds = {};
+            for (var rIdx = 0; rIdx < rows.length; rIdx++) {
+                var incomingInv = rows[rIdx] || {};
+                var incomingId = normalizeExpenseVendorValue(incomingInv.id || incomingInv.invoiceId);
+                if (!incomingId || seenIncomingIds[incomingId]) continue;
+                seenIncomingIds[incomingId] = true;
+
+                var invCheckFile = new SCFile("esdHTKTinvoice", SCFILE_READONLY);
+                try {
+                    invCheckFile.setFields(["grand.total"]);
+                    if (invCheckFile.doSelect('id="' + escapeExpenseVendorQueryValue(incomingId) + '"') === RC_SUCCESS) {
+                        incomingAmount = addExpenseMoney(incomingAmount, invCheckFile["grand.total"] || "0");
+                    } else {
+                        incomingAmount = addExpenseMoney(incomingAmount, incomingInv.grandTotal || incomingInv["grand.total"] || "0");
+                    }
+                } finally {
+                    closeExpenseVendorFile(invCheckFile);
+                }
+            }
+
+            var projectedItemAmount = addExpenseMoney(existingLinkedAmount, incomingAmount);
+            var invoiceRemainingErr = validateExpenseContractRemainingAmount({
+                paymentId: paymentId,
+                contractId: vendorContractId,
+                amount: projectedItemAmount,
+                excludeItemId: paymentVendorId,
+                currentUser: normalizeExpenseVendorValue(params.currentUser)
+            });
+            if (invoiceRemainingErr) {
+                return {
+                    success: false,
+                    message: invoiceRemainingErr,
+                    checkStatus: []
+                };
+            }
+        }
+
         var successInvoiceIds = [];
         var checkStatusList = [];
 
@@ -201,10 +259,13 @@ function createListInvoinVendor(input) {
                             relationFile["ref.id"] = paymentVendorId;
 
                             var totalTax = Number(invoice.totalTax || 0);
-                            relationFile["deduction.type"] = totalTax > 0 ? "KHAUTRU_001" : "KHAUTRU_003";
+                            var deductionType = totalTax > 0 ? "KHAUTRU_001" : "KHAUTRU_003";
+                            relationFile["deduction.type"] = deductionType;
 
                             var insertRc = relationFile.doInsert();
                             if (insertRc === true || insertRc === RC_SUCCESS) {
+                                invoiceFile["deduction.type"] = deductionType;
+                                invoiceFile.doUpdate();
                                 successInvoiceIds.push(invoiceId);
                             } else {
                                 warningMsg = "Không thể lưu liên kết hóa đơn. Code: " + insertRc;
@@ -1161,6 +1222,210 @@ function calculateContractRemainingValue(contractId) {
     return null;
 }
 
+function normalizeExpenseMoneyString(value) {
+    var text = String(value == null ? "" : value).replace(/,/g, "").trim();
+    if (!text) return "0";
+    var num = Number(text);
+    if (!isFinite(num)) return "0";
+    return text;
+}
+
+function addExpenseMoney(a, b) {
+    var left = normalizeExpenseMoneyString(a);
+    var right = normalizeExpenseMoneyString(b);
+    if (typeof lib !== "undefined" && lib.ESD_HTKT_Utils && typeof lib.ESD_HTKT_Utils.addStringsManual === "function") {
+        return lib.ESD_HTKT_Utils.addStringsManual(left, right);
+    }
+    return String(Number(left) + Number(right));
+}
+
+function compareExpenseMoney(a, b) {
+    var left = normalizeExpenseMoneyString(a);
+    var right = normalizeExpenseMoneyString(b);
+    if (typeof lib !== "undefined" && lib.ESD_HTKT_Utils && typeof lib.ESD_HTKT_Utils.compareMoneyStrings === "function") {
+        return lib.ESD_HTKT_Utils.compareMoneyStrings(left, right);
+    }
+    var diff = Number(left) - Number(right);
+    if (Math.abs(diff) <= 0.000001) return 0;
+    return diff > 0 ? 1 : -1;
+}
+
+function formatExpenseMoneyDisplay(value) {
+    var text = normalizeExpenseMoneyString(value);
+    var parts = text.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return parts.length > 1 && Number(parts[1]) !== 0 ? parts[0] + "." + parts[1] : parts[0];
+}
+
+function getExpensePaymentCategoryForValidation(paymentId) {
+    var safePaymentId = normalizeExpenseVendorValue(paymentId);
+    if (!safePaymentId) return "HHDV";
+    var paymentFile = null;
+    try {
+        paymentFile = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        paymentFile.setFields(["original.contract.category"]);
+        if (paymentFile.doSelect('id="' + escapeExpenseVendorQueryValue(safePaymentId) + '"') === RC_SUCCESS) {
+            return normalizeExpenseVendorValue(paymentFile["original.contract.category"]).toUpperCase() || "HHDV";
+        }
+    } catch (e) {
+    } finally {
+        closeExpenseVendorFile(paymentFile);
+    }
+    return "HHDV";
+}
+
+/**
+ * Lấy giá trị còn lại tối đa của hợp đồng phục vụ validate số tiền dự chi.
+ * - Với HHDV: đọc remaining.amount từ esdHDcontract; nếu null/rỗng (HĐ chưa thực hiện)
+ *   thì lấy theo tổng giá trị hợp đồng (total.budget với KMS, contract.value.after.tax/total.contract.value với HĐ).
+ * - Với XDCB: đọc remainingAmount từ contract đã truyền hoặc listExpenseXdcbContracts.
+ * Trả về chuỗi số (>= 0) hoặc null nếu không xác định được.
+ */
+function getExpenseContractRemainingLimit(contractId, paymentId, currentUser, xdcbContract, contractCategory) {
+    var safeContractId = normalizeExpenseVendorValue(contractId);
+    if (!safeContractId) return null;
+
+    var category = normalizeExpenseVendorValue(contractCategory).toUpperCase() ||
+            getExpensePaymentCategoryForValidation(paymentId);
+
+    if (category === "XDCB") {
+        var xdcbItem = xdcbContract || null;
+        if (!xdcbItem && currentUser && typeof lib !== "undefined" && lib.ESD_HTKT_EXPENSE_CONTRACT &&
+                typeof lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseXdcbContracts === "function") {
+            try {
+                var xdcbRes = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseXdcbContracts({
+                    details: {
+                        currentUser: currentUser,
+                        paymentId: normalizeExpenseVendorValue(paymentId),
+                        contractId: safeContractId,
+                        start: 1,
+                        count: 2
+                    }
+                });
+                if (xdcbRes && xdcbRes.success === true && xdcbRes.data && xdcbRes.data.length > 0 &&
+                        normalizeExpenseVendorValue(xdcbRes.data[0].id) === safeContractId) {
+                    xdcbItem = xdcbRes.data[0];
+                }
+            } catch (ignoreXdcb) {}
+        }
+        if (xdcbItem && xdcbItem.remainingAmount !== null && xdcbItem.remainingAmount !== undefined) {
+            var rawXdcbRem = String(xdcbItem.remainingAmount).replace(/,/g, "").trim();
+            if (rawXdcbRem !== "" && isFinite(Number(rawXdcbRem))) {
+                return Number(rawXdcbRem) > 0 ? rawXdcbRem : "0";
+            }
+        }
+        return null;
+    }
+
+    var contractFile = null;
+    try {
+        contractFile = new SCFile("esdHDcontract", SCFILE_READONLY);
+        contractFile.setFields([
+            "remaining.amount",
+            "category",
+            "total.budget",
+            "contract.value.after.tax",
+            "total.contract.value"
+        ]);
+        if (contractFile.doSelect('id="' + escapeExpenseVendorQueryValue(safeContractId) + '"') === RC_SUCCESS) {
+            var remVal = contractFile["remaining.amount"];
+            var remStr = remVal !== null && remVal !== undefined ? String(remVal).replace(/,/g, "").trim() : "";
+            if (remStr !== "" && isFinite(Number(remStr))) {
+                return Number(remStr) > 0 ? remStr : "0";
+            }
+
+            var hdCategory = normalizeExpenseVendorValue(contractFile["category"]);
+            var fallbackVal = (hdCategory === "HD_KMS" || hdCategory === "HD_KMS_TTMS")
+                    ? contractFile["total.budget"]
+                    : (contractFile["contract.value.after.tax"] || contractFile["total.contract.value"]);
+            var fallbackStr = fallbackVal !== null && fallbackVal !== undefined ? String(fallbackVal).replace(/,/g, "").trim() : "";
+            if (fallbackStr !== "" && isFinite(Number(fallbackStr))) {
+                return Number(fallbackStr) > 0 ? fallbackStr : "0";
+            }
+        }
+    } catch (e) {
+    } finally {
+        closeExpenseVendorFile(contractFile);
+    }
+
+    return null;
+}
+
+function getExpenseContractOtherItemsAmount(paymentId, contractId, excludeItemId) {
+    var safePaymentId = normalizeExpenseVendorValue(paymentId);
+    var safeContractId = normalizeExpenseVendorValue(contractId);
+    var safeExcludeId = normalizeExpenseVendorValue(excludeItemId);
+    if (!safePaymentId || !safeContractId) return "0";
+
+    var totalAmount = "0";
+    var pvFile = null;
+    try {
+        pvFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
+        pvFile.setFields(["id", "amount"]);
+        var query = 'payment.id="' + escapeExpenseVendorQueryValue(safePaymentId) +
+                '" and contract.id="' + escapeExpenseVendorQueryValue(safeContractId) + '"';
+        var rc = pvFile.doSelect(query);
+        while (rc === RC_SUCCESS) {
+            var itemId = normalizeExpenseVendorValue(pvFile["id"]);
+            if (!safeExcludeId || itemId !== safeExcludeId) {
+                totalAmount = addExpenseMoney(totalAmount, pvFile["amount"] || "0");
+            }
+            rc = pvFile.getNext();
+        }
+    } catch (e) {
+    } finally {
+        closeExpenseVendorFile(pvFile);
+    }
+    return totalAmount;
+}
+
+/**
+ * Validate tổng số tiền dự chi của hợp đồng (món đang sửa/gắn + các món khác cùng HĐ trên phiếu)
+ * không vượt quá giá trị còn lại của hợp đồng.
+ */
+function validateExpenseContractRemainingAmount(params) {
+    params = params || {};
+    var contractId = normalizeExpenseVendorValue(params.contractId);
+    var amountStr = normalizeExpenseMoneyString(params.amount);
+    if (!contractId || compareExpenseMoney(amountStr, "0") <= 0) {
+        return null;
+    }
+
+    var remainingLimit = getExpenseContractRemainingLimit(
+            contractId,
+            params.paymentId,
+            params.currentUser,
+            params.xdcbContract,
+            params.contractCategory
+    );
+    if (remainingLimit === null) {
+        return null;
+    }
+
+    var otherItemsAmount = getExpenseContractOtherItemsAmount(
+            params.paymentId,
+            contractId,
+            params.excludeItemId
+    );
+    var extraAmount = normalizeExpenseMoneyString(params.extraExistingAmount || "0");
+    var accumulatedOther = addExpenseMoney(otherItemsAmount, extraAmount);
+    var totalContractExpense = addExpenseMoney(accumulatedOther, amountStr);
+
+    if (compareExpenseMoney(totalContractExpense, remainingLimit) > 0) {
+        if (compareExpenseMoney(accumulatedOther, "0") > 0) {
+            return "Tổng số tiền dự chi của hợp đồng " + contractId + " (" +
+                    formatExpenseMoneyDisplay(totalContractExpense) +
+                    ") phải nhỏ hơn hoặc bằng Giá trị còn lại của hợp đồng (" +
+                    formatExpenseMoneyDisplay(remainingLimit) + ").";
+        }
+        return "Số tiền dự chi (" + formatExpenseMoneyDisplay(amountStr) +
+                ") phải nhỏ hơn hoặc bằng Giá trị còn lại của hợp đồng (" +
+                formatExpenseMoneyDisplay(remainingLimit) + ").";
+    }
+
+    return null;
+}
+
 /**
  * Lấy tổng số lượng nhà cung cấp của hợp đồng.
  * Với XDCB: lấy từ danh sách suppliers của selectedContract.
@@ -1599,6 +1864,24 @@ function validateVendorAndPaymentDetails(record) {
         }
     }
 
+    // 3. Kiểm tra số tiền dự chi <= giá trị còn lại của hợp đồng
+    if (!isNaN(amountField) && amountField > 0 && contractId) {
+        var currentActor = "";
+        try {
+            currentActor = normalizeExpenseVendorValue(vars.$lo_operator && vars.$lo_operator["contact.name"]);
+        } catch (ignoreActor) {}
+        var contractRemainingErr = validateExpenseContractRemainingAmount({
+            paymentId: paymentId,
+            contractId: contractId,
+            amount: amountField,
+            excludeItemId: currentItemId,
+            currentUser: currentActor
+        });
+        if (contractRemainingErr) {
+            errorMss.push(contractRemainingErr);
+        }
+    }
+
     // Chặn trùng lặp bộ (contract.id, vendor.id) trong cùng đề nghị dự chi
     if (paymentId && contractId && selectedVendorId) {
         var dupCheckFile = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
@@ -1657,7 +1940,9 @@ function importExpenseVendors(input) {
             try {
                 valid.push(expensePerformanceMeasure(expensePerformance, "row.validate", function() {
                     var validatedRow = expenseImportValidateRow(rows[i], contractParams, cache);
+                    var amountCommit = expenseImportCheckContractRemainingAmount(validatedRow, contractParams, cache);
                     expenseImportCheckContractItemLimit(validatedRow, contractParams, cache);
+                    if (amountCommit) amountCommit();
                     return validatedRow;
                 }));
             }
@@ -1961,6 +2246,50 @@ function expenseImportCheckContractItemLimit(row, params, cache) {
                 "Đã đủ số lượng món Dự chi (" + usedItems + "/" + limit.totalSuppliers + "). Không thể tạo thêm.");
     }
     limit.acceptedRows++;
+}
+
+/** Tổng số tiền dự chi của mỗi HĐ trên phiếu, gồm dòng import hợp lệ, không vượt giá trị còn lại của HĐ. */
+function expenseImportCheckContractRemainingAmount(row, params, cache) {
+    var contractId = normalizeExpenseVendorValue(row.contractId || row.contractCode);
+    var paymentId = normalizeExpenseVendorValue(params.paymentId);
+    var contractField = expenseImportDescribeField("Mã HĐ/KMS", row.contractCode);
+    var key = "$" + JSON.stringify([paymentId, contractId]);
+    cache.contractAmountLimits = cache.contractAmountLimits || {};
+
+    if (!cache.contractAmountLimits[key]) {
+        var xdcbContract = row.contractCategory === "XDCB" ? cache.contracts["$" + row.contractCode] : null;
+        var remainingLimit = getExpenseContractRemainingLimit(
+                contractId,
+                paymentId,
+                params.currentUser,
+                xdcbContract,
+                row.contractCategory
+        );
+        var existingAmount = getExpenseContractOtherItemsAmount(paymentId, contractId, "");
+        cache.contractAmountLimits[key] = {
+            remainingLimit: remainingLimit,
+            existingAmount: existingAmount,
+            acceptedAmount: "0"
+        };
+    }
+
+    var amountLimit = cache.contractAmountLimits[key];
+    if (amountLimit.remainingLimit === null) {
+        return null;
+    }
+
+    var accumulated = addExpenseMoney(amountLimit.existingAmount, amountLimit.acceptedAmount);
+    var nextTotal = addExpenseMoney(accumulated, row.amount);
+    if (compareExpenseMoney(nextTotal, amountLimit.remainingLimit) > 0) {
+        throw new Error(
+                contractField + ": Tổng số tiền dự chi (" + formatExpenseMoneyDisplay(nextTotal) +
+                ") vượt quá giá trị còn lại của hợp đồng (" + formatExpenseMoneyDisplay(amountLimit.remainingLimit) + ")."
+        );
+    }
+
+    return function() {
+        amountLimit.acceptedAmount = addExpenseMoney(amountLimit.acceptedAmount, row.amount);
+    };
 }
 
 /** Validate dữ liệu chung rồi kiểm tra HĐ/NCC theo hạng mục đã lưu trên cha. */

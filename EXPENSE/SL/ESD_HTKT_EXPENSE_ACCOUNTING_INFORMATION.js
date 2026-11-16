@@ -107,14 +107,14 @@ function generatePaymentAccountingInformation(paymentId) {
     var entries = getPaymentEntries(paymentId);
     var prepared = [];
     var accountingDate = dateYmd(new Date());
-    var entryGroups = groupEntriesByRefId(entries);
+    var entryGroups = groupEntriesByPaymentVendorId(entries);
 
     for (var i = 0; i < entryGroups.length; i++) {
         var entryGroup = entryGroups[i];
-        var vendorRow = findVendorByRefId(vendors, entryGroup.refId);
+        var vendorRow = findVendorByPaymentVendorId(vendors, entryGroup.paymentVendorId);
         if (!vendorRow) {
             return errorResult(
-                    'Khong tim thay esdHTKTpaymentVendor id=' + entryGroup.refId +
+                    'Khong tim thay esdHTKTpaymentVendor id=' + entryGroup.paymentVendorId +
                     ' cua de nghi du chi ' + paymentId + '.'
             );
         }
@@ -126,7 +126,7 @@ function generatePaymentAccountingInformation(paymentId) {
         var totalCredit = sumEntryCreditAmounts(entryGroup.entries);
         if (Math.abs(totalDebit - totalCredit) > 0.000001) {
             return errorResult(
-                    'Mon du chi ' + entryGroup.refId +
+                    'Mon du chi ' + entryGroup.paymentVendorId +
                     ': tong ghi no (' + totalDebit +
                     ') khong bang tong ghi co (' + totalCredit + ').'
             );
@@ -137,13 +137,13 @@ function generatePaymentAccountingInformation(paymentId) {
         if (!payloadResults.success) return payloadResults;
         if (payloadResults.data.length !== 1) {
             return errorResult(
-                    'Mon du chi ' + entryGroup.refId +
+                    'Mon du chi ' + entryGroup.paymentVendorId +
                     ' phai sinh dung 1 accounting information, thuc te sinh ' +
                     payloadResults.data.length + '.'
             );
         }
 
-        payloadResults.data[0].sourceRefId = entryGroup.refId;
+        payloadResults.data[0].sourcePaymentVendorId = entryGroup.paymentVendorId;
         prepared.push(payloadResults.data[0]);
     }
 
@@ -185,8 +185,8 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
     var payablePayments = [];
     var customerPaymentAmount = 0;
     var payableDebitAmount = 0;
-    var paymentVendorRefId = entries.length > 0
-            ? safeString(entries[0].ref_id).trim()
+    var paymentVendorId = entries.length > 0
+            ? safeString(entries[0].payment_vendor_id).trim()
             : '';
 
     for (var i = 0; i < entries.length; i++) {
@@ -254,7 +254,7 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
             cashout: context.cashout,
             contractId: vendorRow.contract_id, liabilityAccount: liabilityAccount,
             invoiceLineList: apLines, applyList: applyList,
-            vatList: getVatList(payment.id, paymentVendorRefId)
+            vatList: getVatList(payment.id, paymentVendorId)
         };
         var invoiceValidation = validateInvoicePayload(invoicePayload);
         if (!invoiceValidation.success) return invalidPayload('AP_INVOICE', invoiceValidation, invoicePayload);
@@ -285,35 +285,36 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
 }
 
 /**
- * Dự chi sinh một accounting information cho mỗi ref.id.
- * ref.id của paymentEntry chính là id của esdHTKTpaymentVendor (món Dự chi).
+ * Dự chi sinh một accounting information cho mỗi payment.vendor.id.
+ * payment.vendor.id của paymentEntry là id của esdHTKTpaymentVendor (món Dự chi).
+ * ref.id là mã tham chiếu nghiệp vụ riêng cho hoàn ứng/trả treo, không dùng để gom món.
  */
-function groupEntriesByRefId(entries) {
+function groupEntriesByPaymentVendorId(entries) {
     var groups = {};
     var order = [];
 
     for (var i = 0; i < entries.length; i++) {
-        var refId = safeString(entries[i].ref_id).trim();
-        if (!refId) {
-            throw new Error('Payment entry ' + entries[i].id + ' thieu ref.id.');
+        var paymentVendorId = safeString(entries[i].payment_vendor_id).trim();
+        if (!paymentVendorId) {
+            throw new Error('Payment entry ' + entries[i].id + ' thieu payment.vendor.id.');
         }
-        if (!groups[refId]) {
-            groups[refId] = [];
-            order.push(refId);
+        if (!groups[paymentVendorId]) {
+            groups[paymentVendorId] = [];
+            order.push(paymentVendorId);
         }
-        groups[refId].push(entries[i]);
+        groups[paymentVendorId].push(entries[i]);
     }
 
     var result = [];
     for (var j = 0; j < order.length; j++) {
-        result.push({ refId: order[j], entries: groups[order[j]] });
+        result.push({ paymentVendorId: order[j], entries: groups[order[j]] });
     }
     return result;
 }
 
-function findVendorByRefId(vendors, refId) {
+function findVendorByPaymentVendorId(vendors, paymentVendorId) {
     for (var i = 0; i < vendors.length; i++) {
-        if (safeString(vendors[i].id).trim() === safeString(refId).trim()) {
+        if (safeString(vendors[i].id).trim() === safeString(paymentVendorId).trim()) {
             return vendors[i];
         }
     }
@@ -330,7 +331,7 @@ function buildAccountingInformationRow(payment, item, createdTime) {
         'request.id': item.requestId, 'prepayment.id': payment.id,
         'vendor.id': item.vendorId, type: item.type, 'sub.type': item.subType,
         data: JSON.stringify(item.payload), status: STATUS_CREATED, message: '', response: '',
-        'transaction.id': '', 'ref.id': '', 'internal.ref.id': item.sourceRefId,
+        'transaction.id': '', 'ref.id': '', 'internal.ref.id': item.sourcePaymentVendorId,
         'ap.code': '', 'batch.name': '',
         'created.time': createdTime, 'checked.time': null,
         amount: item.amount, 'contract.id': item.contractId
@@ -564,17 +565,18 @@ function getPaymentEntries(paymentId) {
             department: readText(f, 'department').trim(), transaction_code: readText(f, 'transaction.code').trim(),
             amount: readNumber(f, 'amount'), currency: readText(f, 'currency').trim(), ap_code: readText(f, 'ap.code').trim(),
             description: readText(f, 'description').trim(), vendor_id: readText(f, 'vendor.id').trim(),
+            payment_vendor_id: readText(f, 'payment.vendor.id').trim(),
             type: readText(f, 'type').trim(), order: readNumber(f, 'order'), ref_id: readText(f, 'ref.id').trim() };
     });
     rows.sort(function (a, b) { return toNumber(a.order) - toNumber(b.order); });
     return rows;
 }
 
-function getVatList(paymentId, paymentVendorRefId) {
+function getVatList(paymentId, paymentVendorId) {
     var result = [];
     var links = selectMany(TABLE_PAYMENT_INVOICE,
             'payment.id="' + escapeQueryValue(paymentId) + '" and ref.id="' +
-            escapeQueryValue(paymentVendorRefId) + '"', function (f) {
+            escapeQueryValue(paymentVendorId) + '"', function (f) {
                 return { invoiceId: readText(f, 'invoice.id'), deductionType: readText(f, 'deduction.type') };
             });
     for (var i = 0; i < links.length; i++) {
