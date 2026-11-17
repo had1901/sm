@@ -201,6 +201,8 @@ function expenseContractReadDigitizations(params, scopeQuery) {
 
 /** Đọc SHTL TH1/TH2 bằng native query, phân giải hồ sơ và giữ các tham chiếu theo HĐ thật. */
 function expenseDigitizationReadSourceLinks(params) {
+    // Có ID phiếu thì phân loại theo hai ký tự đầu; trước khi tạo, entrypoint truyền tiền tố cố định.
+    var paymentType = expenseDossierPaymentType(params.paymentId || params.paymentPrefix);
     var query =
         "(" +
         expenseDigitizationSourceQuery("XDCB_CTSC_XMCT_TTQ", params.digitizationId) +
@@ -225,10 +227,15 @@ function expenseDigitizationReadSourceLinks(params) {
     }
     // TH1 không phải đọc bảng hồ sơ. TH2 chỉ đọc các ID do SHTL thực sự dẫn tới, tối đa 100 ID mỗi lô.
     for (var d = 0; d < dossierIds.length; d += 100) {
+        // Đọc đủ liên kết để giữ HĐ trên danh sách; chỉ lọc payment.type khi tạo các lựa chọn Hồ sơ.
         var dossierRows = expenseDigitizationReadRows(
             "esdXDCBctrPaymentAdvance",
             expenseDigitizationIdQuery(dossierIds.slice(d, d + 100)),
-            ["id", "ctr.id", "contractor.tax.code"],
+            // Đọc từng dòng HS–HĐ; mã hồ sơ chung chỉ dùng hiển thị, không dùng làm khóa lựa chọn.
+            ["id", "ctr.id", "contractor.tax.code", "contractor.name",
+            "payment.dossier.code", "payment.dossier.id",
+            "payment.type", "expected.amount",
+            "amount","bank.account", "bank.name"],
             "shtl-dossiers"
         );
         for (var h = 0; h < dossierRows.length; h++) {
@@ -265,12 +272,21 @@ function expenseDigitizationReadSourceLinks(params) {
             type: expenseContractText(item["type.document"]),
             referenceId: ref,
             sourceCase: dossier ? "TH2" : "TH1",
-            taxCode: expenseContractText(dossier && dossier["contractor.tax.code"])
+            taxCode: expenseContractText(dossier && dossier["contractor.tax.code"]),
+            dossierCode: expenseContractText(dossier && (dossier["payment.dossier.code"] || dossier["payment.dossier.id"])),
+            supplierName: expenseContractText(dossier && dossier["contractor.name"]),
+            bankAccount: expenseContractText(dossier && dossier["bank.account"]),
+            bankName: expenseContractText(dossier && dossier["bank.name"]),
+            paymentType: expenseContractText(dossier && dossier["payment.type"]),
+            // Giữ nguyên hai khoản nguồn để hiển thị; chưa suy ra hạn mức khi BA chưa chốt expected.amount.
+            expectedAmount: expenseXdcbMoney(dossier && dossier["expected.amount"]),
+            paidAmount: expenseXdcbMoney(dossier && dossier["amount"])
         });
     }
     return {
         contractIds: contractIds,
-        references: references
+        references: references,
+        paymentType: paymentType
     };
 }
 
@@ -298,7 +314,61 @@ function expenseDigitizationAttachReferences(rows, source) {
             );
         }
         rows[i].digitizationReferences = refs;
+        rows[i].dossiers = [];
+        rows[i].hasDirectSource = false;
+        var seen = {};
+        for (var j = 0; j < refs.length; j++) {
+            if (refs[j].sourceCase === "TH1") rows[i].hasDirectSource = true;
+            if (refs[j].sourceCase !== "TH2" || seen["$" + refs[j].referenceId]) continue;
+            // Không có hồ sơ đúng loại thì dossiers rỗng; HĐ vẫn được giữ theo nguồn SHTL hợp lệ.
+            if (source.paymentType && refs[j].paymentType !== source.paymentType) continue;
+            seen["$" + refs[j].referenceId] = true;
+            rows[i].dossiers.push({
+                id: refs[j].referenceId,
+                code: refs[j].dossierCode || refs[j].referenceId,
+                taxCode: refs[j].taxCode,
+                supplierName: refs[j].supplierName,
+                paymentType: refs[j].paymentType,
+                expectedAmount: refs[j].expectedAmount,
+                paidAmount: refs[j].paidAmount
+            });
+        }
     }
+}
+
+/** Giữ đúng nguồn đã chọn: trống là TH1; có ID là đúng một HS–HĐ thuộc HĐ/SHTL server vừa đọc. */
+function selectContractDossier(contract, dossierId, required, paymentId) {
+    var id = expenseContractText(dossierId);
+    var paymentType = expenseDossierPaymentType(paymentId);
+    var refs = contract.digitizationReferences || [];
+    var selected = [];
+    for (var i = 0; i < refs.length; i++) {
+        if (id ? refs[i].sourceCase === "TH2" && refs[i].referenceId === id : refs[i].sourceCase === "TH1") {
+            // Kiểm tra lại lúc tạo/lưu; ID hồ sơ đúng HĐ nhưng sai loại phiếu cũng không được chọn.
+            if (refs[i].sourceCase === "TH2" && paymentType &&
+                    expenseContractText(refs[i].paymentType) !== paymentType) continue;
+            selected.push(refs[i]);
+        }
+    }
+    if (!selected.length) {
+        // Món cũ thiếu khóa vẫn được xem; không tự đoán hồ sơ khi tạo mới hoặc lưu lại.
+        if (!id && !required) return contract;
+        throw expenseContractError("INVALID_DOSSIER", id
+            ? "HS–HĐ đã chọn không thuộc HĐ, không đúng loại phiếu hoặc không còn liên kết SHTL."
+            : "Vui lòng chọn hồ sơ của HĐ XDCB.");
+    }
+    contract.digitizationReferences = selected;
+    contract.contractDossierId = id;
+    contract.dossier = id ? {
+        id: id,
+        taxCode: selected[0].taxCode,
+        supplierName: selected[0].supplierName,
+        bankAccount: selected[0].bankAccount,
+        bankName: selected[0].bankName,
+        expectedAmount: selected[0].expectedAmount,
+        paidAmount: selected[0].paidAmount
+    } : null;
+    return contract;
 }
 
 /** Đọc cursor native readonly; rỗng là hợp lệ, lỗi phải giữ bước/table/RC để chẩn đoán trên SM. */
@@ -499,6 +569,8 @@ function listPaymentXdcbContracts(input) {
             throw expenseContractError("INVALID_SORT_FIELD", "Cột sắp xếp HĐ XDCB không hợp lệ.");
         }
         var result = expenseContractReadDigitizations({
+            // Chưa có ID phiếu khi mở popup TT; lấy tiền tố từ entrypoint TT, không nhận từ client.
+            paymentPrefix: "TT",
             contractId: params.contractId,
             start: params.start, 
             count: params.count, 
@@ -536,7 +608,7 @@ function listPaymentXdcbContracts(input) {
     }
 }
 
-/** TT trước tạo phiếu: đọc lại HĐ qua SHTL và quyền TT; trả HĐ thật, không chọn/lưu HS-HĐ. */
+/** TT trước tạo phiếu: giữ quyền TT, đọc lại HĐ và xác minh HS–HĐ do người dùng chọn. */
 function getPaymentXdcbContract(input) {
     var params = expenseContractParams(input);
     var id = expenseContractText(params.contractId);
@@ -559,9 +631,15 @@ function getPaymentXdcbContract(input) {
             message: result.message || "HĐ XDCB không còn đủ điều kiện trong phạm vi được chọn."
         };
     }
+    var result = selectContractDossier(
+        result.data[0],
+        params.contractDossierId,
+        true,
+        "TT"
+    )
     return { 
         success: true, 
-        data: result.data[0] 
+        data: result
     };
 }
 
@@ -822,6 +900,16 @@ function expenseContractParams(input) {
     } catch (error) {
         throw expenseContractError("INVALID_INPUT", "Dữ liệu đọc HĐ XDCB không hợp lệ.");
     }
+}
+
+/** Loại hồ sơ TH2 theo hai ký tự đầu ID; TH1 không có payment.type nên giữ nguyên. */
+function expenseDossierPaymentType(paymentId) {
+    var prefix = expenseContractText(paymentId).substring(0, 2).toUpperCase();
+    if (prefix === "TT") return "THANH_TOAN";
+    if (prefix === "TU") return "TAM_UNG";
+    if (prefix === "DC") return "DU_CHI";
+    // Reader nội bộ chưa gắn phiếu có thể đọc đủ nguồn; entrypoint tạo/lưu luôn truyền ngữ cảnh thật.
+    return "";
 }
 
 /** Giữ mã định danh dạng text, gồm cả số 0 đầu. */

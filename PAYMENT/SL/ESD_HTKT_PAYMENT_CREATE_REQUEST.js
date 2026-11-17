@@ -90,7 +90,8 @@ function createPaymentRequest(input) {
                 { 
                     details: {
                         currentUser: htktCreatePay_resolveCurrentUser(contractData),
-                        contractId: contractData.id
+                        contractId: contractData.id,
+                        contractDossierId: contractData.contractDossierId
                     }
                 }
             );
@@ -100,6 +101,12 @@ function createPaymentRequest(input) {
             } 
 
             xdcbContract = xdcbResult.data;
+            // Khóa HS–HĐ đã được server đối chiếu; contract.id vẫn giữ HĐ gốc.
+            contractData.contractDossierId = xdcbContract.contractDossierId || "";
+            // TH2 phải có NCC hợp lệ ngay trước khi cấp số/ghi phiếu; không yêu cầu dòng gói thầu.
+            if (xdcbContract.dossier) {
+                lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(xdcbContract);
+            }
             sourceContractId = contractId = xdcbContract.id;
             contractData.name = xdcbContract.name;
             contractData.totalValue = xdcbContract.contractAmount;
@@ -288,6 +295,9 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
     paymentRec['contract.id'] = contractData.contractId || contractData['contractId'] || contractData['id'] || "";
     paymentRec['purchase.order'] = contractData['purchase.order'] || contractData.purchaseOrder || "";
     paymentRec['contract.name'] = contractData['name'];
+    if (contractData.contractCategory === 'XDCB') {
+        paymentRec['contract.dossier.id'] = contractData.contractDossierId || '';
+    }
 
     // Map nghiệp vụ sản phẩm theo process.id của hợp đồng (esdHDcontract)
 //    var productCategory = htktCreatePay_getProductCategoryByContract(

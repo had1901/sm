@@ -2135,6 +2135,7 @@ function getPaymentXdcbContext(record, requireEdit, currentUser) {
                 "transaction.type",
                 "original.contract.category",
                 "contract.id",
+                "contract.dossier.id",
                 "current.phase",
                 "initial.role",
                 "created.by",
@@ -2234,19 +2235,23 @@ function getPaymentXdcbContractInfo(record) {
         startDate: contract["effective.date"],
         totalPaidAmount: contract["total.amount.paid"] == null ? "" : contract["total.amount.paid"],
         remainingAmount: paymentXdcbRemaining(contract["contract.amount"], contract["total.amount.paid"]),
-        sourceContract: contract
+        sourceContract: contract,
+        paymentId: context.payment.id,
+        contractDossierId: context.payment["contract.dossier.id"] || ""
     };
 }
 
 /** Phiếu TT đã lưu -> HĐ trên phiếu -> SHTL TH1/TH2 -> nguồn NCC S4.
  * Không nhận HĐ tùy ý từ client và không cần quyền tạo DC. Quyền sửa do context TT kiểm tra.
- * TH2 tạm gộp theo HĐ/MST như DC; không chọn hồ sơ, không dùng amount của hồ sơ làm hạn mức.
+ * TH2 lấy NCC từ đúng HS–HĐ đã chọn; hạn mức expected.amount chờ BA chốt. TH1 giữ nguồn cũ.
  */
 function getPaymentXdcbSuppliers(record) {
     var info = getPaymentXdcbContractInfo(record);
+    var requestId = info.paymentId;
     var result = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseContractReadDigitizations(
             {
                 contractId: info.id,
+                paymentId: requestId,
                 start: 1,
                 count: 1,
                 sortField: "id",
@@ -2259,11 +2264,24 @@ function getPaymentXdcbSuppliers(record) {
         throw new Error((result && result.message) || "HĐ TT không còn nguồn SHTL hợp lệ/Đang thực hiện.");
     }
     info.sourceContract.digitizationReferences = result.data[0].digitizationReferences;
+
+    // Chọn/lưu NCC TH2 bắt buộc xác định một HS–HĐ; món cũ thiếu khóa chỉ được xem.
+    lib.ESD_HTKT_EXPENSE_CONTRACT.selectContractDossier(
+        info.sourceContract,
+        info.contractDossierId,
+        true,
+        requestId
+    );
     var rows = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(info.sourceContract);
-    if (
-            lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSupplierSource(info.sourceContract) ===
-            "CONTRACT"
-    ) {
+
+    // Không truy cập rows[0] khi nguồn chưa có NCC; SL nguồn đã ghi log HĐ/HS–HĐ tương ứng.
+    if (!rows.length) {
+        return rows;
+    }
+
+    if (!info.sourceContract.dossier &&
+        lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSupplierSource(info.sourceContract) === "CONTRACT"
+        ) {
         rows[0]["bank.number"] = info.sourceContract["bank.account"];
         rows[0]["bank.name"] = info.sourceContract["bank.name"];
         rows[0]["remaining.amount"] = info.remainingAmount;
@@ -2299,6 +2317,7 @@ function paymentXdcbDraftKey(record, context) {
         context.payment.id,
         String(record.id || ""),
         context.payment["contract.id"],
+        context.payment["contract.dossier.id"],
         String(record["vendor.id"] || ""),
         context.actor,
         context.payment["current.phase"],
@@ -2336,6 +2355,10 @@ function loadPaymentXdcbVendorInfo(record) {
     } catch (sourceError) {
         // Dòng đã lưu vẫn xem được nếu HĐ đổi trạng thái/SHTL chưa unload; Save luôn kiểm tra lại nguồn.
         if (!record["vendor.id"]) throw sourceError;
+        rows = [];
+    }
+    // Danh sách rỗng không phải lỗi; món cũ chỉ hiển thị lại thông tin NCC đã lưu.
+    if (!rows.length && record["vendor.id"]) {
         var saved = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(record["vendor.id"]);
         rows = [
             {
@@ -2380,6 +2403,9 @@ function loadPaymentXdcbVendorInfo(record) {
                 selected = rows[savedIndex];
         }
         // Màn view TT cũ chỉ hiển thị NCC đã lưu; không mở thêm nghiệp vụ đổi NCC tại đây.
+        if (!selected) {
+            throw new Error("NCC đã lưu không khớp HS–HĐ hiện tại của phiếu TT.");
+        }
         rows = [selected];
     }
     if (!selected) {
@@ -2412,6 +2438,29 @@ function loadPaymentXdcbVendorInfo(record) {
         vars.$payableAmount = record["payable.amount"] || 0;
     }
     return rows;
+}
+
+/** DS chỉ hiển thị lỗi nguồn ngắn gọn; lỗi thật vẫn được giữ để chặn Lưu. */
+function loadPaymentXdcbVendorInfoSafe(record) {
+    try {
+        return loadPaymentXdcbVendorInfo(record);
+    } catch (error) {
+        vars.$supplierdisplays = [];
+        vars.$suppliervalues = [];
+        vars.$supplierId = "";
+        vars.$G_supplier_id = "";
+        vars.$supplierName = "";
+        vars.$supplierAddress = "";
+        vars.$taxCode = "";
+        vars.$remainingAmount = "";
+        vars.$canEditObj = false;
+        vars.$canEditSite = false;
+        vars.$showSyncVendorOgl = false;
+        vars.$G_hasError = true;
+        vars.$G_errMsg = "Không lấy được NCC XDCB: " + String(error.message || error);
+        print(vars.$G_errMsg);
+        return [];
+    }
 }
 
 /** Điền NCC vừa chọn và thông tin ngân hàng có thật; ngân hàng không map được để user chọn như TT cũ. */

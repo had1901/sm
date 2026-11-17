@@ -76,7 +76,7 @@ if (isExpense) {
 } else if (isPayment) {
     // TT S4 nhận mảng trong scope DS; HHDV giữ lời gọi và cách bind loader S2 cũ.
     if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
-        arrVendors = lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentXdcbVendorInfo(vars.$L_file);
+        arrVendors = lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentXdcbVendorInfoSafe(vars.$L_file);
     } else {
         lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentVendorInfo(vars.$L_file);
     }

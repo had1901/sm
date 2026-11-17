@@ -307,7 +307,7 @@ function expenseSourceDocumentContext(params, context, actor) {
             '" and payment.id="' +
             sourceDocumentQuote(context.payment.id) +
             '"',
-        ["id", "payment.id", "contract.id", "vendor.id"],
+        ["id", "payment.id", "contract.id", "contract.dossier.id", "vendor.id"],
         true
     );
     if (
@@ -319,7 +319,9 @@ function expenseSourceDocumentContext(params, context, actor) {
     var contract = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSelection(
         item["contract.id"],
         actor,
-        context.payment.id
+        context.payment.id,
+        item["contract.dossier.id"],
+        true
     );
     var tax = "";
     if (sourceDocumentText(item["vendor.id"])) {

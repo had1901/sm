@@ -745,11 +745,16 @@ function createPaymentVendor(input) {
 			// Kiểm tra toàn bộ lựa chọn trước khi cấp số/ghi bất kỳ món nào.
 			for (var c = 0; c < contracts.length; c++) {
 				var requestedId = normalizeExpenseVendorValue(contracts[c] && (contracts[c].id || contracts[c]["contract.id"]));
-				if (!requestedId || xdcbContracts["$" + requestedId]) continue;
-				var selectedContract = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSelection(requestedId, currentUser, paymentId);
+				// Cùng HĐ nhưng khác HS–HĐ là hai nguồn riêng; kiểm tra hồ sơ từ SHTL trước khi tạo món.
+				var requestedDossier = normalizeExpenseVendorValue(contracts[c] && contracts[c].contractDossierId);
+				var sourceKey = "$" + requestedId + "|" + requestedDossier;
+				if (!requestedId || xdcbContracts[sourceKey]) continue;
+				var selectedContract = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSelection(
+						requestedId, currentUser, paymentId, requestedDossier, true);
 				expenseVendorCheckXdcbRemaining(selectedContract);
-				lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(selectedContract);
-				xdcbContracts["$" + requestedId] = selectedContract;
+				// Giữ danh sách NCC đã đọc để đếm đúng nguồn S4; thiếu NCC vẫn cho tạo món trống.
+				selectedContract.suppliers = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(selectedContract);
+				xdcbContracts[sourceKey] = selectedContract;
 			}
 		}
 
@@ -758,6 +763,8 @@ function createPaymentVendor(input) {
 		for (var b = 0; b < contracts.length; b++) {
 			var cObj = contracts[b] || {};
 			var cIdKey = normalizeExpenseVendorValue(cObj.id || cObj["contract.id"]);
+			// TH2 tạo theo từng hồ sơ, không dùng số NCC toàn HĐ để chặn các hồ sơ khác nhau.
+			if (contractCategory === "XDCB" && cObj.contractDossierId) continue;
 			if (cIdKey) {
 				contractBatchCounts[cIdKey] = (contractBatchCounts[cIdKey] || 0) + 1;
 			}
@@ -767,7 +774,7 @@ function createPaymentVendor(input) {
 			if (!Object.prototype.hasOwnProperty.call(contractBatchCounts, contractIdKey)) continue;
 
 			var existingVendorCount = countExpensePaymentVendors(paymentId, contractIdKey);
-			var xdcbContract = contractCategory === "XDCB" ? xdcbContracts["$" + contractIdKey] : null;
+			var xdcbContract = contractCategory === "XDCB" ? xdcbContracts["$" + contractIdKey + "|"] : null;
 			var totalSuppliers = getContractTotalSuppliers(contractIdKey, xdcbContract);
 
 			// Nếu số lượng món NCC ứng với ĐNDC trong bảng paymentVendor đã bằng số NCC của hợp đồng này -> không cho tạo nữa
@@ -797,6 +804,10 @@ function createPaymentVendor(input) {
 			if (!contractIdCheck) continue;
 
 			var pairKeyCheck = vendorIdCheck ? (contractIdCheck + "::" + vendorIdCheck) : contractIdCheck;
+			var dossierCheck = contractCategory === "XDCB" ? normalizeExpenseVendorValue(contractCheck.contractDossierId) : "";
+			// TH2 chỉ tạo một món cho một HS–HĐ, kể cả khi payload gửi mã NCC khác nhau.
+			if (contractCategory === "XDCB") pairKeyCheck = dossierCheck
+					? contractIdCheck + "::HS::" + dossierCheck : pairKeyCheck + "::";
 			if (batchSeen[pairKeyCheck]) {
 				return {
 					success: false,
@@ -810,9 +821,11 @@ function createPaymentVendor(input) {
 			try {
 				var existSql = 'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
 						'" and contract.id="' + escapeExpenseVendorQueryValue(contractIdCheck) + '"';
-				if (vendorIdCheck) {
+				// TH2 xét cả món đã chọn NCC lẫn món trống trong cùng hồ sơ; TH1 giữ điều kiện NCC cũ.
+				if (contractCategory === "XDCB") existSql += expenseDossierQuery(dossierCheck);
+				if (!dossierCheck && vendorIdCheck) {
 					existSql += ' and vendor.id="' + escapeExpenseVendorQueryValue(vendorIdCheck) + '"';
-				} else {
+				} else if (!dossierCheck) {
 					existSql += ' and (null(vendor.id) or vendor.id="" or vendor.id=NULL)';
 				}
 				if (existItemFile.doSelect(existSql) === RC_SUCCESS) {
@@ -838,6 +851,9 @@ function createPaymentVendor(input) {
 			var vendorId = normalizeExpenseVendorValue(contract.vendorId || contract["vendor.id"] || contract.vendor || contract.supplierId || contract["supplier.id"]);
 			if (!contractId) continue;
 			var pairKey = vendorId ? (contractId + "::" + vendorId) : contractId;
+			var dossierId = contractCategory === "XDCB" ? normalizeExpenseVendorValue(contract.contractDossierId) : "";
+			if (contractCategory === "XDCB") pairKey = dossierId
+					? contractId + "::HS::" + dossierId : pairKey + "::";
 			if (seen[pairKey]) continue;
 			seen[pairKey] = true;
 
@@ -851,10 +867,12 @@ function createPaymentVendor(input) {
 				relationFile["id"] = paymentVendorId;
 				relationFile["payment.id"] = paymentId;
 				relationFile["contract.id"] = contractId;
+				// Dự chi có nhiều món: lưu ID HS–HĐ trên món, contract.id vẫn là ID HĐ gốc.
+				if (contractCategory === "XDCB") relationFile["contract.dossier.id"] = dossierId;
 				if (vendorId) {
 					relationFile["vendor.id"] = vendorId;
 				}
-				relationFile["currency"] = contractCategory === "XDCB" ? xdcbContracts["$" + contractId].currency : contract.currency || "VND";
+				relationFile["currency"] = contractCategory === "XDCB" ? xdcbContracts["$" + contractId + "|" + dossierId].currency : contract.currency || "VND";
 				relationFile["amount"] = 0;
 				relationFile["refund.amount"] = 0;
 
@@ -1468,7 +1486,8 @@ function validateExpenseContractRemainingAmount(params) {
 function getContractTotalSuppliers(contractId, xdcbContract) {
 	if (!contractId) return 0;
 
-	if (xdcbContract && xdcbContract.suppliers instanceof Array) {
+	// Mảng trả từ SL khác scope vẫn là NCC S4; không rơi sang đếm bảng NCC S2.
+	if (xdcbContract && Object.prototype.toString.call(xdcbContract.suppliers) === "[object Array]") {
 		return xdcbContract.suppliers.length;
 	}
 
@@ -1923,6 +1942,10 @@ function validateVendorAndPaymentDetails(record) {
 			var dupSql = 'payment.id="' + escapeExpenseVendorQueryValue(paymentId) +
 					'" and contract.id="' + escapeExpenseVendorQueryValue(contractId) +
 					'" and vendor.id="' + escapeExpenseVendorQueryValue(selectedVendorId) + '"';
+			// Khi lưu XDCB, chỉ xét trùng NCC trong cùng HS–HĐ; HHDV giữ điều kiện cũ.
+			if (getExpensePaymentCategoryForValidation(paymentId) === "XDCB") {
+				dupSql += expenseDossierQuery(record["contract.dossier.id"]);
+			}
 			if (currentItemId) {
 				dupSql += ' and id~="' + escapeExpenseVendorQueryValue(currentItemId) + '"';
 			}
@@ -2473,6 +2496,8 @@ function expenseImportValidateXdcbRow(raw, params, cache) {
 		cache.contracts["$" + code] = result.data[0];
 	}
 	var contract = cache.contracts["$" + code];
+	// Excel chưa có cột HS–HĐ: chỉ nhận TH1; không tự chọn hồ sơ khi HĐ chỉ có TH2.
+	lib.ESD_HTKT_EXPENSE_CONTRACT.selectContractDossier(contract, "", true);
 	expenseVendorCheckXdcbRemaining(contract);
 	if (!normalizeExpenseVendorValue(contract.currency)) throw new Error("HĐ XDCB chưa có loại tiền.");
 	var key = "$" + JSON.stringify([contract.id, tax]);
@@ -2583,4 +2608,11 @@ function expensePerformanceFinish(profile, counts) {
 			counts: counts, stages: profile.stages };
 		if (typeof print === "function") print("[DUCHI-PERF] " + JSON.stringify(result));
 	} catch (ignoredLog) {}
+}
+
+/** Điều kiện HS–HĐ dùng chung khi tạo/lưu món DC; không đổi khóa HĐ gốc/NCC S6. */
+function expenseDossierQuery(dossierId) {
+	var id = normalizeExpenseVendorValue(dossierId);
+	return id ? ' and contract.dossier.id="' + escapeExpenseVendorQueryValue(id) + '"'
+			: ' and (null(contract.dossier.id) or contract.dossier.id="")';
 }

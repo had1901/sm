@@ -1,6 +1,6 @@
 /**
  * ScriptLibrary: ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER
- * Nguồn HĐ/NCC và site cho Dự chi. Chưa nối entrypoint Thanh toán/Tạm ứng.
+ * Nguồn HĐ/NCC dùng chung cho DC/TT; mỗi luồng giữ kiểm tra quyền riêng trước khi gọi.
  * Droplist dùng ID Contractor hoặc MST của NCC trên HĐ rút gọn; vendor.id/site.id của món luôn là ID S6.
  * Chọn/Lưu/Import/Sync -> getExpenseXdcbSelection -> SHTL TH1/TH2 -> HĐ thật -> NCC -> master/site S6.
  * TH1/TH2 là loại SHTL trong/vượt thẩm quyền; under500/over500 là nguồn NCC, không dùng thay nhau.
@@ -56,6 +56,10 @@ function getExpenseSupplierContext(record, actor, requireEdit) {
 
 /** Phân nguồn từ HĐ đã đọc trên server: sửa chữa under500 lấy trên HĐ, còn lại lấy qua gói thầu. */
 function getExpenseXdcbSupplierSource(contract) {
+    // TH2 lấy NCC đã được chỉ định trong hồ sơ; không bắt có dòng NCC gói thầu.
+    if (contract.dossier) {
+        return "DOSSIER";
+    }
     // Nhận cả DTO API và record đọc trực tiếp khi mở form.
     var repairId = expenseSupplierText(contract.repairId || contract["repair.id"]);
     var constructionId = expenseSupplierText(contract.constructionId || contract["construction.id"]);
@@ -74,7 +78,7 @@ function getExpenseXdcbSupplierSource(contract) {
 }
 
 /** Đọc lại SHTL/HĐ bằng actor + phiếu cha trước khi chọn/lưu/import/sync */
-function getExpenseXdcbSelection(contractId, actor, paymentId) {
+function getExpenseXdcbSelection(contractId, actor, paymentId, dossierId, requireDossier) {
     var result = lib.ESD_HTKT_EXPENSE_CONTRACT.getExpenseXdcbContract({
         details: {
             contractId: expenseSupplierText(contractId),
@@ -86,17 +90,30 @@ function getExpenseXdcbSelection(contractId, actor, paymentId) {
         throw new Error((result && result.message) || "Không kiểm tra được HĐ XDCB.");
     }
     var contract = result.data;
+    // TT/DC dùng cùng bộ phân giải; khóa hồ sơ được kiểm tra từ nguồn server, không tin metadata client.
+    lib.ESD_HTKT_EXPENSE_CONTRACT.selectContractDossier(
+        contract,
+        dossierId,
+        requireDossier === true,
+        paymentId
+    );
     if (!expenseSupplierText(contract.currency)) throw new Error("HĐ XDCB chưa có loại tiền.");
     getExpenseXdcbSupplierSource(contract);
     return contract;
 }
 
-/** Trả cùng cấu trúc NCC cho hai nguồn: một NCC trên HĐ rút gọn hoặc danh sách NCC gói thầu. */
+/** TH1 lấy NCC trên HĐ/gói thầu; TH2 lấy NCC trong đúng HS–HĐ đã chọn. */
 function getExpenseXdcbSuppliers(contract) {
+    if (contract.dossier) {
+        var dossierSupplier = getExpenseDossierSupplier(contract);
+        return dossierSupplier ? [dossierSupplier] : [];
+    }
     if (getExpenseXdcbSupplierSource(contract) === "CONTRACT") {
         var tax = expenseSupplierText(contract.vendorTaxCode || contract["tax.code"]);
         var name = expenseSupplierText(contract.vendorName || contract["vendor.name"]);
-        if (!tax || !name) throw new Error("NCC trên HĐ sửa chữa rút gọn thiếu MST hoặc tên.");
+        if (!tax || !name) {
+            return emptyExpenseSupplierList(contract);
+        }
         // Một HĐ rút gọn chỉ có một NCC: số tiền ở cấp NCC dùng cùng nguồn HĐ, không có dòng Contractor.
         var directDue = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseXdcbMoney(
             contract.contractAmount != null ? contract.contractAmount : contract["contract.amount"]
@@ -121,17 +138,22 @@ function getExpenseXdcbSuppliers(contract) {
         ]);
     }
     var packageId = expenseSupplierText(contract.tenderPackageId || contract["tender.package.id"]);
-    // Nhánh qua gói thầu chỉ đọc Contractor; thiếu NCC phải báo lỗi, không lấy tên/MST snapshot trên HĐ.
+    // TH1 đọc Contractor; không có NCC thì trả danh sách rỗng để màn hình vẫn mở được.
     var file = new SCFile("esdjoinXDCBtenderPackageContractor", SCFILE_READONLY);
     var rows = [];
     var seen = {};
     try {
-        var rc = file.doSelect('tender.package.id="' + expenseSupplierQuote(packageId) + '"');
+        var query = 'tender.package.id="' + expenseSupplierQuote(packageId) + '"';
+        var rc = file.doSelect(query);
         while (rc === RC_SUCCESS) {
             var id = expenseSupplierText(file["id"]);
             var tax = expenseSupplierText(file["tax.code"]);
             var name = expenseSupplierText(file["name"]);
-            if (!id || !tax || !name) throw new Error("NCC gói thầu XDCB thiếu ID, MST hoặc tên.");
+            // Dòng chưa đủ thông tin chưa đưa vào droplist; không làm lỗi cả màn NCC.
+            if (!id || !tax || !name) {
+                rc = file.getNext();
+                continue;
+            }
             if (seen["$" + tax])
                 throw new Error(
                     "Gói thầu có nhiều NCC cùng MST " + tax + ". Cần kiểm tra dữ liệu S4."
@@ -153,9 +175,13 @@ function getExpenseXdcbSuppliers(contract) {
             });
             rc = file.getNext();
         }
-        if (rc !== RC_NO_MORE)
+        if (rc !== RC_NO_MORE) {
             throw new Error("Không đọc được đầy đủ danh sách NCC gói thầu XDCB.");
-        if (!rows.length) throw new Error("Gói thầu của HĐ XDCB chưa có NCC.");
+        }
+        if (!rows.length) {
+            return emptyExpenseSupplierList(contract);
+        }
+
         for (var m = 0; m < rows.length; m++) {
             var due = rows[m]["total.amount.due"];
             var paid = rows[m]["total.amount.paid"];
@@ -180,15 +206,52 @@ function filterExpenseXdcbDigitizationSuppliers(contract, rows) {
     var allowed = {};
     for (var i = 0; i < refs.length; i++) {
         var tax = expenseSupplierText(refs[i].taxCode);
-        if (refs[i].sourceCase === "TH2" && !tax)
-            throw new Error("Hồ sơ-HĐ S4 được SHTL dẫn tới chưa có MST NCC.");
+        if (refs[i].sourceCase === "TH2" && !tax) {
+            print("HS–HĐ " + expenseSupplierText(refs[i].referenceId) + " không có NCC.");
+            continue;
+        }
         if (tax) allowed["$" + tax] = true;
     }
     var result = [];
     for (var j = 0; j < rows.length; j++)
         if (allowed["$" + expenseSupplierText(rows[j]["tax.code"])]) result.push(rows[j]);
-    if (!result.length) throw new Error("NCC của hồ sơ-HĐ SHTL không khớp nguồn NCC của HĐ S4.");
+    if (!result.length) return emptyExpenseSupplierList(contract);
     return result;
+}
+
+/** TH2 lấy NCC/ngân hàng từ HS–HĐ; không tra hoặc yêu cầu dòng NCC gói thầu. */
+function getExpenseDossierSupplier(contract) {
+    var dossier = contract.dossier;
+    var tax = expenseSupplierText(dossier.taxCode);
+    var name = expenseSupplierText(dossier.supplierName);
+    if (!tax || !name) {
+        emptyExpenseSupplierList(contract);
+        return null;
+    }
+    // Master S6 chỉ bổ sung địa chỉ của đúng MST đã lưu, không chọn lại NCC thay hồ sơ.
+    var master = expenseSupplierReadOne("esdHTKTvendor", 'vendor.number="' + expenseSupplierQuote(tax) + '"', ["address"], false);
+    return {
+        // Droplist TH2 dùng MST; vendor.id khi lưu vẫn là ID master S6 như luồng cũ.
+        "supplier.id": tax,
+        "supplier.name": name,
+        "tax.code": tax,
+        "address": expenseSupplierText(master && master.address),
+        "bank.number": expenseSupplierText(dossier.bankAccount),
+        "bank.name": expenseSupplierText(dossier.bankName),
+        // Chưa chốt ý nghĩa/hạn mức expected.amount: không tự coi tiền HĐ/NCC là tiền hồ sơ.
+        "total.amount.due": null,
+        "total.amount.paid": null,
+        "remaining.amount": null,
+        "source": "S4"
+    };
+}
+
+/** Thiếu NCC chỉ ghi Messages; không coi danh sách nguồn rỗng là lỗi mở màn TT/DC. */
+function emptyExpenseSupplierList(contract) {
+    var label = contract.dossier ? "HS–HĐ " + expenseSupplierText(contract.dossier.id)
+        : "HĐ " + expenseSupplierText(contract.id);
+    print(label + " không có NCC.");
+    return [];
 }
 
 /** Kiểm tra lựa chọn/MST thuộc đúng nguồn NCC của HĐ, dùng chung cho chọn, lưu, import và đồng bộ. */
@@ -282,6 +345,7 @@ function expenseSupplierScreenDraftKey(record, context) {
     if (!itemId) return "";
     return JSON.stringify([context.payment.id, itemId,
         expenseSupplierText(record["contract.id"] || record.contract_id),
+        expenseSupplierText(record["contract.dossier.id"]),
         expenseSupplierText(record["vendor.id"] || record.vendor_id),
         expenseSupplierText(context.actor).toLowerCase(), context.payment["current.phase"], context.payment["initial.role"]]);
 }
@@ -327,13 +391,15 @@ function loadExpenseSupplierScreen(record) {
     var saved = savedId ? getExpenseAccountingVendor(savedId) : null;
     var sourcedContract = null;
     try {
-        sourcedContract = getExpenseXdcbSelection(contractId, actor, context.payment.id);
+        sourcedContract = getExpenseXdcbSelection(contractId, actor, context.payment.id, record["contract.dossier.id"]);
     }
     catch (sourceError) {
         // Món cũ vẫn hiển thị NCC đã lưu khi nguồn SHTL chưa được unload; không mở thêm NCC hoặc bỏ kiểm tra Save.
         if (!saved) throw sourceError;
     }
-    var options = sourcedContract ? getExpenseXdcbSuppliers(sourcedContract) : [{
+    var options = sourcedContract ? getExpenseXdcbSuppliers(sourcedContract) : [];
+    // Nguồn chưa có NCC vẫn cho xem NCC đã lưu trên món cũ, không ghi lại xuống DB.
+    if (!options.length && saved) options = [{
         "supplier.id": expenseSupplierText(saved["vendor.number"]), "supplier.name": saved["vendor.name"],
         "tax.code": expenseSupplierText(saved["vendor.number"]), "address": expenseSupplierText(saved.address), "source": "S4"
     }];
@@ -402,7 +468,7 @@ function selectExpenseSupplier(record, supplierId) {
     if (context.category !== "XDCB") throw new Error("Hàm điền NCC S4 chỉ áp dụng cho Dự chi XDCB.");
     clearExpenseSupplierScreenDraft();
     // Không nạp lại toàn form vì sẽ làm mất số tiền người dùng đang nhập.
-    var contract = getExpenseXdcbSelection(record["contract.id"], actor, context.payment.id);
+    var contract = getExpenseXdcbSelection(record["contract.id"], actor, context.payment.id, record["contract.dossier.id"], true);
     var options = getExpenseXdcbSuppliers(contract);
     var currency = expenseSupplierText(contract.currency);
     for (var i = 0; i < options.length; i++) {
@@ -437,7 +503,7 @@ function saveExpenseXdcbDetails(record) {
     var actor = vars.$lo_operator && vars.$lo_operator["contact.name"];
     var context = getExpenseSupplierContext(record, actor, true);
     if (context.category !== "XDCB") throw new Error("Hàm lưu XDCB chỉ áp dụng cho Dự chi XDCB.");
-    var contract = getExpenseXdcbSelection(record["contract.id"], actor, context.payment.id);
+    var contract = getExpenseXdcbSelection(record["contract.id"], actor, context.payment.id, record["contract.dossier.id"], true);
     var supplier = resolveExpenseXdcbSupplier(contract, vars.$supplierId, vars.$taxCode);
     // Input số tiền của FD ghi trực tiếp vào record; $amount có thể vẫn là giá trị khởi tạo.
     var amount = Number(String(record["amount"]).replace(/,/g, ""));
@@ -473,7 +539,7 @@ function saveExpenseXdcbDetails(record) {
 function validateExpenseXdcbItem(record, actor) {
     var context = getExpenseSupplierContext(record, actor, false);
     if (context.category !== "XDCB") throw new Error("Món không thuộc phiếu Dự chi XDCB.");
-    var contract = getExpenseXdcbSelection(record["contract.id"], actor, context.payment.id);
+    var contract = getExpenseXdcbSelection(record["contract.id"], actor, context.payment.id, record["contract.dossier.id"], true);
     var vendor = getExpenseAccountingVendor(record["vendor.id"]);
     resolveExpenseXdcbSupplier(contract, "", vendor["vendor.number"]);
     if (expenseSupplierText(record.currency) !== expenseSupplierText(contract.currency)) {

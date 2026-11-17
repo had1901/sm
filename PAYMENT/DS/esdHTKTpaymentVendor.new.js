@@ -35,7 +35,7 @@ vars.$L_file['contract.id'] = contractId;
 
 if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
   // TT XDCB: loader đọc nguồn SHTL và lọc NCC đã có theo MST; không JOIN danh mục S2.
-  arrVendors = lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentXdcbVendorInfo(vars.$L_file);
+  arrVendors = lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentXdcbVendorInfoSafe(vars.$L_file);
 } else if (paymentId || vars.$L_file['payment.id']) { // Chỉ thực hiện truy vấn nếu có paymentId
   var usedSupplierIds = {};
   var paymentVendorFile = new SCFile("esdHTKTpaymentVendor");
