@@ -146,7 +146,9 @@ function getListPaymentVendor(input) {
         ['pv.payment.method', 'payment_method', 'S'],
         ['v.supplier.id', 'supplier_id', 'S'],
         ['pv.ogl.sync.status', 'ogl_sync_status', 'S'],
-        ['v.ogl.vendor.id', 'ogl_vendor_id', 'S']
+        ['v.ogl.vendor.id', 'ogl_vendor_id', 'S'],
+        ['p.original.contract.category', 'contract_category', 'S'],
+        ['p.contract.dossier.id', 'contract_dossier_id', 'S']
     ];
 
     var sqlFields = fieldMappings.map(function(item) { return item[0]; });
@@ -159,9 +161,38 @@ function getListPaymentVendor(input) {
 
     var f = new SCFile('esdHTKTpaymentVendor', SCFILE_READONLY);
     var rc = f.doSelect(select + mapping + control);
+    var xdcbContracts = {};
 
     while (rc == RC_SUCCESS) {
         var item = mapRowToObject(f, fieldMappings);
+        if (String(item.contract_category || "").toUpperCase() === "XDCB") {
+            // Rút gọn/HS–HĐ dùng MST như bộ chọn NCC; qua gói thầu dùng ID dòng Contractor S4.
+            // Chỉ đổi mã hiển thị, không ghi mã Contractor vào supplier.id của master S6.
+            item.supplier_id = item.vendor_number || "";
+            if (!item.contract_dossier_id) {
+                try {
+                    var source = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER;
+                    var contractKey = "$" + item.contract_id;
+                    if (!Object.prototype.hasOwnProperty.call(xdcbContracts, contractKey)) {
+                        xdcbContracts[contractKey] = source.expenseSupplierReadOne("esdXDCBrepairProjectCtr",
+                                'id="' + escapePaymentVendorQueryValue(item.contract_id) + '"',
+                                ["id", "repair.id", "construction.id", "type.budget", "tender.package.id"], false);
+                    }
+                    var contract = xdcbContracts[contractKey];
+                    if (contract && source.getExpenseXdcbSupplierSource(contract) === "PACKAGE") {
+                        var contractor = source.expenseSupplierReadOne("esdjoinXDCBtenderPackageContractor",
+                                'tender.package.id="' + escapePaymentVendorQueryValue(contract["tender.package.id"]) +
+                                '" and tax.code="' + escapePaymentVendorQueryValue(item.vendor_number) + '"', ["id"], false);
+                        item.supplier_id = contractor ? String(contractor.id || "") : "";
+                    }
+                } catch (supplierCodeError) {
+                    item.supplier_id = "";
+                    print("Không đọc được mã NCC S4 của HĐ " + item.contract_id + ": " + String(supplierCodeError.message || supplierCodeError));
+                }
+            }
+        }
+        delete item.contract_category;
+        delete item.contract_dossier_id;
 
         var vendorId = item.vendorId || "";
         var countInvoiceId = 0;
@@ -2552,7 +2583,13 @@ function syncPaymentXdcbVendorToOgl(record) {
         var master = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseAccountingVendor(record["vendor.id"]);
         resolvePaymentXdcbSupplier(record, "", master["vendor.number"]);
         var mapping = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(context.payment["unit.lv1"]);
-        return lib.ESD_HTKT_PREPAYMENT_VENDOR.syncXdcbVendorSite(record, master, mapping, context.actor);
+        return lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(
+            record, 
+            mapping && mapping.oglBranchCode, 
+            mapping && mapping.entity, 
+            context.actor, 
+            "XDCB"
+        );
     } catch (error) {
         return { success: false, message: String(error.message || error) };
     }

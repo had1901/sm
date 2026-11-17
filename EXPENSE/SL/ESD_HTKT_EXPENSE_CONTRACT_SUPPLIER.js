@@ -339,6 +339,60 @@ function getExpenseContractInfo(record) {
     };
 }
 
+/**
+ * Điền hàng thông tin HS–HĐ cho FD phiếu TT và FD chi tiết NCC TT/DC, sau kiểm tra quyền của màn.
+ * TT dùng khóa trên phiếu cha; DC dùng khóa trên từng món. TH1/HHDV không hiển thị hàng này.
+ * Đọc ba khoản tiền thật của hồ sơ; không dùng expected.amount, không thay tiền HĐ hoặc số tiền nhập.
+ */
+function loadContractDossierScreen(record) {
+    // DS có thể chạy lại hoặc mở bản ghi khác: luôn xóa dữ liệu hiển thị của hồ sơ trước đó.
+    vars.$showContractDossier = false;
+    vars.$contractDossierId = "";
+    vars.$totalContractDossierAmount = "";
+    vars.$totalContractDossierPaid = "";
+    vars.$contractDossierRemainingAmount = "";
+    try {
+        var paymentId = expenseSupplierText(record && (record["payment.id"] || record.payment_id));
+        var payment = null;
+        // FD phiếu TT đã có chính record cha; FD NCC cần đọc lại cha theo payment.id.
+        if (!paymentId && record && record["transaction.type"] === "Thanh toán") {
+            paymentId = expenseSupplierText(record.id);
+            payment = record;
+        }
+        var prefix = paymentId.substr(0, 2);
+        if (prefix !== "TT" && prefix !== "DC") return false;
+        if (!payment) {
+            payment = expenseSupplierReadOne("esdHTKTpayment", 'id="' + expenseSupplierQuote(paymentId) + '"',
+                ["id", "transaction.type", "original.contract.category", "contract.id", "contract.dossier.id"], false);
+        }
+        if (!payment || expenseSupplierText(payment["original.contract.category"]).toUpperCase() !== "XDCB") return false;
+        if (payment["transaction.type"] !== (prefix === "TT" ? "Thanh toán" : "Dự chi")) return false;
+
+        // Có hồ sơ đã chọn mới là TH2; không tự lấy hồ sơ khác chỉ vì cùng HĐ.
+        var dossierId = expenseSupplierText(prefix === "TT" ? payment["contract.dossier.id"] : record["contract.dossier.id"]);
+        var contractId = expenseSupplierText(prefix === "TT" ? payment["contract.id"] : record["contract.id"] || record.contract_id);
+        if (!dossierId || !contractId) return false;
+        var dossier = expenseSupplierReadOne("esdXDCBctrPaymentAdvance",
+            'id="' + expenseSupplierQuote(dossierId) + '" and ctr.id="' + expenseSupplierQuote(contractId) + '"',
+            ["id", "amount", "paid.amount", "remaining.amount"], false);
+        if (!dossier) {
+            print("Không có HS–HĐ " + dossierId + " thuộc HĐ " + contractId + " để hiển thị.");
+            return false;
+        }
+        vars.$contractDossierId = expenseSupplierText(dossier.id);
+        // Giữ nguyên giá trị DB, kể cả 0; nguồn trống thì để trống, không tự tính lại số còn lại.
+        vars.$totalContractDossierAmount = expenseSupplierText(dossier["amount"]);
+        vars.$totalContractDossierPaid = expenseSupplierText(dossier["paid.amount"]);
+        vars.$contractDossierRemainingAmount = expenseSupplierText(dossier["remaining.amount"]);
+        vars.$showContractDossier = true;
+        return true;
+    } catch (error) {
+        // Lỗi đọc hàng thông tin chỉ ghi Messages; các dữ liệu và quyền của màn vẫn do luồng cũ xử lý.
+        print("Không đọc được thông tin HS–HĐ: " + String(error.message || error));
+        return false;
+    }
+}
+
 /** Tạo khóa form để lựa chọn chưa lưu không lẫn món, HĐ, người dùng hoặc phase khác. */
 function expenseSupplierScreenDraftKey(record, context) {
     var itemId = expenseSupplierText(record.id || vars.$G_payment_vendor_id || vars["$G.payment.vendor.id"]);
@@ -559,7 +613,12 @@ function syncExpenseXdcbVendorToOgl(record, branchCode, entityCode, actor) {
         var mapping = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(selection.context.payment["unit.lv1"]);
         if (!mapping || !mapping.entity || !mapping.oglBranchCode)
             throw new Error("Chưa có entity/chi nhánh OGL của phiếu Dự chi.");
-        return lib.ESD_HTKT_PREPAYMENT_VENDOR.syncXdcbVendorSite(record, selection.vendor, mapping, actor);
+        return lib.ESD_HTKT_PREPAYMENT_VENDOR.syncVendorToOgl(
+            record, 
+            mapping.oglBranchCode, 
+            mapping.entity, 
+            actor, "XDCB"
+        );
     } catch (error) {
         return { success: false, message: String(error.message || error) };
     }

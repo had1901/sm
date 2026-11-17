@@ -30,6 +30,8 @@ var isPostAuditPaymentVendorView = isPayment &&
     isExpense && String(vars["$G.HTKT_DUCHI_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
 vars.$isPayment = isPayment;
 vars.$isExpense = isExpense;
+// Xóa hàng hồ sơ cũ và nạp đúng HS–HĐ đang lưu; TH1/HHDV sẽ ẩn hàng này.
+lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file);
 var isXDCB = vars.$L_file["original.contract.category"] === "XDCB";
 
 if (isExpense) {

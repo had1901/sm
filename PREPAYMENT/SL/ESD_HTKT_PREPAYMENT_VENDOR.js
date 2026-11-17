@@ -1384,17 +1384,38 @@ function syncVendorOglFromPrepayment(record) {
 //}
 /**
  * Đồng bộ từng NCC (Logic MỚI: Query QLTS -> Sync OGL -> Create OGL)
+ * Không truyền hạng mục thì giữ xử lý HHDV cũ; XDCB dùng site 126150640.
  * @param prepaymentVendor 
  * @param branchCode 
  * @param entityCode  
  * @param username
+ * @param contractCategory HHDV/XDCB, không phải loại phiếu TT/TU/DC.
  */
-function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username) {
+function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, contractCategory) {
+    // Hạng mục chỉ chọn cấu hình site; không truyền thì giữ HHDV cho mọi caller cũ.
+    var isXdcb = String(contractCategory || "HHDV").trim().toUpperCase() === "XDCB";
+    if (isXdcb) {
+        prepaymentVendor['ogl.sync.status'] = false;
+        if (!branchCode || !entityCode) {
+            return { 
+                success: false, 
+                message: "Chưa có entity/chi nhánh OGL để đồng bộ site XDCB." 
+            };
+        }
+            
+        branchCode = String(branchCode).trim();
+        if (branchCode.length === 4) {
+            branchCode = branchCode.substr(1);
+        } 
+    }
     if (!username) username = vars.$lo_operator["contact.name"];
 
     var itemVendor = new SCFile("esdHTKTvendor");
     var rcItem = itemVendor.doSelect('id="' + prepaymentVendor['vendor.id'] + '"');
     var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+    if (isXdcb) {
+        defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB");
+    } 
     
     var vendorExistInOGL = false;
     var vendorNameFromOGL = null;
@@ -1411,9 +1432,16 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username) {
             var hasSiteInQLTS = false;
             var itemVendorSiteCheck = new SCFile('esdHTKTvendorSite');
             var queryLocalSite = 'vendor.id = "' + vendorId + '" and ogl.entity = "' + branchCode + '" and active = true';
+            // XDCB phải tìm đúng mã site của hạng mục, tránh dùng site HHDV cùng NCC.
+            if (isXdcb) {
+                queryLocalSite += ' and ogl.site.code = "' + defaultVendorSiteInfo.siteCode + '"';}
+            var localSiteId = "";
             
             if (itemVendorSiteCheck.doSelect(queryLocalSite) == RC_SUCCESS) {
                 hasSiteInQLTS = true; // Đã tồn tại site hợp lệ trên QLTS
+                if (isXdcb) {
+                    localSiteId = String(itemVendorSiteCheck['id'] || "");
+                }
             }
             try { itemVendorSiteCheck.doClose(); } catch(e) {}
 
@@ -1435,6 +1463,13 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username) {
                         }
                     }
                     try { itemSupplier.doClose(); } catch(e) {}
+                }
+                if (isXdcb) {
+                    prepaymentVendor['vendor.site.id'] = localSiteId;
+                    return { 
+                        success: true, 
+                        siteId: localSiteId 
+                    };
                 }
                 return { success: true };
             }
@@ -1464,10 +1499,16 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username) {
                 // Xử lý lưu các site trả về từ OGL vào QLTS
                 if (allSites.length > 0) {
                     vendorExistInOGL = allSites.find(function(x) { return x.vendorSiteCode == defaultVendorSiteInfo.siteCode; }) != null;
+                    // XDCB cùng mã site nhưng khác chi nhánh thì vẫn cần tạo cho chi nhánh phiếu.
+                    if (isXdcb && vendorExistInOGL) {
+                        vendorExistInOGL = allSites.some(function(x) {
+                            return x.vendorSiteCode == defaultVendorSiteInfo.siteCode && String(x.entity).trim() === branchCode;
+                        });
+                    }
 
                     allSites.forEach(function(item) {
                         item['vendor.id'] = vendorId;
-                        item['source'] = lib.ESD_HTKT_PREPAYMENT_WF.VENDOR_SITE_SOURCE.OGL;
+                        item['source'] = "OGL"; // Site nhận từ OGL; giữ giá trị cũ, không phụ thuộc SL workflow.
                         saveVendorSite(item); // Hàm này tự động add/update vào esdHTKTvendorSite
                     });
                 }
@@ -1512,6 +1553,26 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username) {
                 }
             }
         }
+    }
+    // Caller HHDV vẫn tự gán site như trước; XDCB cần trả ID site cho cả TT và từng món DC.
+    if (isXdcb) {
+        if (prepaymentVendor['ogl.sync.status']) {
+            var vendorSites = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vendorId, branchCode);
+            for (var i = 0; i < vendorSites.length; i++) {
+                if (String(vendorSites[i]['ogl.site.code']) === String(defaultVendorSiteInfo.siteCode)) {
+                    prepaymentVendor['vendor.site.id'] = String(vendorSites[i]['id']);
+                    return { 
+                        success: true, 
+                        siteId: prepaymentVendor['vendor.site.id'] 
+                    };
+                }
+            }
+        }
+        prepaymentVendor['ogl.sync.status'] = false;
+        return { 
+            success: false, 
+            message: "Chưa lưu/gán được site XDCB cho NCC trong S6." 
+        };
     }
     return { success: true };
 }
@@ -1565,7 +1626,7 @@ function createVendor(request, vendorId) {
             vendorSiteCode: request.vendorSiteCode,
             creditAccount: lib.ESD_HTKT_ACCOUNTING_UTILS.buildAccountSegment(request.crSegment3, request.crSegment1),
             debitAccount: lib.ESD_HTKT_ACCOUNTING_UTILS.buildAccountSegment(request.drSegment3, request.drSegment1),
-            source: lib.ESD_HTKT_PREPAYMENT_WF.VENDOR_SITE_SOURCE.QLTS
+            source: "QLTS" // Site tạo từ QLTS; giữ giá trị cũ, không phụ thuộc SL workflow.
         });
     }
     return response;
@@ -2269,120 +2330,3 @@ function updateRemainingAmountForPendingTickets(record) {
         contractSupplierFile.doClose();
     } catch (e) {}
 }
-
-
-
-
-
-/** OGL/site XDCB dùng chung cho TT/DC và caller XDCB khác khi đã kiểm tra quyền riêng.
- * Caller cung cấp master NCC S6 + mapping đơn vị thật. Hàm này chỉ vấn tin/tạo site,
- * lưu site/master S6 và gán vendor.site.id; không đọc HĐ, không đổi tiền/phase hoặc tiến độ S4.
- * Nhánh HHDV/TU syncVendorToOgl hiện có phía trên không đổi mặc định 126150610.
- */
-function syncXdcbVendorSite(record, vendor, mapping, actor) {
-    record["ogl.sync.status"] = false;
-    try {
-        var source = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER;
-        if (!vendor || !vendor.id || !mapping || !mapping.entity || !mapping.oglBranchCode) {
-            throw new Error("Thiếu master NCC hoặc mapping đơn vị để đồng bộ site XDCB.");
-        }
-        var branch = source.expenseSupplierText(mapping.oglBranchCode);
-        if (branch.length === 4) branch = branch.substr(1);
-        var config = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB");
-        if (!config || !config.siteCode || !config.debitAccount || !config.creditAccount)
-            throw new Error("Chưa cấu hình site XDCB.");
-        var site = source.getExpenseXdcbSite(vendor.id, branch, config.siteCode);
-        if (!site) {
-            var response = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.getVendorSiteInfo({
-                vendorNumber: vendor["vendor.number"],
-                entity: branch
-            });
-            print("[HTKT-XDCB-SITE] getVendorSiteInfo response = ", response);
-            var remote = null;
-            var oglName = "";
-            // Giống S2: bỏ qua data khi vấn tin lỗi/null, dùng master S6 để gọi tạo site.
-            if (response && response.success === true) {
-                // S2 cũng đi tới tạo khi data rỗng/null hoặc không có; vẫn chặn cấu trúc khác mảng.
-                var responseData = response.data === null || response.data === undefined ? [] : response.data;
-                // Mảng trả từ SL tích hợp có thể khác scope; không dùng instanceof Array.
-                if (Object.prototype.toString.call(responseData) !== "[object Array]") {
-                    throw new Error(
-                        "Phản hồi vấn tin NCC/site OGL không có data dạng mảng; chưa tạo site mới."
-                    );
-                }
-                for (var i = 0; i < responseData.length; i++) {
-                    var item = responseData[i];
-                    if (
-                        item.vendorNumber &&
-                        source.expenseSupplierText(item.vendorNumber) !== vendor["vendor.number"]
-                    ) {
-                        throw new Error("OGL trả về NCC khác MST được yêu cầu.");
-                    }
-                    oglName = oglName || item.vendorName;
-                    var sites = item.sites || [];
-                    for (var j = 0; j < sites.length; j++) {
-                        if (
-                            source.expenseSupplierText(sites[j].vendorSiteCode) ===
-                                source.expenseSupplierText(config.siteCode) &&
-                            source.expenseSupplierText(sites[j].entity) === branch
-                        ) {
-                            if (/^(false|0)$/i.test(source.expenseSupplierText(sites[j].active)))
-                                throw new Error("Site XDCB trên OGL đang ngừng hoạt động.");
-                            if (remote) throw new Error("OGL trả nhiều site XDCB cùng chi nhánh.");
-                            remote = sites[j];
-                        }
-                    }
-                }
-            }
-            if (!remote) {
-                if (!source.expenseSupplierText(vendor.address))
-                    throw new Error("NCC S6 thiếu địa chỉ để tạo site OGL.");
-                // Dùng cùng builder S2 để giữ đúng cấu trúc payload NCC/site OGL.
-                var payload = lib.ESD_HTKT_PREPAYMENT_VENDOR.buildVendorAndSiteInfo(
-                    vendor,
-                    config,
-                    branch,
-                    mapping.entity,
-                    actor,
-                    oglName
-                );
-                var created = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createVendorSiteInfo(payload);
-                if (!created || created.success !== true)
-                    throw new Error(
-                        (created && (created.message || created.error)) || "Tạo site XDCB trên OGL thất bại."
-                    );
-                remote = {
-                    entity: branch,
-                    vendorSiteCode: config.siteCode,
-                    debitAccount: lib.ESD_HTKT_ACCOUNTING_UTILS.buildAccountSegment(
-                        config.debitAccount,
-                        mapping.entity
-                    ),
-                    creditAccount: lib.ESD_HTKT_ACCOUNTING_UTILS.buildAccountSegment(
-                        config.creditAccount,
-                        mapping.entity
-                    )
-                };
-            }
-            source.saveExpenseXdcbSite(vendor.id, remote);
-            site = source.getExpenseXdcbSite(vendor.id, branch, config.siteCode);
-            if (!site) throw new Error("Chưa lưu được site XDCB về S6.");
-        }
-        var master = new SCFile("esdHTKTvendor");
-        try {
-            if (master.doSelect('id="' + source.expenseSupplierQuote(vendor.id) + '"') !== RC_SUCCESS)
-                throw new Error("Không đọc lại được NCC S6.");
-            master["ogl.sync.status"] = true;
-            if (master.doUpdate() !== RC_SUCCESS)
-                throw new Error("Không lưu được trạng thái đồng bộ NCC S6.");
-        } finally {
-            source.expenseSupplierClose(master);
-        }
-        record["vendor.site.id"] = site.id;
-        record["ogl.sync.status"] = true;
-        return { success: true, siteId: site.id };
-    } catch (error) {
-        return { success: false, message: String(error.message || error) };
-    }
-}
-
