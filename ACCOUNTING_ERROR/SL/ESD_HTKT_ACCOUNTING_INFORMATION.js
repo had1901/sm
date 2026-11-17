@@ -284,7 +284,8 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
             entry: preparedEntry,
             entries: preparedEntries,
             requestId: requestId,
-            payloadResult: payloadResult
+            payloadResult: payloadResult,
+            hasPayable: hasPayableAssetEntry(entries, payloadResult.vendorId)
         });
     }
 
@@ -314,7 +315,8 @@ function generateAccountingInformationByPrepaymentId(prepaymentId) {
             prepayment,
             prepared.entry,
             prepared.payloadResult,
-            createdTime
+            createdTime,
+            prepared.hasPayable
         );
 
         if (insertRecord(TABLE_ACCOUNTING_INFORMATION, row) !== RC_SUCCESS) {
@@ -376,7 +378,8 @@ function buildAccountingInformationRecord(
     prepayment,
     entry,
     payloadResult,
-    createdTime
+    createdTime,
+    hasPayable
 ) {
     var payload = payloadResult.data;
     var accountingType = safeString(payloadResult.accountingType)
@@ -400,6 +403,7 @@ function buildAccountingInformationRecord(
     return {
         'request.id': requestId,
         'prepayment.id': prepayment.id,
+        'internal.ref.id': prepayment.id,
         'vendor.id': payloadResult.vendorId,
         type: accountingType,
         data: JSON.stringify(payload),
@@ -418,8 +422,22 @@ function buildAccountingInformationRecord(
             payloadResult.accountingAmount === undefined
                 ? entry.amount
                 : payloadResult.accountingAmount,
-        'contract.id': prepayment.contract_id
+        'contract.id': prepayment.contract_id,
+        'has.payable': hasPayable === true
     };
+}
+
+function hasPayableAssetEntry(entries, vendorId) {
+    vendorId = safeString(vendorId).trim();
+    for (var i = 0; i < entries.length; i++) {
+        var entryVendorId = safeString(entries[i].vendor_id).trim();
+        if (safeString(entries[i].entry_type).trim().toUpperCase() === 'PAYABLE' &&
+                safeString(entries[i].account_type).trim().toUpperCase() === 'ASSET' &&
+                (!vendorId || entryVendorId === vendorId)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function getAccountingSubType(ledgerType) {
@@ -963,16 +981,8 @@ function mapInvoiceApiPayloadForEntries(
         pendingFields: [],
         vendorId: context.vendorId,
         accountingAmount: totalAmount,
-        // Test loi AP chi cho phieu do VTB.HTKT.118 tao, sau validation.
-        data: appendApAmountTestSuffix(payload, prepayment.created_by)
+        data: payload
     };
-}
-
-function appendApAmountTestSuffix(payload, createdBy) {
-    if (safeString(createdBy).trim() === 'VTB.HTKT.118') {
-        payload.amount = String(payload.amount) + 'aa';
-    }
-    return payload;
 }
 
 function mapStandardEntryDiscountType(entry) {

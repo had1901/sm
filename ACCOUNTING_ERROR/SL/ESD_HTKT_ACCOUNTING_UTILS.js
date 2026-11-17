@@ -13,6 +13,7 @@ var ACCOUNTING_SUB_TYPE = {
     DU_CHI: "DU_CHI",
     TAT_TOAN: "TAT_TOAN",
     INHOUSE: "INHOUSE", // CORE chuyển tiền trong hệ thống
+    HACH_TOAN_KHO: "HACH_TOAN_KHO",
     CITAD: "CITAD" // CORE chuyển tiền ngoài hệ thống di CITAD
 };
 
@@ -238,7 +239,6 @@ function processAccounting(esdHTKTprepayment) {
 
 //processAccounting({ id: 'DC.100.26.0000069' });
 //processAccounting({ id: 'TU.106.26.0000193' });
-
 function callApiAp(esdHTKTacountingInfo) {
     var success = false;
     if (!esdHTKTacountingInfo || !esdHTKTacountingInfo['request.id'] || !esdHTKTacountingInfo.data) {
@@ -257,9 +257,10 @@ function callApiAp(esdHTKTacountingInfo) {
         if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.THANH_TOAN ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.DU_CHI ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.TAM_UNG ||
+            esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.HACH_TOAN_KHO ||
             esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.THUE) {
-//            apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApInvoice(payload);
-            apiResult = { success: false }
+            apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApInvoice(payload);
+            //            apiResult = { success: false }
         } else if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.TAT_TOAN) {
             apiResult = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createApPayment(payload);
         } else {
@@ -342,7 +343,6 @@ function callApiGl(esdHTKTacountingInfo) {
 //checkCompleteAccounting('DC.100.26.0000069')
 function callApiCore(esdHTKTacountingInfo) {
     // Đặt false để tắt giả lập và gọi lại CORE thật.
-    var USE_FAKE_CORE_RESPONSE = false;
     var success = false;
     if (!esdHTKTacountingInfo || !esdHTKTacountingInfo['request.id'] || !esdHTKTacountingInfo.data) {
         // logger.info('ESD_HTKT_ACCOUNTING_UTILS::callApiCore: invalid payload');
@@ -361,25 +361,7 @@ function callApiCore(esdHTKTacountingInfo) {
         var httpStatus = null;
         var status = "UNKNOWN";
         var statusDetail = null;
-        if (USE_FAKE_CORE_RESPONSE &&
-            (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.INHOUSE ||
-                esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.CITAD)) {
-            var fakeStatuses = [
-                { code: "1", detail: "Thất bại" },
-                { code: "1001", detail: "Lỗi server" },
-                { code: "98", detail: "Time out call sang XES" },
-                { code: "202", detail: "Lỗi kết nối database" },
-                { code: "100", detail: "Lỗi dữ liệu. Mã lỗi hệ thống chung" }
-            ];
-            var fakeStatus = fakeStatuses[Math.floor(Math.random() * fakeStatuses.length)];
-            response = {
-                status: {
-                    code: fakeStatus.code,
-                    detail: fakeStatus.detail + " (Giả lập)"
-                },
-            };
-            rawResponseBody = rteJSONStringify(response);
-        } else if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.INHOUSE) {
+        if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.INHOUSE) {
             apiResult = lib.ESD_HTKT_FUND_TRANSFER_INTEGRATION.fundTranfer(payload);
         } else if (esdHTKTacountingInfo['sub.type'] == ACCOUNTING_SUB_TYPE.CITAD) {
             apiResult = lib.ESD_HTKT_FUND_TRANSFER_INTEGRATION.fundTranferOut(payload);
@@ -455,10 +437,10 @@ function checkAccountingInfo(requestId) {
     if (result == RC_SUCCESS) {
         var response = null;
         var prepId = itemAccounting['prepayment.id'];
-        if (itemAccounting.status !== ACCOUNTING_STATUS.CREATED &&
+        if (
             itemAccounting.status !== ACCOUNTING_STATUS.NEW &&
             itemAccounting.status !== ACCOUNTING_STATUS.PROCESSING) {
-            // Chi check voi cac trang thai CREATED, NEW, PROCESSING.
+            // Chi check voi cac trang thai NEW, PROCESSING.
             var currentStatus = itemAccounting.status;
             try { if (itemAccounting) itemAccounting.doClose(); } catch (e) {}
             if (currentStatus === ACCOUNTING_STATUS.COMPLETED && prepId) {
@@ -734,7 +716,7 @@ function jobCallCheckAccoutingStatus() {
     var sortFields = ["created.time"];
     var sortSeqs = [SCFILE_ASC];
     accountingInfoItem.setOrderBy(sortFields, sortSeqs);
-    var result = accountingInfoItem.doSelect(`(type = "${ACCOUNTING_TYPE.AP}" or type = "${ACCOUNTING_TYPE.GL}") and transaction.id <> NULL and (status = "${ACCOUNTING_STATUS.CREATED}" or status = "${ACCOUNTING_STATUS.NEW}" or status = "${ACCOUNTING_STATUS.PROCESSING}")`);
+    var result = accountingInfoItem.doSelect(`(type = "${ACCOUNTING_TYPE.AP}" or type = "${ACCOUNTING_TYPE.GL}") and transaction.id <> NULL and (status = "${ACCOUNTING_STATUS.NEW}" or status = "${ACCOUNTING_STATUS.PROCESSING}")`);
     var count = 0;
     var arrCheck = [];
     while (result == RC_SUCCESS && count < 5) {
@@ -752,7 +734,6 @@ function jobCallCheckAccoutingStatus() {
         // logger.info('ESD_HTKT_ACCOUNTING_UTILS::jobCallCheckAccoutingStatus: no item for check');
     }
 }
-
 //jobCallCheckAccoutingStatus();
 
 function jobCallIntegrateRecordInQueue() {
@@ -801,13 +782,18 @@ function checkAccount(accountId, napasCode) {
             return data;
         }
     } else if (napasCode) { // kiem tra ngoai he thong
+        //        var response = lib.ESD_HTKT_FUND_TRANSFER_INTEGRATION.checkNameAccountNapas(accountId, napasCode);
+        //        if (response && response.data && response.data.custInfo) {
+        //            var custInfo = response.data.custInfo;
+        //            if (custInfo && custInfo.length > 0 && response.data.custInfo[0].depAcctIdTo &&
+        //                response.data.custInfo[0].depAcctIdTo.refVal) {
+        //                return { acctName: response.data.custInfo[0].depAcctIdTo.refVal };
+        //            }
+        //        }
         var response = lib.ESD_HTKT_FUND_TRANSFER_INTEGRATION.checkNameAccountNapas(accountId, napasCode);
-        if (response && response.data && response.data.custInfo) {
-            var custInfo = response.data.custInfo;
-            if (custInfo && custInfo.length > 0 && response.data.custInfo[0].depAcctIdTo &&
-                response.data.custInfo[0].depAcctIdTo.refVal) {
-                return { acctName: response.data.custInfo[0].depAcctIdTo.refVal };
-            }
+        var resData = (response && response.body && response.body.data) ? response.body.data : (response ? response.data : null);
+        if (resData && resData.destHolder) {
+            return { acctName: resData.destHolder };
         }
     }
     return null;
