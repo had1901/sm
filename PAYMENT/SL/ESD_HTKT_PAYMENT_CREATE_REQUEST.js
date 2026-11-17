@@ -101,7 +101,7 @@ function createPaymentRequest(input) {
             } 
 
             xdcbContract = xdcbResult.data;
-            // Khóa HS–HĐ đã được server đối chiếu; contract.id vẫn giữ HĐ gốc.
+             // Khóa HS–HĐ đã được server đối chiếu; contract.id vẫn giữ HĐ gốc.
             contractData.contractDossierId = xdcbContract.contractDossierId || "";
             // TH2 phải có NCC hợp lệ ngay trước khi cấp số/ghi phiếu; không yêu cầu dòng gói thầu.
             if (xdcbContract.dossier) {
@@ -307,10 +307,16 @@ function mapPaymentRecord(paymentRec, contractData, paymentId) {
     // Lưu hạng mục HHDV/XDCB đã được chuẩn hóa và kiểm tra ở createPaymentRequest();
     // nghiệp vụ SLA (esdDMmsProcess.type) lưu vào product.type.
     paymentRec['original.contract.category'] = contractData.contractCategory;
-    // product.type chỉ lấy esdDMmsProcess.type theo esdHDcontract.process.id (kể cả hợp đồng XDCB).
-    var productCategory = htktCreatePay_getProductCategoryByContract(
-            paymentRec['source.contract.id'] || paymentRec['contract.id']
-    );
+    // XDCB: phân loại HĐ theo esdXDCBrepairProjectCtr (repair.id / construction.id).
+    // HHDV (hoặc HĐ XDCB không phân loại được): esdDMmsProcess.type theo esdHDcontract.process.id.
+    var productCategory = contractData.contractCategory === 'XDCB'
+            ? htktCreatePay_getXdcbProductType(paymentRec['contract.id'] || paymentRec['source.contract.id'])
+            : "";
+    if (!productCategory) {
+        productCategory = htktCreatePay_getProductCategoryByContract(
+                paymentRec['source.contract.id'] || paymentRec['contract.id']
+        );
+    }
     if (productCategory) {
         paymentRec['product.type'] = productCategory;
     }
@@ -378,6 +384,41 @@ function htktCreatePay_getProductCategoryByContract(contractId) {
         return "";
     }
     return htktCreatePay_getProductCategoryByProcess(processId);
+}
+
+/* Nghiệp vụ/sản phẩm SLA của phiếu TT XDCB; phải trùng SLA_PAYMENT_XDCB_PRODUCT_TYPES trong ESD_HTKT_SLA. */
+var SLA_PAYMENT_XDCB_REPAIR = "BDSC công trình XDCB";
+var SLA_PAYMENT_XDCB_CONSTRUCTION = "Công trình XDCB";
+
+/**
+ * Phân loại HĐ XDCB theo esdXDCBrepairProjectCtr (mỗi HĐ chỉ có một trong hai trường):
+ *   repair.id có giá trị       -> "BDSC công trình XDCB" (công trình sửa chữa)
+ *   construction.id có giá trị -> "Công trình XDCB"      (dự án xây mới/cải tạo)
+ * Tìm theo id, nếu không có thì theo contract.code. Trả "" nếu không xác định được.
+ */
+function htktCreatePay_getXdcbProductType(contractId) {
+    var normalizedId = htktCreatePay_normalizeValue(contractId);
+    if (!normalizedId) return "";
+    var ctrFile = null;
+    try {
+        ctrFile = new SCFile("esdXDCBrepairProjectCtr", SCFILE_READONLY);
+        ctrFile.setFields(["id", "contract.code", "repair.id", "construction.id"]);
+        var escapedId = escapeSmQueryValue(normalizedId);
+        if (ctrFile.doSelect('id="' + escapedId + '"') !== RC_SUCCESS &&
+                ctrFile.doSelect('contract.code="' + escapedId + '"') !== RC_SUCCESS) {
+            print("[HTKT_PAYMENT_PRODUCT] Không tìm thấy HĐ XDCB " + normalizedId + " trong esdXDCBrepairProjectCtr");
+            return "";
+        }
+        if (htktCreatePay_normalizeValue(ctrFile["repair.id"])) return SLA_PAYMENT_XDCB_REPAIR;
+        if (htktCreatePay_normalizeValue(ctrFile["construction.id"])) return SLA_PAYMENT_XDCB_CONSTRUCTION;
+        print("[HTKT_PAYMENT_PRODUCT] HĐ XDCB " + normalizedId + " chưa có repair.id/construction.id");
+        return "";
+    } catch (e) {
+        print("[HTKT_PAYMENT_PRODUCT] Lỗi đọc esdXDCBrepairProjectCtr " + normalizedId + ": " + (e && e.message ? e.message : e));
+        return "";
+    } finally {
+        closeSCFile(ctrFile);
+    }
 }
 
 /**

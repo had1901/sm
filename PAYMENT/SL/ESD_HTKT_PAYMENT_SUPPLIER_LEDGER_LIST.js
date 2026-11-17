@@ -322,7 +322,11 @@ function getListAccountsPayable(input) {
                     : "";
             var refundAmount = getNumberField(file, ["pv.refund.amount"]);
             var paidAmount = getNumberField(file, ["pv.amount"]);
-            var payableAmount = getNumberField(file, ["pe.amount"]);
+            var payableAmountValue = file["pe.amount"];
+            var payableAmount = payableAmountValue === null ||
+                    payableAmountValue === undefined || payableAmountValue === ""
+                    ? amount
+                    : getNumberField(file, ["pe.amount"]);
             var expenseReferenceId = isExpensePayable
                     ? (internalRefId || paymentEntryRefId || paymentVendorRefId)
                     : "";
@@ -436,14 +440,13 @@ function buildAccountsPayableQueryScope(vendorId, contractId, currentPaymentId) 
     return (
             "FROM esdHTKTaccountingInformation ai " +
             "LEFT JOIN esdHTKTpayment payment " +
-            'ON (ai.prepayment.id = payment.id ' +
-            'AND (ai.sub.type = "DU_CHI" OR payment.status = "accounted")) ' +
+            'ON (ai.prepayment.id = payment.id) ' +
             "LEFT JOIN esdHTKTpaymentEntry pe " +
             "ON (ai.prepayment.id = pe.payment.id " +
             'AND pe.entry.type = "PAYABLE" ' +
             'AND pe.account.type = "ASSET" ' +
             'AND pe.vendor.id = "' + escapeSmQueryValue(vendorId) + '") ' +
-            "JOIN esdHTKTpaymentVendor pv " +
+            "LEFT JOIN esdHTKTpaymentVendor pv " +
             "ON (pv.payment.id = pe.payment.id " +
             'AND pv.vendor.id = "' + escapeSmQueryValue(vendorId) + '" ' +
             'AND (ai.sub.type ~= "DU_CHI" OR ' +
@@ -460,7 +463,9 @@ function buildAccountsPayableQueryScope(vendorId, contractId, currentPaymentId) 
             'AND ai.status = "COMPLETED" ' +
             'AND ai.type = "AP" ' +
             'AND ai.has.payable = true ' +
-            (currentPaymentId ? 'AND ai.prepayment.id ~= "' + escapeSmQueryValue(currentPaymentId) + '" ' : "")
+            'AND (ai.sub.type = "DU_CHI" OR payment.id = NULL OR payment.status = "accounted") ' +
+            (currentPaymentId ? 'AND (ai.prepayment.id = NULL OR ai.prepayment.id = "" OR ' +
+            'ai.prepayment.id ~= "' + escapeSmQueryValue(currentPaymentId) + '") ' : "")
     );
 }
 

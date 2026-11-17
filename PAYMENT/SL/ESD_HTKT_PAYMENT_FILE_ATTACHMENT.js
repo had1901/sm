@@ -289,18 +289,18 @@ function listPaymentSourceDocuments(input) {
             params.currentUser
         );
         var source = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseDigitizationReadSourceLinks({
-            contractId: parent["contract.id"],
-            paymentId: parent.id
+            contractId: parent["contract.id"]
         });
         var refs = source.references["$" + parent["contract.id"]] || [];
+        
         // Chỉ lấy tài liệu của HS–HĐ đã lưu, kể cả hai hồ sơ cùng HĐ và cùng MST.
         var selectedSource = lib.ESD_HTKT_EXPENSE_CONTRACT.selectContractDossier(
             { digitizationReferences: refs },
             parent["contract.dossier.id"],
-            true,
-            parent.id
+            true
         );
         refs = selectedSource.digitizationReferences;
+        
         if (!refs.length) {
             return { 
                 success: true, 

@@ -22,6 +22,9 @@ var WF_CONFIG = {
     SERVICE_VERSION: "2.1.0"
 };
 
+/* Snapshot trước YCCS (Dự chi + Thanh toán), giữ trong $G để hook sau lưu (khác scope $L) đọc được. */
+var HTKT_SLA_RETURN_CONTEXT_VARIABLE = "$G.htkt.sla.expense.return.contexts";
+
 var NEXT_PHASE_MAP = {
     "initial_dmms": "dmms_initiated",
     "initial_kttc": "kttc_checked",
@@ -434,7 +437,131 @@ function getReturnToUpdatePhase(record) {
     return "";
 }
 
+/* Loại phiếu esdHTKTpayment có ghi SLA khi YCCS. */
+function htktWfIsSlaReturnType(record) {
+    var type = String(record && record["transaction.type"] || "").replace(/^\s+|\s+$/g, "");
+    return type === "Dự chi" || type === "Thanh toán";
+}
+
+function htktWfSlaReturnContexts() {
+    var raw = vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE];
+    if (!raw) return {};
+    var contexts = JSON.parse(String(raw));
+    if (!contexts || Object.prototype.toString.call(contexts) !== "[object Object]") {
+        throw new Error("SLA_INVALID_RETURN_CONTEXT");
+    }
+    return contexts;
+}
+
+/** Capture before mutating the live SM record. No Tracking/Segment writes here. */
+function htktWfPrepareReturnSla(record, returnPhase) {
+    if (String(record.status || "") === "request_edit") return;
+    var engine = lib.ESD_HTKT_SLA_ENGINE;
+    if (!engine || typeof engine.snapshot !== "function" || typeof engine.onWorkflowChanged !== "function") {
+        throw new Error("Thiếu ESD_HTKT_SLA_ENGINE để ghi SLA khi trả sửa.");
+    }
+    var before = engine.snapshot(record);
+    if (!before || !before.id || !htktWfIsSlaReturnType(before)) {
+        throw new Error("SLA_INVALID_PAYMENT_RETURN");
+    }
+    var contexts = htktWfSlaReturnContexts();
+    var key = "$" + before.id;
+    if (contexts[key] && contexts[key].state === "PENDING") {
+        // A native save may fail before the completion hook runs. Retrying the
+        // same unsaved return keeps its original snapshot and performs no SLA IO.
+        if (JSON.stringify(contexts[key].before) === JSON.stringify(before)) return;
+    } else if (contexts[key] && contexts[key].state !== "DONE") {
+        throw new Error("SLA_RETURN_NOT_COMPLETED: " + before.id);
+    }
+    var after = JSON.parse(JSON.stringify(before));
+    after["current.phase"] = returnPhase;
+    after.status = "request_edit";
+    contexts[key] = { before: before, after: after, state: "PENDING" };
+    vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+}
+
+/** After-save Rule Set: call AFTER the request_edit record is saved successfully.
+ * Read back the committed record; a failed/unfinished native save must not open SLA.
+ * The context also lets the enter and update hooks share one RETURN delivery.
+ */
+function completeReturnSlaAfterSave(record) {
+    var id = String(record && record.id || "").trim();
+    if (!id) throw new Error("SLA_MISSING_PAYMENT");
+    if (String(record.status || "") !== "request_edit") {
+        return { success: true, skipped: true, reason: "NOT_RETURN" };
+    }
+    var contexts = htktWfSlaReturnContexts();
+    var key = "$" + id;
+    var context = contexts[key];
+    if (!context || !context.before || !context.after) {
+        throw new Error("SLA_RETURN_CONTEXT_MISSING: " + id);
+    }
+    if (context.state === "DONE") {
+        return { success: true, skipped: true, reason: "RETURN_ALREADY_APPLIED" };
+    }
+    if (context.state !== "PENDING") {
+        throw new Error("SLA_RETURN_RECONCILIATION_REQUIRED: " + id);
+    }
+    var saved = null;
+    try {
+        saved = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        var queryId = id.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        if (saved.doSelect('id="' + queryId + '"') !== RC_SUCCESS) {
+            throw new Error("SLA_RETURN_PAYMENT_NOT_FOUND: " + id);
+        }
+        var engine = lib.ESD_HTKT_SLA_ENGINE;
+        var committed = engine.snapshot(saved);
+        for (var field in context.after) if (Object.prototype.hasOwnProperty.call(context.after, field)) {
+            // Native workflow may recalculate this derived display field on save.
+            if (field === "current.executor") continue;
+            if (committed[field] !== context.after[field]) {
+                throw new Error("SLA_RETURN_NOT_COMMITTED: " + id + " field=" + field);
+            }
+        }
+        // A failed SLA write can leave a partial plan. Do not automatically replay
+        // it through a second native hook; retain the context for reconciliation.
+        context.state = "APPLYING";
+        vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+        var result;
+        try {
+            result = engine.onWorkflowChanged(context.before, saved);
+            if (!result || result.success !== true) throw new Error("SLA_RETURN_WRITE_FAILED");
+        } catch (slaError) {
+            context.state = "FAILED";
+            context.error = String(slaError.message || slaError);
+            vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+            throw new Error("Phiếu đã lưu trả sửa nhưng ghi SLA thất bại. Cần đối soát trước khi gọi lại. " + context.error);
+        }
+        context.state = "DONE";
+        vars[HTKT_SLA_RETURN_CONTEXT_VARIABLE] = JSON.stringify(contexts);
+        return result;
+    } finally {
+        try { if (saved) saved.doClose(); } catch (closeError) {}
+    }
+}
+
+/** Entry point for every SLA Rule Set of esdHTKTpayment (enter + update).
+ * TRANSITION uses the native before/after records; RETURN uses the saved snapshot.
+ */
+function onSlaWorkflowChanged(oldRecord, record) {
+    if (record && htktWfIsSlaReturnType(record) &&
+            String(record.status || "") === "request_edit") {
+        return completeReturnSlaAfterSave(record);
+    }
+    var id = String(record && record.id || "").trim();
+    var context = htktWfSlaReturnContexts()["$" + id];
+    if (context && context.state !== "DONE" && context.state !== "PENDING") {
+        throw new Error("SLA_RETURN_NOT_COMPLETED: " + id);
+    }
+    return lib.ESD_HTKT_SLA_ENGINE.onWorkflowChanged(oldRecord, record);
+}
+
 function returnToUpdate(record, documentsAlreadyDeleted) {
+    var returnPhase = getReturnToUpdatePhase(record);
+    if (!returnPhase) {
+        throw new Error("Không xác định được initial.role để trả phiếu về chỉnh sửa.");
+    }
+    
     if (isPostAuditOperator()) {
         throw new Error("Cán bộ Hậu kiểm không được thực hiện thao tác này.");
     }
@@ -450,7 +577,11 @@ function returnToUpdate(record, documentsAlreadyDeleted) {
         }
     }
 
-    // 1. Cập nhật trạng thái phiếu
+    // 1. Cập nhật trạng thái phiếu (snapshot SLA phải lấy TRƯỚC khi đổi phase/status)
+    if (htktWfIsSlaReturnType(record)) {
+        htktWfPrepareReturnSla(record, returnPhase);
+    }
+    record["current.phase"] = returnPhase;
     record.status = "request_edit";
 
     var currentUser = String(

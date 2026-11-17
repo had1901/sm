@@ -165,6 +165,7 @@ function getListPaymentVendor(input) {
 
     while (rc == RC_SUCCESS) {
         var item = mapRowToObject(f, fieldMappings);
+        
         if (String(item.contract_category || "").toUpperCase() === "XDCB") {
             // Rút gọn/HS–HĐ dùng MST như bộ chọn NCC; qua gói thầu dùng ID dòng Contractor S4.
             // Chỉ đổi mã hiển thị, không ghi mã Contractor vào supplier.id của master S6.
@@ -2267,7 +2268,6 @@ function getPaymentXdcbContractInfo(record) {
         totalPaidAmount: contract["total.amount.paid"] == null ? "" : contract["total.amount.paid"],
         remainingAmount: paymentXdcbRemaining(contract["contract.amount"], contract["total.amount.paid"]),
         sourceContract: contract,
-        paymentId: context.payment.id,
         contractDossierId: context.payment["contract.dossier.id"] || ""
     };
 }
@@ -2278,11 +2278,9 @@ function getPaymentXdcbContractInfo(record) {
  */
 function getPaymentXdcbSuppliers(record) {
     var info = getPaymentXdcbContractInfo(record);
-    var requestId = info.paymentId;
     var result = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseContractReadDigitizations(
             {
                 contractId: info.id,
-                paymentId: requestId,
                 start: 1,
                 count: 1,
                 sortField: "id",
@@ -2300,8 +2298,7 @@ function getPaymentXdcbSuppliers(record) {
     lib.ESD_HTKT_EXPENSE_CONTRACT.selectContractDossier(
         info.sourceContract,
         info.contractDossierId,
-        true,
-        requestId
+        true
     );
     var rows = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseXdcbSuppliers(info.sourceContract);
 

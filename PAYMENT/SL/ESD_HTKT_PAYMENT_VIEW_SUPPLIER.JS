@@ -269,3 +269,76 @@ function getTabCostDivision(endpoint, input, extraData) {
             currentRecord
     );
 }
+
+
+/**
+ * Tab "Hàng hoá dịch vụ" - giải ngân theo HHDV (Đề nghị thanh toán).
+ * HTML-Generating Script: ESD_HTKT_PAYMENT_VIEW_SUPPLIER.getTabHHDV
+ * Số tiền đề nghị thanh toán lấy từ biến form $amount (esdHTKTpaymentVendor_do_new),
+ * fallback cột amount của esdHTKTpaymentVendor.
+ */
+function getTabHHDV(endpoint, input, extraData) {
+    var currentRecord = extraData;
+    if (!currentRecord || Array.isArray(currentRecord) || typeof currentRecord !== 'object') {
+        currentRecord = {};
+    }
+
+    var localFile = vars.$L_file || {};
+    var rowId = currentRecord["id"] || localFile["id"] || "";
+    var paymentId = currentRecord["payment.id"] || currentRecord["paymentId"] || localFile["payment.id"] || vars.$G_payment_id || "";
+    var contractId = currentRecord["contract.id"] || currentRecord["contractId"] || localFile["contract.id"] || vars.$G_contract_id || "";
+    var vendorId = currentRecord["vendor.id"] || currentRecord["vendorId"] || localFile["vendor.id"] || vars.$G_vendor_id || "";
+    var vendorNumber = currentRecord["vendor.number"] || currentRecord["vendorNumber"] || localFile["vendor.number"] || "";
+    var status = currentRecord["status"] || localFile["payment.status"] || localFile["status"] || "";
+
+    // Số tiền đề nghị thanh toán của NCC
+    var amount = vars.$amount;
+    if (amount === undefined || amount === null || String(amount).trim() === "") {
+        amount = localFile["amount"];
+    }
+    amount = String(amount === undefined || amount === null ? "" : amount).replace(/,/g, "").trim();
+
+    // Thông tin phân quyền (BR-01)
+    if (paymentId) {
+        var paymentRec = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        if (paymentRec.doSelect('id="' + paymentId + '"') === RC_SUCCESS) {
+            if (!contractId && paymentRec["contract.id"]) {
+                contractId = paymentRec["contract.id"];
+            }
+            currentRecord["currentPhase"] = paymentRec["current.phase"];
+            currentRecord["initialRole"] = paymentRec["initial.role"];
+            currentRecord["createdBy"] = paymentRec["created.by"];
+            currentRecord["userCheckerDmms"] = paymentRec["user.checker.dmms"] || paymentRec["use.checker.dmms"];
+            currentRecord["userCheckerKttc"] = paymentRec["user.checker.kttc"];
+            currentRecord["userApproverKttc"] = paymentRec["user.approver.kttc"];
+            currentRecord["userApproverDmms"] = paymentRec["user.approver.dmms"];
+            currentRecord["userCheckerFinal"] = paymentRec["user.checker.final"];
+            currentRecord["userApproverFinal"] = paymentRec["user.approver.final"];
+            if (paymentRec["status"]) {
+                status = paymentRec["status"];
+            }
+        }
+        paymentRec.doClose();
+    }
+
+    currentRecord["id"] = rowId;
+    currentRecord["paymentVendorId"] = rowId;
+    currentRecord["paymentId"] = paymentId;
+    currentRecord["payment.id"] = paymentId;
+    currentRecord["contractId"] = contractId;
+    currentRecord["contract.id"] = contractId;
+    currentRecord["vendorId"] = vendorId;
+    currentRecord["vendor.id"] = vendorId;
+    currentRecord["vendorNumber"] = vendorNumber;
+    currentRecord["vendor.number"] = vendorNumber;
+    currentRecord["status"] = status;
+    currentRecord["amount"] = amount;
+    currentRecord["currentUser"] = vars['$lo.contact.name'] || currentRecord["currentUser"] || "";
+    currentRecord.isFromHK = isPostAuditSupplierRecord(currentRecord);
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
+            "HachToanKeToan/ThanhToan/TabThongTinDeNghi/TabHangHoaDichVu",
+            "",
+            currentRecord
+    );
+}

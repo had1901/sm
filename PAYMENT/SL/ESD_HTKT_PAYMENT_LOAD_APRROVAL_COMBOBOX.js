@@ -414,25 +414,27 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
      *    - require.check.level1 / require.check.level2
      *    - user.approver.final
      */
-    /*
-     * Giống Tạm ứng: quyền tái phân công chỉ thuộc cán bộ đang được gán làm
-     * Phê duyệt ĐMMS / Phê duyệt KTTC trên chính phiếu. Functional Right
-     * 0005/0006 chỉ dùng cho quyền xem sớm; user có right nhưng không nằm trong
-     * luồng của phiếu không được sửa combobox. Không tái phân công ở bước tạo mới.
-     */
+    // Không tái phân công ở bước tạo mới.
     var isPaymentCreationPhase =
             !phase ||
             phase === "start" ||
             (role === "dmms" && phase === "initial_dmms") ||
             (role === "kttc" && phase === "initial_kttc");
-    var isAssignedApprovalDmms = !!actor && actor === approverDmms;
-    var isAssignedApprovalKttc = !!actor && actor === approverKttc;
+    /*
+     * Tái phân công: ai có Functional Right Phê duyệt ĐMMS (0005) / Phê duyệt
+     * KTTC (0006) đều được tái phân công, kể cả khi không nằm trong luồng phiếu
+     * (được chọn lại chính mình). Người đang được gán trên phiếu cũng được.
+     */
+    var isReassignerDmms = leaderAccess.isApprovalDmms === true ||
+            (!!actor && actor === approverDmms);
+    var isReassignerKttc = leaderAccess.isApprovalKttc === true ||
+            (!!actor && actor === approverKttc);
 
     var canDmmsLeaderReassign =
             !reassignmentClosed &&
             !isPaymentCreationPhase &&
             role === "dmms" &&
-            isAssignedApprovalDmms;
+            isReassignerDmms;
 
     /*
      * Quyền tái phân công của Lãnh đạo KTTC không phụ thuộc initial.role.
@@ -445,7 +447,7 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
     var canKttcLeaderReassign =
             !reassignmentClosed &&
             !isPaymentCreationPhase &&
-            isAssignedApprovalKttc;
+            isReassignerKttc;
 
     var fieldAccess = {};
 
