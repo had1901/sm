@@ -219,7 +219,44 @@ function filterExpenseXdcbDigitizationSuppliers(contract, rows) {
     return result;
 }
 
-/** TH2 lấy NCC/ngân hàng từ HS–HĐ; không tra hoặc yêu cầu dòng NCC gói thầu. */
+/** Tiền của đúng một HS–HĐ: dự kiến từ expected.amount, đã trả cộng dồn từ amount.
+ * Hai field paid.amount/remaining.amount là field cũ; số còn lại luôn tính từ hai số nguồn trên.
+ * Nhận cả DTO đã phân giải SHTL và record đọc trực tiếp để TT/DC dùng chung một công thức.
+ */
+function getContractDossierAmounts(dossier) {
+    var money = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseXdcbMoney;
+    var total = money(dossier.expectedAmount !== undefined ? dossier.expectedAmount : dossier["expected.amount"]);
+    var paid = money(dossier.paidAmount !== undefined ? dossier.paidAmount : dossier.amount);
+    if ((total !== null && total < 0) || (paid !== null && paid < 0)) {
+        throw new Error("Số tiền nguồn HS–HĐ không được âm.");
+    }
+    var remaining = null;
+    if (total !== null && paid !== null) {
+        remaining = lib.ESD_HTKT_Utils.subtractStringsManual(String(total), String(paid));
+        // Nguồn đã trả hết hoặc vượt dự kiến thì không được thanh toán thêm.
+        if (lib.ESD_HTKT_Utils.compareMoneyStrings(remaining, "0") < 0) remaining = "0";
+    }
+    return { totalAmount: total, paidAmount: paid, remainingAmount: remaining };
+}
+
+/** Kiểm tra tiền lần này trên đúng HS–HĐ; không lấy hạn mức HĐ/NCC khác thay cho hồ sơ.
+ * Caller đọc lại nguồn trước khi gọi. Hàm chỉ kiểm tra, không cộng tiền S4 khi Lưu/Trình phiếu.
+ */
+function validateContractDossierAmount(dossier, amount) {
+    var money = getContractDossierAmounts(dossier);
+    if (money.remainingAmount === null) {
+        throw new Error("HS–HĐ " + expenseSupplierText(dossier.id) + " chưa đủ expected.amount/amount để kiểm tra số tiền.");
+    }
+    var value = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseXdcbMoney(expenseSupplierText(amount).replace(/,/g, ""));
+    if (value === null) throw new Error("Thiếu số tiền thanh toán cho HS–HĐ.");
+    if (lib.ESD_HTKT_Utils.compareMoneyStrings(String(value), money.remainingAmount) > 0) {
+        throw new Error("Số tiền lần này vượt số còn lại của HS–HĐ " + expenseSupplierText(dossier.id) +
+            " (" + money.remainingAmount + ").");
+    }
+    return money;
+}
+
+/** TH2 lấy NCC/ngân hàng và hạn mức của chính HS–HĐ; không yêu cầu dòng NCC gói thầu. */
 function getExpenseDossierSupplier(contract) {
     var dossier = contract.dossier;
     var tax = expenseSupplierText(dossier.taxCode);
@@ -230,6 +267,7 @@ function getExpenseDossierSupplier(contract) {
     }
     // Master S6 chỉ bổ sung địa chỉ của đúng MST đã lưu, không chọn lại NCC thay hồ sơ.
     var master = expenseSupplierReadOne("esdHTKTvendor", 'vendor.number="' + expenseSupplierQuote(tax) + '"', ["address"], false);
+    var money = getContractDossierAmounts(dossier);
     return {
         // Droplist TH2 dùng MST; vendor.id khi lưu vẫn là ID master S6 như luồng cũ.
         "supplier.id": tax,
@@ -238,10 +276,10 @@ function getExpenseDossierSupplier(contract) {
         "address": expenseSupplierText(master && master.address),
         "bank.number": expenseSupplierText(dossier.bankAccount),
         "bank.name": expenseSupplierText(dossier.bankName),
-        // Chưa chốt ý nghĩa/hạn mức expected.amount: không tự coi tiền HĐ/NCC là tiền hồ sơ.
-        "total.amount.due": null,
-        "total.amount.paid": null,
-        "remaining.amount": null,
+        // Dùng alias cũ để DO/SL TT vẫn kiểm tra tiền như trước, nhưng nguồn TH2 là đúng hồ sơ.
+        "total.amount.due": money.totalAmount,
+        "total.amount.paid": money.paidAmount,
+        "remaining.amount": money.remainingAmount,
         "source": "S4"
     };
 }
@@ -342,7 +380,7 @@ function getExpenseContractInfo(record) {
 /**
  * Điền hàng thông tin HS–HĐ cho FD phiếu TT và FD chi tiết NCC TT/DC, sau kiểm tra quyền của màn.
  * TT dùng khóa trên phiếu cha; DC dùng khóa trên từng món. TH1/HHDV không hiển thị hàng này.
- * Đọc ba khoản tiền thật của hồ sơ; không dùng expected.amount, không thay tiền HĐ hoặc số tiền nhập.
+ * Giá trị hồ sơ = expected.amount, đã trả = amount; chỉ tính biến hiển thị, không thay tiền HĐ/số tiền nhập.
  */
 function loadContractDossierScreen(record) {
     // DS có thể chạy lại hoặc mở bản ghi khác: luôn xóa dữ liệu hiển thị của hồ sơ trước đó.
@@ -373,16 +411,17 @@ function loadContractDossierScreen(record) {
         if (!dossierId || !contractId) return false;
         var dossier = expenseSupplierReadOne("esdXDCBctrPaymentAdvance",
             'id="' + expenseSupplierQuote(dossierId) + '" and ctr.id="' + expenseSupplierQuote(contractId) + '"',
-            ["id", "amount", "paid.amount", "remaining.amount"], false);
+            ["id", "expected.amount", "amount"], false);
         if (!dossier) {
             print("Không có HS–HĐ " + dossierId + " thuộc HĐ " + contractId + " để hiển thị.");
             return false;
         }
+        var money = getContractDossierAmounts(dossier);
         vars.$contractDossierId = expenseSupplierText(dossier.id);
-        // Giữ nguyên giá trị DB, kể cả 0; nguồn trống thì để trống, không tự tính lại số còn lại.
-        vars.$totalContractDossierAmount = expenseSupplierText(dossier["amount"]);
-        vars.$totalContractDossierPaid = expenseSupplierText(dossier["paid.amount"]);
-        vars.$contractDossierRemainingAmount = expenseSupplierText(dossier["remaining.amount"]);
+        // Giữ số 0; nguồn thiếu thì để trống, tuyệt đối không đọc hai field tiền cũ.
+        vars.$totalContractDossierAmount = expenseSupplierText(money.totalAmount);
+        vars.$totalContractDossierPaid = expenseSupplierText(money.paidAmount);
+        vars.$contractDossierRemainingAmount = expenseSupplierText(money.remainingAmount);
         return true;
     } catch (error) {
         // Lỗi đọc hàng thông tin chỉ ghi Messages; các dữ liệu và quyền của màn vẫn do luồng cũ xử lý.
@@ -560,6 +599,10 @@ function saveExpenseXdcbDetails(record) {
     // Input số tiền của FD ghi trực tiếp vào record; $amount có thể vẫn là giá trị khởi tạo.
     var amount = Number(String(record["amount"]).replace(/,/g, ""));
     if (!isFinite(amount) || amount <= 0 || amount > 9007199254740991) throw new Error("Số tiền dự chi phải lớn hơn 0 hợp lệ.");
+    // Nguồn vừa được đọc lại qua SHTL; chặn vượt hồ sơ trước khi tạo master NCC hoặc đồng bộ site.
+    if (contract.dossier) {
+        validateContractDossierAmount(contract.dossier, amount);
+    }
 //    if (!expenseSupplierText(record["transaction.des"]) || expenseSupplierText(record["transaction.des"]).length > 255) {
 //        throw new Error("Nội dung đề nghị là bắt buộc và không quá 255 ký tự.");
 //    }
@@ -598,6 +641,25 @@ function validateExpenseXdcbItem(record, actor) {
         throw new Error("Loại tiền của món khác loại tiền HĐ XDCB.");
     }
     return { context: context, contract: contract, vendor: vendor };
+}
+
+/** Chuyển bước DC: đọc tiền mới nhất theo khóa hồ sơ của món đã lưu.
+ * Quyền chuyển bước vẫn do WF kiểm tra; không gọi quyền chọn HĐ của bước Tạo mới tại bước phê duyệt.
+ * amount có thể là tổng các món cùng HS trên phiếu, để không chia nhỏ món nhằm vượt hạn mức hồ sơ.
+ */
+function validateExpenseDossierPayment(record, payment, amount) {
+    if (expenseSupplierText(payment["original.contract.category"]).toUpperCase() !== "XDCB") return;
+    var dossierId = expenseSupplierText(record["contract.dossier.id"]);
+    if (!dossierId) return; // TH1 giữ nguyên luồng cũ.
+    var dossier = expenseSupplierReadOne("esdXDCBctrPaymentAdvance",
+        'id="' + expenseSupplierQuote(dossierId) + '" and ctr.id="' + expenseSupplierQuote(record["contract.id"]) + '"',
+        ["id", "contractor.tax.code", "payment.type", "expected.amount", "amount"], true);
+    var vendor = getExpenseAccountingVendor(record["vendor.id"]);
+    if (expenseSupplierText(dossier["contractor.tax.code"]) !== expenseSupplierText(vendor["vendor.number"]) ||
+            expenseSupplierText(dossier["payment.type"]) !== "DU_CHI") {
+        throw new Error("NCC hoặc loại phiếu không khớp HS–HĐ " + dossierId + ".");
+    }
+    validateContractDossierAmount(dossier, amount === undefined ? record.amount : amount);
 }
 
 /** Đồng bộ như S2: vấn tin chưa xác nhận có site thì tạo site XDCB từ NCC S6. */

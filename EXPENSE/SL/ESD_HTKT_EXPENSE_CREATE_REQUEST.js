@@ -70,10 +70,15 @@ function createExpenseRequest(input) {
         }
 
         if (returnCode == RC_SUCCESS) {
-            // Điểm nối đồng bộ tạo mới S4 đặt ngay sau Add thành công, không dùng trigger.
-            // TẠM TẮT cho Dự chi: ESD_XDCB_SYNC_SQUAD_DATA chưa hỗ trợ payment.category="Dự chi"
-            // hoặc phiếu trống chưa có HĐ/NCC. Chờ S4 bổ sung hàm/payload Dự chi rồi mới nối tại đây.
-            // Chưa gọi squad6ThemMoiTienDoThanhToanTamUngCuaHDTH1/TH2.
+            // DC tạo trước HĐ/NCC: điểm nối tự bỏ qua khi chưa có HS, không gửi phiếu XDCB sang S2.
+            // Tiền thực tế và tiến độ chỉ gửi khi Đã hạch toán; không gọi hàm hoàn tất tại lúc tạo phiếu trống.
+            if (contractCategory === "XDCB") {
+                try {
+                    lib.ESD_HTKT_PAYMENT_VENDOR.syncXdcbCreatedToSquad4(expenseRec);
+                } catch (squadError) {
+                    print("Phiếu đã tạo; chưa đồng bộ S4: " + String(squadError.message || squadError));
+                }
+            }
             
             createActivity(
                     "activityHTKTpayment",

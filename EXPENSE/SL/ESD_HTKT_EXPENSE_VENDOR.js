@@ -893,6 +893,8 @@ function createPaymentVendor(input) {
 		}
 
 		var createdItems = [];
+		// HS chỉ được báo Chờ thanh toán sau khi cả lô món và tổng phiếu S6 đã lưu thành công.
+		var createdDossierItems = [];
 		var seen = {};
 		var maxSeq = getExpensePaymentVendorMaxSequence(paymentId);
 		var vendorIdContext = { seq: maxSeq + 1, prescanned: true, usedIds: {} };
@@ -935,6 +937,13 @@ function createPaymentVendor(input) {
 							" reason " + relationFile.getMessages()
 					);
 				}
+				if (contractCategory === "XDCB" && dossierId) {
+					createdDossierItems.push({
+						"payment.id": paymentId,
+						"contract.id": contractId,
+						"contract.dossier.id": dossierId
+					});
+				}
 
 				// Ghi nhớ đúng bản ghi vừa tạo trong session SM để menu/wizard
 				// kế tiếp select trực tiếp món Dự chi này.
@@ -973,6 +982,16 @@ function createPaymentVendor(input) {
 						"Đã thêm hợp đồng nhưng không cập nhật được tổng số hợp đồng trên phiếu. Code: " +
 						updateRc
 				);
+			}
+		}
+
+		// [GỌI SL S4 QUA ADAPTER S6] DC tạo trống chưa có HS; mốc tiếp nhận TH2 là lúc thêm món này.
+		// Chỉ đổi trạng thái HS, không tạo tiến độ/cộng tiền. Lỗi S4 không thu hồi các món S6 đã lưu xong.
+		for (var d = 0; d < createdDossierItems.length; d++) {
+			try {
+				lib.ESD_HTKT_PAYMENT_VENDOR.syncXdcbCreatedToSquad4(paymentFile, createdDossierItems[d]);
+			} catch (squadError) {
+				print("Món đã tạo; chưa đồng bộ trạng thái HS–HĐ S4: " + String(squadError.message || squadError));
 			}
 		}
 

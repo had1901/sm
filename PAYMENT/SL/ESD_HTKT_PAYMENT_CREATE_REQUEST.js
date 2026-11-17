@@ -216,11 +216,12 @@ function createPaymentRequest(input) {
 
             //Đồng bộ giá trị Tạm ứng/Thanh toán giữa Squad 6 và Squad 2
             try {
-                // S4 chưa bật tiến độ; không gửi phiếu XDCB vào nguồn S2.
+                // HHDV giữ nguyên S2; TT XDCB chỉ báo HS–HĐ Chờ thanh toán, chưa cộng tiền.
                 if (contractCategory !== "XDCB") {
                     lib.ESD_HD_Integration.createContractPayment(paymentRec);
-                } 
-                // TODO TT-XDCB: đồng bộ S4 sẽ nối sau khi chốt sự kiện/payload và chống cộng trùng.
+                } else {
+                    lib.ESD_HTKT_PAYMENT_VENDOR.syncXdcbCreatedToSquad4(paymentRec);
+                }
             } catch (ex) {
                 // print("[ERROR] Đồng bộ createContractPayment thất bại cho ID: " + paymentRec["id"] + " | Detail: " + ex);
             }

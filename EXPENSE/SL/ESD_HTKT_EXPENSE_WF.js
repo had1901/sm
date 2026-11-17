@@ -474,6 +474,8 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
     if (!paymentId) return ["Thiếu mã phiếu Dự chi để kiểm tra các món."];
 
     var errorMss = [];
+    // Chỉ dùng cho DC XDCB TH2; mỗi khóa HS có tổng tiền riêng, không gộp các hồ sơ cùng HĐ/NCC.
+    var dossierAmounts = {};
     var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
     try {
         var escapedPaymentId = paymentId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -511,6 +513,18 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
                 amountError = "Số tiền dự chi phải lớn hơn 0.";
             }
             if (amountError && errorMss.indexOf(amountError) < 0) errorMss.push(amountError);
+            if (!amountError && String(record["original.contract.category"] || "").toUpperCase() === "XDCB" &&
+                    String(vendor["contract.dossier.id"] || "").trim()) {
+                var dossierKey = "$" + String(vendor["contract.dossier.id"]);
+                dossierAmounts[dossierKey] = lib.ESD_HTKT_Utils.addStringsManual(
+                    dossierAmounts[dossierKey] || "0", String(amount));
+                try {
+                    lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.validateExpenseDossierPayment(
+                        vendor, record, dossierAmounts[dossierKey]);
+                } catch (dossierError) {
+                    errorMss.push(String(dossierError.message || dossierError));
+                }
+            }
             rc = vendor.getNext();
         }
         if (rc !== RC_NO_MORE) {
