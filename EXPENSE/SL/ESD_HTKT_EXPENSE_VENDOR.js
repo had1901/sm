@@ -6,21 +6,7 @@
  *                  không truy vấn bổ sung theo từng NCC.
  */
 
-var _smLogger = typeof getLog === 'function' ? getLog("ESD_HTKT_EXPENSE_VENDOR") : null;
-var log = {
-	info: function(m) {
-		try { if (_smLogger && typeof _smLogger.info === "function") _smLogger.info(m); } catch (e) {}
-		try { if (typeof print === "function") print("[EXPENSE_VENDOR][INFO] " + m); } catch (e) {}
-	},
-	error: function(m) {
-		try { if (_smLogger && typeof _smLogger.error === "function") _smLogger.error(m); } catch (e) {}
-		try { if (typeof print === "function") print("[EXPENSE_VENDOR][ERROR] " + m); } catch (e) {}
-	}
-};
-var logger = log;
-
 function run() {
-	var tRunStart = new Date().getTime();
 	try {
 		var input = vars["$L.file"];
 		if (!input) return;
@@ -33,8 +19,6 @@ function run() {
 			});
 			return;
 		}
-
-		log.info("[EXPENSE_VENDOR.run] START action=" + name);
 
 		var result;
 		switch (name) {
@@ -71,10 +55,8 @@ function run() {
 				};
 		}
 
-		log.info("[EXPENSE_VENDOR.run] FINISHED action=" + name + " in " + (new Date().getTime() - tRunStart) + "ms");
 		input.queryReturn = JSON.stringify(result);
 	} catch (e) {
-		log.error("[EXPENSE_VENDOR.run] EXCEPTION: " + e.toString() + " in " + (new Date().getTime() - tRunStart) + "ms");
 		if (vars["$L.file"]) {
 			vars["$L.file"].queryReturn = JSON.stringify({
 				success: false,
@@ -378,28 +360,21 @@ function setExpenseVendorTriggersState(enabled) {
 			var rc = (typeof SCDatum !== "undefined") ? new SCDatum() : 0;
 			fn.rtecall("trigger", rc, enabled ? 1 : 0);
 		}
-	} catch (e) {
-		log.info("[setExpenseVendorTriggersState] note: " + e);
-	}
+	} catch (e) {}
 }
 
 function deleteExpenseVendor(input) {
-	var tStart = new Date().getTime();
 	var params = getExpenseVendorInputDetails(input);
 	var paymentId = normalizeExpenseVendorValue(params.paymentId || params.expenseId);
 	var paymentVendorId = normalizeExpenseVendorValue(params.paymentVendorId || params.itemId || params.id);
 
-	log.info("[deleteExpenseVendor] START paymentId=" + paymentId + ", paymentVendorId=" + paymentVendorId);
-
 	if (!paymentId || !paymentVendorId) {
-		log.info("[deleteExpenseVendor] FAILED: Thiếu paymentId hoặc paymentVendorId");
 		return { success: false, status: "error", message: "Thiếu paymentId hoặc paymentVendorId." };
 	}
 
 	var relationFile = new SCFile("esdHTKTpaymentVendor");
 	var paymentFile = null;
 	try {
-		var t0 = new Date().getTime();
 		var query = 'id="' + escapeExpenseVendorQueryValue(paymentVendorId) + '"';
 		if (paymentId) {
 			query += ' and payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '"';
@@ -408,16 +383,12 @@ function deleteExpenseVendor(input) {
 		if (selRc !== RC_SUCCESS) {
 			selRc = relationFile.doSelect('id="' + escapeExpenseVendorQueryValue(paymentVendorId) + '"');
 			if (selRc !== RC_SUCCESS) {
-				log.info("[deleteExpenseVendor] FAILED: Không tìm thấy món Dự chi cần xóa (query: " + query + ") (" + (new Date().getTime() - t0) + "ms)");
 				return { success: false, status: "error", message: "Không tìm thấy món Dự chi cần xóa." };
 			}
 		}
-		log.info("[deleteExpenseVendor] [Step 1] Selected relationFile OK (" + (new Date().getTime() - t0) + "ms)");
 
 		var deletedAmount = relationFile["amount"] != null ? String(relationFile["amount"]) : "0";
 
-		t0 = new Date().getTime();
-		log.info("[deleteExpenseVendor] [Step 2] Executing relationFile.doDelete()...");
 		setExpenseVendorTriggersState(false);
 		var deleteRc;
 		try {
@@ -425,11 +396,8 @@ function deleteExpenseVendor(input) {
 		} finally {
 			setExpenseVendorTriggersState(true);
 		}
-		var delDuration = new Date().getTime() - t0;
-		log.info("[deleteExpenseVendor] [Step 2] relationFile.doDelete() FINISHED: code=" + deleteRc + " (" + delDuration + "ms)");
 
 		if (deleteRc !== RC_SUCCESS) {
-			log.info("[deleteExpenseVendor] FAILED at doDelete code=" + deleteRc);
 			return { success: false, status: "error", message: "Xóa món Dự chi thất bại. Code: " + deleteRc };
 		}
 		// Đóng file relationFile ngay sau khi xóa để giải phóng lock và con trỏ trên bảng esdHTKTpaymentVendor
@@ -441,14 +409,10 @@ function deleteExpenseVendor(input) {
 			if (typeof lib !== "undefined" && lib.ESD_HTKT_EXPENSE_ENTRY && typeof lib.ESD_HTKT_EXPENSE_ENTRY.deleteAutoExpenseEntriesForVendor === "function") {
 				lib.ESD_HTKT_EXPENSE_ENTRY.deleteAutoExpenseEntriesForVendor(paymentId, paymentVendorId);
 			}
-		} catch (eDelEntries) {
-			log.info("[deleteExpenseVendor] deleteAutoExpenseEntriesForVendor note: " + eDelEntries);
-		}
+		} catch (eDelEntries) {}
 
-		t0 = new Date().getTime();
 		paymentFile = new SCFile("esdHTKTpayment");
 		var paySelRc = paymentFile.doSelect('id="' + escapeExpenseVendorQueryValue(paymentId) + '"');
-		log.info("[deleteExpenseVendor] [Step 3] Selected paymentFile: code=" + paySelRc + " (" + (new Date().getTime() - t0) + "ms)");
 		if (paySelRc !== RC_SUCCESS) {
 			throw new Error("Không tìm thấy phiếu Dự chi " + paymentId + ".");
 		}
@@ -457,7 +421,6 @@ function deleteExpenseVendor(input) {
 		);
 		paymentFile["total.transaction"] = currentTransactions;
 
-		t0 = new Date().getTime();
 		if (currentTransactions === 0) {
 			paymentFile["total.amount.paid"] = "0";
 		} else {
@@ -470,26 +433,18 @@ function deleteExpenseVendor(input) {
 				paymentFile["total.amount.paid"] = getExpenseTotalAmount(paymentId);
 			}
 		}
-		log.info("[deleteExpenseVendor] [Step 4] Calculate totals: trans=" + currentTransactions + ", totalAmountPaid=" + paymentFile["total.amount.paid"] + " (" + (new Date().getTime() - t0) + "ms)");
 
-		t0 = new Date().getTime();
-		log.info("[deleteExpenseVendor] [Step 5] Executing paymentFile.doUpdate()...");
 		var updateRc = paymentFile.doUpdate();
-		var updateDuration = new Date().getTime() - t0;
-		log.info("[deleteExpenseVendor] [Step 5] paymentFile.doUpdate() FINISHED: code=" + updateRc + " (" + updateDuration + "ms)");
-
 		if (updateRc !== RC_SUCCESS) {
 			throw new Error("Đã xóa món nhưng không cập nhật được tổng số món Dự chi. Code: " + updateRc);
 		}
 
-		log.info("[deleteExpenseVendor] COMPLETED SUCCESS in " + (new Date().getTime() - tStart) + "ms");
 		return { success: true, status: "success", message: "Xóa món Dự chi thành công." };
 	} catch (error) {
-		log.error("[deleteExpenseVendor] EXCEPTION: " + error.toString() + " in " + (new Date().getTime() - tStart) + "ms");
-		return { success: false, status: "error", message: "Lỗi xóa món Dự chi: " + error.toString() };
+		return { success: false, status: "error", message: "Lỗi xóa món Dự chi: " + String(error.message || error) };
 	} finally {
-		closeExpenseVendorFile(paymentFile);
-		closeExpenseVendorFile(relationFile);
+		if (relationFile) closeExpenseVendorFile(relationFile);
+		if (paymentFile) closeExpenseVendorFile(paymentFile);
 	}
 }
 
@@ -1129,7 +1084,6 @@ function refreshExpenseAmountsAfterInvoiceDelete(paymentId, paymentVendorIds) {
  * Cộng bằng chuỗi tiền để giữ chính xác phần thập phân và số tiền lớn.
  */
 function getExpenseTotalAmount(paymentId) {
-	var t0 = new Date().getTime();
 	var normalizedId = normalizeExpenseVendorValue(paymentId);
 	if (!normalizedId) throw new Error("Thiếu mã phiếu Dự chi để tính tổng giá trị.");
 
@@ -1139,9 +1093,7 @@ function getExpenseTotalAmount(paymentId) {
 				'payment.id="' + escapeExpenseVendorQueryValue(normalizedId) + '"'
 		);
 		var totalAmount = "0";
-		var count = 0;
 		while (itemRc === RC_SUCCESS) {
-			count++;
 			totalAmount = addExpenseMoney(
 					totalAmount, String(itemFile["amount"] || "0")
 			);
@@ -1150,7 +1102,6 @@ function getExpenseTotalAmount(paymentId) {
 		if (itemRc !== RC_NO_MORE && itemRc !== 1 && itemRc !== 3) {
 			throw new Error("Không đọc được đầy đủ số tiền các món Dự chi. Code: " + itemRc);
 		}
-		log.info("[getExpenseTotalAmount] paymentId=" + normalizedId + ", itemCount=" + count + ", totalAmount=" + totalAmount + " (" + (new Date().getTime() - t0) + "ms)");
 		return totalAmount;
 	} finally {
 		closeExpenseVendorFile(itemFile);
@@ -2109,10 +2060,6 @@ function validateVendorAndPaymentDetails(record) {
 	return errorMss;
 }
 
-
-
-
-
 /** Import tạo mới: bỏ qua dòng lỗi dữ liệu, ghi các dòng hợp lệ. */
 function importExpenseVendors(input) {
 	var tStart = new Date().getTime();
@@ -2123,16 +2070,13 @@ function importExpenseVendors(input) {
 	var payment = new SCFile("esdHTKTpayment");
 	var created = [];
 	var expensePerformance = expensePerformanceCreate("import", paymentId, rows.length);
-	log.info("[importExpenseVendors] START paymentId=" + paymentId + ", user=" + currentUser + ", totalRows=" + rows.length);
 	try {
 		if (!paymentId || !currentUser || !rows.length) {
 			throw new Error("Thiếu mã phiếu, người thực hiện hoặc dữ liệu import.");
 		}
-		var t0 = new Date().getTime();
 		expensePerformanceMeasure(expensePerformance, "payment.check", function() {
 			return expenseImportCheckPayment(payment, paymentId, currentUser);
 		});
-		log.info("[importExpenseVendors] [Stage 1] Payment check OK (" + (new Date().getTime() - t0) + "ms)");
 		var importCategory = expenseVendorCheckContractCategory(payment);
 		if (importCategory === "XDCB") {
 			lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext({ "payment.id": paymentId }, currentUser, true);
@@ -2162,9 +2106,7 @@ function importExpenseVendors(input) {
 				errors.push((fileName ? fileName + " - " : "") + "Dòng " + line + ": " + String(rowError.message || rowError));
 			}
 		}
-		log.info("[importExpenseVendors] [Stage 2] Row validation finished: valid=" + valid.length + ", errors=" + errors.length + " (" + (new Date().getTime() - tStart) + "ms)");
 		if (!valid.length) {
-			log.info("[importExpenseVendors] FAILED: 0 valid rows (" + (new Date().getTime() - tStart) + "ms)");
 			return {
 				success: false,
 				errorCode: "IMPORT_ROW_VALIDATION_FAILED",
@@ -2179,15 +2121,11 @@ function importExpenseVendors(input) {
 		expensePerformanceMeasure(expensePerformance, "payment.recheck", function() {
 			return expenseImportCheckPayment(payment, paymentId, currentUser);
 		});
-		t0 = new Date().getTime();
 		var usedIdsMap = {};
 		var maxSeq = expensePerformanceMeasure(expensePerformance, "item.maxSeq", function() {
 			return getExpensePaymentVendorMaxSequence(paymentId, usedIdsMap);
 		});
-		log.info("[importExpenseVendors] [Stage 3] Max sequence: " + maxSeq + " (" + (new Date().getTime() - t0) + "ms)");
 		var vendorIdContext = { seq: maxSeq + 1, prescanned: true, usedIds: usedIdsMap };
-		t0 = new Date().getTime();
-		log.info("[importExpenseVendors] [Stage 4] Inserting " + valid.length + " items...");
 		setExpenseVendorTriggersState(false);
 		try {
 			for (var j = 0; j < valid.length; j++) {
@@ -2234,21 +2172,13 @@ function importExpenseVendors(input) {
 				} finally {
 					closeExpenseVendorFile(item);
 				}
-				if (j > 0 && j % 50 === 0) {
-					log.info("[importExpenseVendors] [Stage 4] Inserted " + j + "/" + valid.length + " items (" + (new Date().getTime() - tStart) + "ms)...");
-				}
 			}
 		} finally {
 			setExpenseVendorTriggersState(true);
 		}
-		log.info("[importExpenseVendors] [Stage 4] All " + created.length + " items inserted (" + (new Date().getTime() - tStart) + "ms)");
-		t0 = new Date().getTime();
-		log.info("[importExpenseVendors] [Stage 5] Refreshing totals...");
 		expensePerformanceMeasure(expensePerformance, "totals.final", function() {
 			return expenseImportRefreshTotals(payment, paymentId);
 		});
-		log.info("[importExpenseVendors] [Stage 5] Refreshing totals OK (" + (new Date().getTime() - t0) + "ms)");
-		log.info("[importExpenseVendors] COMPLETED SUCCESS in " + (new Date().getTime() - tStart) + "ms");
 		return {
 			success: true,
 			message: "Đã import thành công " + created.length + "/" + rows.length + " bản ghi.",
@@ -2259,7 +2189,6 @@ function importExpenseVendors(input) {
 			createdItems: created
 		};
 	} catch (error) {
-		log.error("[importExpenseVendors] EXCEPTION: " + error.toString() + " in " + (new Date().getTime() - tStart) + "ms");
 		var failureMessage = String(error.message || error);
 		var remaining = [];
 		var rollbackErrors = [];
@@ -2724,8 +2653,6 @@ function expenseImportSetItem(item, itemId, paymentId, row, description) {
 }
 
 function expenseImportRefreshTotals(payment, paymentId) {
-	var t0 = new Date().getTime();
-	log.info("[expenseImportRefreshTotals] START paymentId=" + paymentId);
 	var item = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
 	try {
 		// Add/Delete món có thể cập nhật phiếu cha; đọc lại trước khi ghi tổng.
@@ -2739,14 +2666,10 @@ function expenseImportRefreshTotals(payment, paymentId) {
 		}
 		payment["total.transaction"] = count;
 		payment["total.amount.paid"] = getExpenseTotalAmount(paymentId);
-		var tUpdate = new Date().getTime();
-		log.info("[expenseImportRefreshTotals] Executing payment.doUpdate() with trans=" + count + ", total=" + payment["total.amount.paid"] + "...");
 		var updateRc = payment.doUpdate();
-		log.info("[expenseImportRefreshTotals] payment.doUpdate() FINISHED: code=" + updateRc + " (" + (new Date().getTime() - tUpdate) + "ms)");
 		if (updateRc !== RC_SUCCESS) {
 			throw new Error("Không cập nhật được tổng món/số tiền trên phiếu Dự chi. Mã lỗi SM: " + updateRc + ".");
 		}
-		log.info("[expenseImportRefreshTotals] COMPLETED in " + (new Date().getTime() - t0) + "ms");
 	} finally { closeExpenseVendorFile(item); }
 }
 
