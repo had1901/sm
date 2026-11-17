@@ -31,7 +31,7 @@ vars.$L_file['payment.id'] = paymentId;
 vars.$L_file['contract.id'] = contractId;
 
 // Dùng khóa hồ sơ đúng nguồn TT/DC, chỉ điền các biến đọc cho hàng thông tin TH2.
-lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file);
+vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file) === true;
 
 // ID của món hiện tại (nếu đang ở màn hình xem/sửa món đã tồn tại)
 var currentItemId = vars.$L_file ? (vars.$L_file['id'] || vars.$L_file.id || vars.$G_payment_vendor_id) : null;

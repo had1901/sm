@@ -14,7 +14,7 @@ try {
 
 var record = vars.$L_file;
 // Hàng hồ sơ chỉ có ở TT XDCB TH2; tiền HĐ gốc bên dưới giữ nguyên.
-lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(record);
+vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(record) === true;
 
 
 vars.$showTab = false;

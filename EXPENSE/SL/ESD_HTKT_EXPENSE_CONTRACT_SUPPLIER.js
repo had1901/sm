@@ -346,7 +346,6 @@ function getExpenseContractInfo(record) {
  */
 function loadContractDossierScreen(record) {
     // DS có thể chạy lại hoặc mở bản ghi khác: luôn xóa dữ liệu hiển thị của hồ sơ trước đó.
-    vars.$showContractDossier = false;
     vars.$contractDossierId = "";
     vars.$totalContractDossierAmount = "";
     vars.$totalContractDossierPaid = "";
@@ -384,7 +383,6 @@ function loadContractDossierScreen(record) {
         vars.$totalContractDossierAmount = expenseSupplierText(dossier["amount"]);
         vars.$totalContractDossierPaid = expenseSupplierText(dossier["paid.amount"]);
         vars.$contractDossierRemainingAmount = expenseSupplierText(dossier["remaining.amount"]);
-        vars.$showContractDossier = true;
         return true;
     } catch (error) {
         // Lỗi đọc hàng thông tin chỉ ghi Messages; các dữ liệu và quyền của màn vẫn do luồng cũ xử lý.

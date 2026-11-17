@@ -31,7 +31,7 @@ var isPostAuditPaymentVendorView = isPayment &&
 vars.$isPayment = isPayment;
 vars.$isExpense = isExpense;
 // Xóa hàng hồ sơ cũ và nạp đúng HS–HĐ đang lưu; TH1/HHDV sẽ ẩn hàng này.
-lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file);
+vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file) === true;
 var isXDCB = vars.$L_file["original.contract.category"] === "XDCB";
 
 if (isExpense) {
