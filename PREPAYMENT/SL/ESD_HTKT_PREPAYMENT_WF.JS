@@ -305,6 +305,17 @@ function updateNextStatus(record, previousRecord) {
     if (previousRecord && previousRecord["current.phase"]) {
         oldPhase = String(previousRecord["current.phase"]).trim();
     }
+    
+        // Chặn cả các process gọi trực tiếp hàm chuyển bước, trước mọi thay đổi trạng thái.
+    if (oldPhase === HTKT_WF_PHASE.INITIAL_DMMS || oldPhase === HTKT_WF_PHASE.INITIAL_KTTC) {
+        var invoiceErrors = validateInvoices(String(record["id"] || record.id || ""));
+        if (invoiceErrors && invoiceErrors.length > 0) {
+            var invoiceErrorMessage = invoiceErrors.join("\n");
+            vars.$G_hasError = true;
+            vars.$G_errMsg = invoiceErrorMessage;
+            throw new Error(invoiceErrorMessage);
+        }
+    }
 
     // trưởng thêm: Chỉ tạo bản trình ký khi rời phase initial_kttc.
     if (oldPhase === HTKT_WF_PHASE.INITIAL_KTTC) {
