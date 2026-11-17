@@ -115,11 +115,11 @@ function squad6ThemMoiTienDoThanhToanTamUngCuaHDTH1(hdId, insertFields) {
         "total.amount.paid": (contract["total.amount.paid"] || 0) + paymentAmount
     });
     // Cập nhật tiền cho nhà thầu trong gói thầu
-    var joinRecord = lib.ESD_Utils.getOneRecord("esdjoinXDCBtenderPackageContractor ", `tender.package.id="${contract["tender.package.id"]}" and tax.code="${insertFields["vendor.id"]}"`, ["total.amount.paid"]);
+    var joinRecord = lib.ESD_Utils.getOneRecord("esdjoinXDCBtenderPackageContractor", `tender.package.id="${contract["tender.package.id"]}" and tax.code="${insertFields["vendor.id"]}"`, ["total.amount.paid"]);
     if (!joinRecord) {
         return;
     }
-    lib.ESD_Utils.updateFieldsOne("esdjoinXDCBtenderPackageContractor ", `tender.package.id="${contract["tender.package.id"]}" and tax.code="${insertFields["vendor.id"]}"`, {
+    lib.ESD_Utils.updateFieldsOne("esdjoinXDCBtenderPackageContractor", `tender.package.id="${contract["tender.package.id"]}" and tax.code="${insertFields["vendor.id"]}"`, {
         "total.amount.paid": (joinRecord["total.amount.paid"] || 0) + paymentAmount
     });
 
@@ -237,7 +237,7 @@ function squad6ThemMoiTienDoThanhToanTamUngCuaHDTH2(hsHdId, insertFields) {
         "total.amount.paid": (contract["total.amount.paid"] || 0) + paymentAmount
     });
     // Cập nhật tiền cho nhà thầu trong gói thầu
-    var joinRecord = lib.ESD_Utils.getOneRecord("esdjoinXDCBtenderPackageContractor ", `tender.package.id="${contract["tender.package.id"]}" and tax.code="${insertFields["vendor.id"]}"`, ["total.amount.paid"]);
+    var joinRecord = lib.ESD_Utils.getOneRecord("esdjoinXDCBtenderPackageContractor", `tender.package.id="${contract["tender.package.id"]}" and tax.code="${insertFields["vendor.id"]}"`, ["total.amount.paid"]);
     if (!joinRecord) {
         return;
     }
@@ -258,3 +258,65 @@ function squad6ThemMoiTienDoThanhToanTamUngCuaHDTH2(hsHdId, insertFields) {
 //     "bank.account": "",
 //     "bank.name": ""
 // });
+
+// Nguoi tao: hadv
+// Ngay tao: 04/11/2026
+// Nguoi cap nhat: hadv
+// Ngay cap nhat: 04/11/2026
+// Mo ta chuc nang: Hoàn thành phiếu yêu cầu nhập tài sản hình thành khi tất cả tài sản đã được đưa vào sử dụng
+function squad3HoanThanhNhapTSHinhThanh(idPhieu) {
+    if (!idPhieu) {
+        print("ID Phiếu yêu cầu nhập tài sản hình thành không hợp lệ")
+        return;
+    }
+    var assetRequestForm = lib.ESD_Utils.getOneRecord("esdXDCBassetRequestForm", `id="${idPhieu}"`, ["current.phase"]);
+    if (!assetRequestForm) {
+        print("ID Phiếu yêu cầu nhập tài sản hình thành không hợp lệ")
+        return;
+    }
+
+    if (assetRequestForm["current.phase"] !== "Cho tiep nhan") {
+        print("Phiếu yêu cầu nhập tài sản hình thành chưa ở giai đoạn 'Cho tiep nhan'")
+        return;
+    }
+    var assetRequestFormFormations = lib.ESD_Utils.fetchData("esdXDCBassetRequestFormFormation", `asset.request.form.id="${idPhieu}" and null(receiving.unit.id) and null(usage.date)`, ["id", "asset.name"]);
+    if (assetRequestFormFormations.length > 0) {
+        print(`Danh mục tài sản hình thành ${assetRequestFormFormations.map(item => `"${item["asset.name"]}"`).join(', ')} chưa được đưa vào sử dụng nên chưa thể hoàn thành phiếu yêu cầu`);
+        return;
+    }
+    lib.ESD_Utils.updateFieldsOne("esdXDCBassetRequestForm", `id="${idPhieu}"`, {
+        "current.phase": "Hoan thanh"
+    });
+}
+// test
+//squad3HoanThanhNhapTSHinhThanh("NTBG.XDCB.P54.03");
+
+
+// Nguoi tao: hadv
+// Ngay tao: 04/11/2026
+// Nguoi cap nhat: hadv
+// Ngay cap nhat: 04/11/2026
+// Mo ta chuc nang: Đưa danh mục tài sản hình thành vào sử dụng
+function squad3DuaTSHinhThanhVaoSuDung(idDMTSs, updateFields) {
+    if (typeof idDMTSs !== "string" && !Array.isArray(idDMTSs)) {
+        print(`ID danh mục tài sản phải là chuỗi hoặc mảng`);
+        return;
+    }
+    var ids = typeof idDMTSs === "string" ? [idDMTSs] : idDMTSs;
+    var messErrorRequireFields = requireFields(updateFields, {
+        "receiving.unit.id": "ID đơn vị tiếp nhận sử dụng",
+        "receiving.unit.name": "Tên đơn vị tiếp nhận sử dụng",
+        "usage.date": "Thời gian đưa vào sử dụng"
+    });
+    if (!!messErrorRequireFields) {
+        print(messErrorRequireFields);
+        return;
+    }
+    lib.ESD_Utils.updateFields("esdXDCBassetRequestFormFormation", `id isin {${ids.map(id => `"${id}"`).join(", ")}} and null(receiving.unit.id) and null(usage.date)`, updateFields);
+}
+// test
+//squad3DuaTSHinhThanhVaoSuDung(["TS_XDCB00038", "TS_XDCB00041"], {
+//    "receiving.unit.id": "010600000",
+//    "receiving.unit.name": "CN Thành phố Hà Nội",
+//    "usage.date": system.functions.tod()
+//});
