@@ -319,10 +319,20 @@ function getPrepaymentApprovalAccess(prepayment, currentUser, canonicalContactRe
      *    - require.check.level1 / require.check.level2
      *    - user.approver.final
      */
+    /*
+     * Tái phân công: ai có Functional Right Phê duyệt ĐMMS (0005) / Phê duyệt
+     * KTTC (0006) đều được tái phân công, kể cả khi không nằm trong luồng phiếu
+     * (được chọn lại chính mình). Người đang được gán trên phiếu cũng được.
+     */
+    var isReassignerDmms = leaderAccess.isApprovalDmms === true ||
+            (!!actor && actor === approverDmms);
+    var isReassignerKttc = leaderAccess.isApprovalKttc === true ||
+            (!!actor && actor === approverKttc);
+
     var canDmmsLeaderReassign = !reassignmentClosed &&
             !isPrepaymentCreationPhase &&
             role === "dmms" &&
-            isApprovalDmms;
+            isReassignerDmms;
 
     /*
      * Quyền tái phân công của Lãnh đạo KTTC không phụ thuộc initial.role.
@@ -334,7 +344,7 @@ function getPrepaymentApprovalAccess(prepayment, currentUser, canonicalContactRe
      */
     var canKttcLeaderReassign = !reassignmentClosed &&
             !isPrepaymentCreationPhase &&
-            isApprovalKttc;
+            isReassignerKttc;
 
     var fieldAccess = {};
 

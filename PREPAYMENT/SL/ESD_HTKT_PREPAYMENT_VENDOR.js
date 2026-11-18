@@ -11,7 +11,7 @@ function run() {
 
         var result;
         switch (name) {
-            //Danh sách Đề nghị theo nhà cung cấp
+                //Danh sách Đề nghị theo nhà cung cấp
             case 'getListPrepaymentVendor':
                 var data = getListPrepaymentVendor(input);
                 result = { success: true, data: data };
@@ -20,6 +20,11 @@ function run() {
             case 'totalContractSuppliers':
                 var data = totalContractSuppliers(input);
                 result = { success: true, data: data };
+                break;
+                //Thêm nhà cung cấp theo các PO đã chọn
+            case 'addPrepaymentVendorsByPO':
+                var data = addPrepaymentVendorsByPO(input);
+                result = { success: data.success, data: data };
                 break;
                 //Gỡ hóa đơn vào nhà cung cấp
             case 'deletePrepaymentVendor':
@@ -85,6 +90,197 @@ function totalContractSuppliers(input) {
     return totalSuppliers;
 }
 
+function addPrepaymentVendorsByPO(input) {
+    var params = {};
+    var errors = [];
+    var addedCount = 0;
+    var skippedCount = 0;
+    var prepaymentId = "";
+    var contractId = "";
+
+    try {
+        params = JSON.parse(input.details || input.queryString || "{}");
+        prepaymentId = String(params.prepaymentId || "").trim();
+    } catch (eParse) {
+        return { success: false, message: "Dữ liệu chọn PO không hợp lệ." };
+    }
+
+    var poIds = params.poIds || [];
+    if (typeof poIds === "string") poIds = poIds.split(/[,;|]/);
+    if (!Array.isArray(poIds)) poIds = [poIds];
+    var normalizedPoIds = [];
+    var seenPoIds = {};
+    for (var i = 0; i < poIds.length; i++) {
+        var poId = String(poIds[i] || "").replace(/^\s+|\s+$/g, "");
+        if (poId && !seenPoIds[poId]) {
+            seenPoIds[poId] = true;
+            normalizedPoIds.push(poId);
+        }
+    }
+
+    if (!prepaymentId || normalizedPoIds.length === 0) {
+        return { success: false, message: "Thiếu mã phiếu tạm ứng hoặc PO được chọn." };
+    }
+
+    var prepaymentFile = new SCFile("esdHTKTprepayment", SCFILE_READONLY);
+    try {
+        if (prepaymentFile.doSelect('id="' + escapePrepaymentVendorQueryValue(prepaymentId) + '"') !== RC_SUCCESS) {
+            return { success: false, message: "Không tìm thấy phiếu tạm ứng." };
+        }
+        contractId = String(prepaymentFile["contract.id"] || "").replace(/^\s+|\s+$/g, "");
+    } finally {
+        try { prepaymentFile.doClose(); } catch (eClosePrepayment) {}
+    }
+
+    if (!contractId) return { success: false, message: "Phiếu tạm ứng chưa có mã hợp đồng gốc." };
+
+    for (var poIndex = 0; poIndex < normalizedPoIds.length; poIndex++) {
+        var currentPoId = normalizedPoIds[poIndex];
+        var poFile = new SCFile("esdHDcontract", SCFILE_READONLY);
+        var contractSupplierFile = null;
+
+        try {
+            var poQuery = 'id="' + escapePrepaymentVendorQueryValue(currentPoId) + '" and category="HD_PO"';
+            if (poFile.doSelect(poQuery) !== RC_SUCCESS) {
+                errors.push("Không tìm thấy PO " + currentPoId + " trong esdHDcontract.");
+                continue;
+            }
+
+            var poContractId = String(poFile["item.id"] || poFile["contract.id"] || "").replace(/^\s+|\s+$/g, "");
+            if (poContractId !== contractId) {
+                errors.push("PO " + currentPoId + " thuộc hợp đồng " + (poContractId || "trống") +
+                    ", không khớp hợp đồng " + contractId + " của phiếu.");
+                continue;
+            }
+
+            contractSupplierFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
+            var supplierRc = contractSupplierFile.doSelect(
+                'contract.id="' + escapePrepaymentVendorQueryValue(currentPoId) + '"'
+            );
+
+            if (supplierRc !== RC_SUCCESS) {
+                errors.push("PO " + currentPoId + " chưa có nhà cung cấp trong esdHDcontractSupplier.");
+                continue;
+            }
+
+            while (supplierRc === RC_SUCCESS) {
+                var supplierId = String(contractSupplierFile["supplier.id"] || "").replace(/^\s+|\s+$/g, "");
+                var supplierData = null;
+                var supplierFile = null;
+                var vendorFile = null;
+                var prepaymentVendorFile = null;
+
+                try {
+                    if (!supplierId) throw new Error("PO " + currentPoId + " thiếu supplier.id.");
+
+                    supplierFile = new SCFile("esdDMSupplier", SCFILE_READONLY);
+                    if (supplierFile.doSelect('id="' + escapePrepaymentVendorQueryValue(supplierId) + '"') !== RC_SUCCESS) {
+                        throw new Error("Không tìm thấy NCC " + supplierId + " của PO " + currentPoId + ".");
+                    }
+
+                    supplierData = {
+                        id: supplierId,
+                        name: String(supplierFile["supplier.name"] || supplierFile["name"] || ""),
+                        taxCode: String(supplierFile["tax.code"] || ""),
+                        address: String(supplierFile["address"] || ""),
+                        type: String(supplierFile["type"] || "")
+                    };
+                    if (!supplierData.taxCode) throw new Error("NCC " + supplierId + " chưa có mã số thuế.");
+
+                    vendorFile = new SCFile("esdHTKTvendor");
+                    var vendorQuery = 'vendor.number="' + escapePrepaymentVendorQueryValue(supplierData.taxCode) +
+                        '" and supplier.id="' + escapePrepaymentVendorQueryValue(supplierId) + '"';
+                    if (vendorFile.doSelect(vendorQuery) !== RC_SUCCESS) {
+                        try { vendorFile.doClose(); } catch (eCloseMissingVendor) {}
+
+                        var vendorId = new Datum();
+                        var vendorNumberRc = new Datum();
+                        system.functions.rtecall("getnumber", vendorNumberRc, vendorId, "esdHTKTvendor");
+
+                        vendorFile = new SCFile("esdHTKTvendor");
+                        vendorFile["id"] = vendorId;
+                        vendorFile["vendor.name"] = supplierData.name;
+                        vendorFile["vendor.number"] = supplierData.taxCode;
+                        vendorFile["username"] = vars["$lo.contact.name"] || "";
+                        vendorFile["ogl.country"] = "VN";
+                        vendorFile["address"] = supplierData.address;
+                        vendorFile["supplier.id"] = supplierId;
+                        vendorFile["vendor.type"] = supplierData.type;
+                        var addVendorRc = vendorFile.doAction("add");
+                        if (addVendorRc !== RC_SUCCESS && addVendorRc !== true) {
+                            throw new Error("Không tạo được vendor master cho NCC " + supplierId + ".");
+                        }
+                    }
+
+                    var resolvedVendorId = String(vendorFile["id"] || "").replace(/^\s+|\s+$/g, "");
+                    if (!resolvedVendorId) throw new Error("Không xác định được vendor.id cho NCC " + supplierId + ".");
+
+                    prepaymentVendorFile = new SCFile("esdHTKTprepaymentVendor");
+                    var duplicateQuery = 'prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) +
+                        '" and po.id="' + escapePrepaymentVendorQueryValue(currentPoId) +
+                        '" and vendor.id="' + escapePrepaymentVendorQueryValue(resolvedVendorId) + '"';
+                    if (prepaymentVendorFile.doSelect(duplicateQuery) === RC_SUCCESS) {
+                        skippedCount++;
+                        supplierRc = contractSupplierFile.getNext();
+                        continue;
+                    }
+
+                    var numberRc = new SCDatum();
+                    numberRc.setValue(-1);
+                    var nextNumber = new SCDatum();
+                    system.functions.rtecall("getnumber", numberRc, nextNumber, "esdHTKTprepaymentVendor");
+                    var numberStatus = String(numberRc.getText()).replace(/^\s+|\s+$/g, "");
+                    var rawNumber = String(nextNumber.getText()).replace(/^\s+|\s+$/g, "");
+                    if (/^"[^\"]*"$/.test(rawNumber) || /^'[^']*'$/.test(rawNumber)) {
+                        rawNumber = rawNumber.substring(1, rawNumber.length - 1);
+                    }
+                    if (numberStatus !== "0" || !/^\d+$/.test(rawNumber)) {
+                        throw new Error("Không cấp được mã dòng NCC cho PO " + currentPoId + ".");
+                    }
+
+                    prepaymentVendorFile = new SCFile("esdHTKTprepaymentVendor");
+                    prepaymentVendorFile["id"] = ("000000000000000" + Number(rawNumber)).slice(-15);
+                    prepaymentVendorFile["prepayment.id"] = prepaymentId;
+                    prepaymentVendorFile["vendor.id"] = resolvedVendorId;
+                    prepaymentVendorFile["po.id"] = currentPoId;
+                    prepaymentVendorFile["vendor.site.id"] = "";
+                    prepaymentVendorFile["currency"] = String(contractSupplierFile["currency"] || "VND");
+                    prepaymentVendorFile["amount"] = String(contractSupplierFile["unpaid.amount"] || "0");
+                    prepaymentVendorFile["contract.amount"] = String(contractSupplierFile["unpaid.amount"] || "0");
+                    prepaymentVendorFile["payment.method"] = String(contractSupplierFile["payment.method"] || "CHUYENKHOAN");
+
+                    var addLinkRc = prepaymentVendorFile.doAction("add");
+                    if (addLinkRc !== RC_SUCCESS && addLinkRc !== true) {
+                        throw new Error("Không tạo được dòng NCC " + supplierId + " cho PO " + currentPoId + ".");
+                    }
+                    addedCount++;
+                } catch (eSupplier) {
+                    errors.push(String(eSupplier.message || eSupplier));
+                } finally {
+                    try { if (supplierFile) supplierFile.doClose(); } catch (eCloseSupplier) {}
+                    try { if (vendorFile) vendorFile.doClose(); } catch (eCloseVendor) {}
+                    try { if (prepaymentVendorFile) prepaymentVendorFile.doClose(); } catch (eClosePrepaymentVendor) {}
+                }
+
+                supplierRc = contractSupplierFile.getNext();
+            }
+        } catch (ePo) {
+            errors.push(String(ePo.message || ePo));
+        } finally {
+            try { if (poFile) poFile.doClose(); } catch (eClosePo) {}
+            try { if (contractSupplierFile) contractSupplierFile.doClose(); } catch (eCloseContractSupplier) {}
+        }
+    }
+
+    return {
+        success: errors.length === 0,
+        addedCount: addedCount,
+        skippedCount: skippedCount,
+        message: errors.length > 0 ? errors.join("; ") : "Đã thêm PO và nhà cung cấp vào phiếu tạm ứng.",
+        errors: errors
+    };
+}
+
 
 function getListPrepaymentVendor(input) {
     var invoiceList = [];
@@ -108,6 +304,7 @@ function getListPrepaymentVendor(input) {
         ['v.id', 'vendorId', 'S'],
         ['pv.id', 'id', 'S'],
         ['pv.prepayment.id', 'prepayment_id', 'S'],
+        ['pv.po.id', 'po_id', 'S'],
         ['p.contract.id', 'contract_id', 'S'],
         ['pv.vendor.id', 'vendor_id', 'S'],
         ['v.vendor.name', 'vendor_name', 'S'],
@@ -123,9 +320,9 @@ function getListPrepaymentVendor(input) {
     var sqlFields = fieldMappings.map(function(item) { return item[0]; });
     var select = " SELECT " + sqlFields.join(", ");
     var mapping = ' FROM esdHTKTprepaymentVendor pv ' +
-        ' JOIN esdHTKTprepayment p ON (pv.prepayment.id = p.id) ' +
-        ' JOIN esdHTKTvendor v ON (pv.vendor.id = v.id) ' +
-        ' LEFT JOIN esdHTKTvendorSite vs ON (pv.vendor.site.id = vs.id) ';
+            ' JOIN esdHTKTprepayment p ON (pv.prepayment.id = p.id) ' +
+            ' JOIN esdHTKTvendor v ON (pv.vendor.id = v.id) ' +
+            ' LEFT JOIN esdHTKTvendorSite vs ON (pv.vendor.site.id = vs.id) ';
     var control = ' WHERE p.id = "' + prepaymentId + '"';
 
     var f = new SCFile('esdHTKTprepaymentVendor', SCFILE_READONLY);
@@ -193,11 +390,11 @@ function getPrepaymentRemainingAmount(prepaymentId,vendorId) {
 
     var sqlSelect = "SELECT " + fieldMappings.map(function(item) { return item[0]; }).join(", ");
 
-    var sqlFrom = ' FROM esdHTKTprepaymentVendor hpv' +
-        ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
-        ' LEFT JOIN esdHTKTprepayment hp ON (hpv.prepayment.id = hp.id)' +
-        ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
-        ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)';
+        var sqlFrom = ' FROM esdHTKTprepaymentVendor hpv' +
+            ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
+            ' LEFT JOIN esdHTKTprepayment hp ON (hpv.prepayment.id = hp.id)' +
+            ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
+            ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)';
 
     var sqlWhere = ' WHERE hp.id = "' + prepaymentId + '" AND hpv.vendor.id = "' + vendorId + '"';
 
@@ -274,11 +471,11 @@ function getListInvoinVendor(input) {
 
     var select = " SELECT " + sqlFields.join(", ");
     var mapping = ' FROM esdHTKTinvoice i ' +
-        'JOIN esdHTKTvendor v ON (i.seller.tax.code = v.vendor.number) ';
+            'JOIN esdHTKTvendor v ON (i.seller.tax.code = v.vendor.number) ';
 
     var control = ' WHERE v.id = "' + vendorId + '" AND (i.check.status <> "CHECKING")';
     var querySQL = select + mapping + control;
-    
+
 
     var f = new SCFile('esdHTKTinvoice', SCFILE_READONLY);
     var rc = f.doSelect(querySQL);
@@ -354,7 +551,7 @@ function getInvoicesBySupplier(input) {
 
     var select = " SELECT " + sqlFields.join(", ");
     var mapping = ' FROM esdHTKTinvoice i ' +
-        'JOIN esdHTKTvendor v ON (i.seller.tax.code = v.vendor.number) ';
+            'JOIN esdHTKTvendor v ON (i.seller.tax.code = v.vendor.number) ';
 
     var control = ' WHERE i.request.id = "' + prepaymentId + '" AND v.id = "' + vendorId + '"';
     var querySQL = select + mapping + control;
@@ -426,7 +623,7 @@ function createListInvoinVendor(input) {
 
     try {
         var parsedData = JSON.parse(rawDetails);
-        
+
         var dataObj = [];
 
         if (parsedData.updatedSelectedRows && Array.isArray(parsedData.updatedSelectedRows)) {
@@ -440,7 +637,7 @@ function createListInvoinVendor(input) {
                 checkStatus: []
             };
         }
-        
+
         if (dataObj.length === 0) {
             return {
                 success: false,
@@ -556,8 +753,11 @@ function createListInvoinVendor(input) {
                 }
             }
         }
+        print("test 345")
 
         // Bước 2.5: Kiểm tra vượt quá số tiền còn lại của khoản tạm ứng
+        print("prepaymentId: " + prepaymentId);
+        print("vendorId: " + vendorId);
         var remainingData = getPrepaymentRemainingAmount(prepaymentId,vendorId);
         var totalRemainingAmount = "0";
 
@@ -642,6 +842,9 @@ function createListInvoinVendor(input) {
 
                 // Cập nhật thông tin hóa đơn gốc
                 invFile["request.id"] = itemRec["prepayment.id"];
+                if (itemRec["deduction.type"]) {
+                    invFile["deduction.type"] = itemRec["deduction.type"];
+                }
                 if (needCheckInvoice) {
                     invFile['last.check.date'] = new Date();
                 }
@@ -851,24 +1054,28 @@ function updateListInvoinVendor(input) {
 
             if (invoiceId !== "" && prepaymentId !== "") {
                 var invFile = new SCFile("esdHTKTprepaymentInvoice");
+                try {
+                    // Tạo câu lệnh tìm kiếm bản ghi đã tồn tại dựa trên cặp ID
+                    var query = "invoice.id=\"" + escapePrepaymentVendorQueryValue(invoiceId) + "\" AND prepayment.id=\"" + escapePrepaymentVendorQueryValue(prepaymentId) + "\"";
+                    var rcInv = invFile.doSelect(query);
 
-                // Tạo câu lệnh tìm kiếm bản ghi đã tồn tại dựa trên cặp ID
-                var query = "invoice.id=\"" + invoiceId + "\" AND prepayment.id=\"" + prepaymentId + "\"";
-                var rcInv = invFile.doSelect(query);
+                    // Nếu tìm thấy bản ghi liên kết trong Database
+                    if (rcInv == RC_SUCCESS) {
 
-                // Nếu tìm thấy bản ghi liên kết trong Database
-                if (rcInv == RC_SUCCESS) {
+                        // Thực hiện cập nhật loại khấu trừ
+                        invFile["deduction.type"] = deductionType;
 
-                    // Thực hiện cập nhật loại khấu trừ
-                    invFile["deduction.type"] = deductionType;
+                        var rcUpdate = invFile.doUpdate();
 
-                    var rcUpdate = invFile.doUpdate();
-
-                    if (rcUpdate == RC_SUCCESS) {
-                        successInvoiceIds.push(invoiceId);
-                        // trưởng thêm
-                        affectedPrepaymentIds[prepaymentId] = true;
+                        if (rcUpdate == RC_SUCCESS) {
+                            updateInvoiceDeductionType(invoiceId, deductionType);
+                            successInvoiceIds.push(invoiceId);
+                            // trưởng thêm
+                            affectedPrepaymentIds[prepaymentId] = true;
+                        }
                     }
+                } finally {
+                    try { invFile.doClose(); } catch (e) {}
                 }
             }
         }
@@ -898,6 +1105,25 @@ function updateListInvoinVendor(input) {
     }
 }
 
+function escapePrepaymentVendorQueryValue(value) {
+    return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function updateInvoiceDeductionType(invoiceId, deductionType) {
+    if (!invoiceId) return false;
+    var invoiceRec = new SCFile("esdHTKTinvoice");
+    try {
+        var query = "id=\"" + escapePrepaymentVendorQueryValue(invoiceId) + "\"";
+        if (invoiceRec.doSelect(query) === RC_SUCCESS) {
+            invoiceRec["deduction.type"] = deductionType;
+            return invoiceRec.doUpdate() === RC_SUCCESS;
+        }
+        return false;
+    } finally {
+        try { invoiceRec.doClose(); } catch (e) {}
+    }
+}
+
 function mapPrepaymentAttachment(itemRec, feeData) {
     itemRec['prepayment.id'] = feeData['transactionId'];
     itemRec['invoice.id'] = feeData['id'];
@@ -913,6 +1139,8 @@ function mapPrepaymentAttachment(itemRec, feeData) {
 function deletePrepaymentVendor(input) {
     var prepaymentId = "";
     var vendorId = "";
+    var prepaymentVendorId = "";
+    var poId = "";
 
     try {
         var rawData = input.details || input.queryString;
@@ -920,6 +1148,8 @@ function deletePrepaymentVendor(input) {
             var queryObj = JSON.parse(rawData);
             prepaymentId = queryObj.prepaymentId || "";
             vendorId = queryObj.vendorId || "";
+            prepaymentVendorId = queryObj.prepaymentVendorId || "";
+            poId = queryObj.poId || "";
         }
     } catch (ex) {
         return { status: "error", message: "Invalid input" };
@@ -929,9 +1159,40 @@ function deletePrepaymentVendor(input) {
         return { status: "error", message: "Thiếu vendorId hoặc prepaymentId" };
     }
 
-    // 1. XÓA BẢN GHI NHÀ CUNG CẤP CỤ THỂ TRONG esdHTKTprepaymentVendor
+    var remainingPoIds = {};
+    var hasPurchaseOrderRows = false;
+    var remainingPoFile = new SCFile("esdHTKTprepaymentVendor", SCFILE_READONLY);
+    var remainingPoRc = remainingPoFile.doSelect('prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) + '"');
+    while (remainingPoRc === RC_SUCCESS) {
+        var currentPoId = String(remainingPoFile["po.id"] || "").replace(/^\s+|\s+$/g, "");
+        var currentVendorId = String(remainingPoFile["vendor.id"] || "").replace(/^\s+|\s+$/g, "");
+        if (currentPoId) hasPurchaseOrderRows = true;
+        var isDeletedRow = prepaymentVendorId
+            ? String(remainingPoFile["id"] || "") === String(prepaymentVendorId)
+            : currentVendorId === String(vendorId);
+        if (currentPoId && !isDeletedRow) {
+            remainingPoIds[currentPoId] = true;
+        }
+        remainingPoRc = remainingPoFile.getNext();
+    }
+    try { remainingPoFile.doClose(); } catch (eCloseRemainingPo) {}
+
+    var hasRemainingPo = false;
+    for (var remainingPoId in remainingPoIds) {
+        if (remainingPoIds.hasOwnProperty(remainingPoId)) {
+            hasRemainingPo = true;
+            break;
+        }
+    }
+    if (hasPurchaseOrderRows && !hasRemainingPo) {
+        return { status: "error", message: "Phiếu tạm ứng bắt buộc phải có ít nhất một PO; không thể xóa PO cuối cùng." };
+    }
+
+    // Xóa đúng PO-vendor row khi có ID; giữ nguyên xóa theo NCC cho phiếu cũ không có PO.
     var vendorFile = new SCFile("esdHTKTprepaymentVendor");
-    var vendorQuery = "vendor.id=\"" + vendorId + "\" and prepayment.id=\"" + prepaymentId + "\"";
+    var vendorQuery = prepaymentVendorId
+        ? 'id="' + escapePrepaymentVendorQueryValue(prepaymentVendorId) + '" and vendor.id="' + escapePrepaymentVendorQueryValue(vendorId) + '" and prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) + '" and po.id="' + escapePrepaymentVendorQueryValue(poId) + '"'
+        : 'vendor.id="' + escapePrepaymentVendorQueryValue(vendorId) + '" and prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) + '"';
 
     if (vendorFile.doSelect(vendorQuery) === RC_SUCCESS) {
         var rcDeleteVendor = vendorFile.doDelete();
@@ -940,8 +1201,19 @@ function deletePrepaymentVendor(input) {
         }
     }
 
-   // 2. XÓA HÓA ĐƠN LIÊN KẾT (esdHTKTprepaymentInvoice) QUA invoice.id
-    try {
+    // Giữ hóa đơn khi NCC vẫn còn gắn với PO khác trong cùng phiếu.
+    var shouldDeleteVendorInvoices = true;
+    if (prepaymentVendorId) {
+        var remainingVendorRow = new SCFile("esdHTKTprepaymentVendor", SCFILE_READONLY);
+        shouldDeleteVendorInvoices = remainingVendorRow.doSelect(
+            'prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) + '" and vendor.id="' + escapePrepaymentVendorQueryValue(vendorId) + '"'
+        ) !== RC_SUCCESS;
+        try { remainingVendorRow.doClose(); } catch (eCloseRemainingVendor) {}
+    }
+
+    // XÓA HÓA ĐƠN LIÊN KẾT nếu NCC không còn PO/dòng vendor nào trong phiếu.
+        if (shouldDeleteVendorInvoices) {
+            try {
         // 2.1. Lấy mã số thuế của Vendor đang bị xóa
         var taxId = "";
         var vFile = new SCFile("esdHTKTvendor", SCFILE_READONLY);
@@ -957,12 +1229,12 @@ function deletePrepaymentVendor(input) {
             if (prepInvFile.doSelect(prepInvQuery) === RC_SUCCESS) {
                 do {
                     var invoiceId = prepInvFile["invoice.id"];
-                    
+
                     if (invoiceId) {
                         // 2.3. Dùng invoice.id tra cứu bảng hóa đơn gốc để xem MST của ai
                         var invFile = new SCFile("esdHTKTinvoice");
                         var invQuery = 'id="' + invoiceId + '"';
-                        
+
                         if (invFile.doSelect(invQuery) === RC_SUCCESS) {
                             var invoiceTaxId = invFile["seller.tax.code"];
 
@@ -970,9 +1242,10 @@ function deletePrepaymentVendor(input) {
                             if (invoiceTaxId === taxId) {
                                 // Xóa khỏi bảng trung gian
                                 prepInvFile.doDelete();
-                                
+
                                 // (Tùy chọn) Xóa liên kết ở bảng hóa đơn gốc để hóa đơn đó có thể được dùng lại
-                                invFile["request.id"] = null; 
+                                invFile["request.id"] = null;
+                                invFile["deduction.type"] = null;
                                 invFile.doUpdate();
                             }
                         }
@@ -980,8 +1253,9 @@ function deletePrepaymentVendor(input) {
                 } while (prepInvFile.getNext() === RC_SUCCESS);
             }
         }
-    } catch(e) {
-        print("Lỗi khi xử lý xóa Invoice qua invoice.id: " + e);
+      } catch(e) {
+          print("Lỗi khi xử lý xóa Invoice qua invoice.id: " + e);
+      }
     }
 
     // 3. TÍNH TOÁN LẠI TỔNG TIỀN CỦA CÁC NHÀ CUNG CẤP CÒN LẠI
@@ -989,18 +1263,18 @@ function deletePrepaymentVendor(input) {
     try {
         var remainingVendorFile = new SCFile("esdHTKTprepaymentVendor", SCFILE_READONLY);
         var remainingQuery = 'prepayment.id="' + prepaymentId + '"';
-        
+
         if (remainingVendorFile.doSelect(remainingQuery) === RC_SUCCESS) {
             do {
                 var rawAmt = remainingVendorFile["amount"];
                 var numAmt = 0;
-                
+
                 if (rawAmt !== null && rawAmt !== undefined && rawAmt !== "") {
                     var cleanAmt = String(rawAmt).replace(/,/g, '').trim();
                     numAmt = parseFloat(cleanAmt);
                     if (isNaN(numAmt)) numAmt = 0;
                 }
-                
+
                 totalAmount += numAmt;
             } while (remainingVendorFile.getNext() === RC_SUCCESS);
         }
@@ -1012,17 +1286,17 @@ function deletePrepaymentVendor(input) {
     var prepaymentFile = new SCFile("esdHTKTprepayment");
     var prepaymentQuery = "id=\"" + prepaymentId + "\"";
 
-        if (prepaymentFile.doSelect(prepaymentQuery) === RC_SUCCESS) {
+    if (prepaymentFile.doSelect(prepaymentQuery) === RC_SUCCESS) {
 
         if (totalAmount === 0) {
             prepaymentFile["amount"] = null;
         } else {
             prepaymentFile["amount"] = totalAmount.toString();
         }
-        
+
         var rcUpdatePrepayment = prepaymentFile.doUpdate();
     }
-    
+
     return {
         status: "success",
         message: "Xóa và cập nhật dữ liệu thành công. Tổng tiền mới: " + totalAmount
@@ -1031,7 +1305,7 @@ function deletePrepaymentVendor(input) {
 
 /**
  * Giải phóng liên kết hóa đơn gốc (set request.id = null)
- * 
+ *
  * @param {string} invoiceId - Mã hóa đơn cần reset
  * @returns {boolean} true nếu cập nhật thành công hoặc không tìm thấy, false nếu có lỗi
  */
@@ -1046,6 +1320,7 @@ function resetInvoiceRequestId(invoiceId) {
 
         if (rcInv === RC_SUCCESS) {
             invFile["request.id"] = null;
+            invFile["deduction.type"] = null;
             var rcUpdate = invFile.doUpdate();
             return (rcUpdate === RC_SUCCESS);
         }
@@ -1085,7 +1360,7 @@ function syncPrepaymentEntries(prepaymentIds) {
 
         try {
             lib.ESD_HTKT_PREPAYMENT_ENTRY.syncPrepaymentEntryBySourceChange(
-                "esdHTKTprepaymentInvoice", { "prepayment.id": prepaymentId }
+                    "esdHTKTprepaymentInvoice", { "prepayment.id": prepaymentId }
             );
         } catch (syncError) {
             console.error("Khong the sinh lai but toan cho " + prepaymentId + ": " + syncError.toString());
@@ -1150,7 +1425,7 @@ function checkInvoiceStatus(lastCheckDate) {
 
 /**
  * Đồng bộ OGL tất cả thông tin NCC/site theo đề nghị tạm ứng cb dmms
- * @param record 
+ * @param record
  */
 //function syncVendorOglFromPrepayment(record) {
 //    var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(record['unit.lv1']);
@@ -1186,8 +1461,8 @@ function syncVendorOglFromPrepayment(record) {
     if (entityInfo && entityInfo.entity && entityInfo.oglBranchCode) {
         var entityCode = entityInfo.entity;
         var branchCode = entityInfo.oglBranchCode.length == 4 ?
-            entityInfo.oglBranchCode.substr(1, 4) :
-            entityInfo.oglBranchCode;
+                entityInfo.oglBranchCode.substr(1, 4) :
+                entityInfo.oglBranchCode;
 
         var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
 
@@ -1198,10 +1473,10 @@ function syncVendorOglFromPrepayment(record) {
             if (!itemPrepaymentVendor['ogl.sync.status']) {
 
                 var result = syncVendorToOgl(
-                    itemPrepaymentVendor,
-                    branchCode,
-                    entityCode,
-                    record['user.checker.kttc'] || vars.$lo_operator["contact.name"]
+                        itemPrepaymentVendor,
+                        branchCode,
+                        entityCode,
+                        record['user.checker.kttc'] || vars.$lo_operator["contact.name"]
                 );
 
                 if (result && result.success == true) {
@@ -1215,10 +1490,10 @@ function syncVendorOglFromPrepayment(record) {
                     if (vendorId && (!itemPrepaymentVendor['vendor.site.id'] || itemPrepaymentVendor['vendor.site.id'] == "")) {
                         var siteFile = new SCFile("esdHTKTvendorSite", SCFILE_READONLY);
                         var siteQuery = 'vendor.id="' + vendorId + '"'; // Lấy tất cả site của NCC này
-                        
+
                         var siteList = [];
                         var rcSite = siteFile.doSelect(siteQuery);
-                        
+
                         while (rcSite == RC_SUCCESS) {
                             siteList.push({
                                 id: siteFile['id'],
@@ -1231,7 +1506,7 @@ function syncVendorOglFromPrepayment(record) {
                         // Áp dụng Cách 2: Tìm site mặc định, nếu không có lấy site đầu tiên
                         if (siteList.length > 0) {
                             var matchedSiteId = null;
-                            
+
                             // 1. Thử tìm xem có site nào khớp với cấu hình Default không
                             if (defaultVendorSiteInfo && defaultVendorSiteInfo.siteCode) {
                                 for (var i = 0; i < siteList.length; i++) {
@@ -1241,7 +1516,7 @@ function syncVendorOglFromPrepayment(record) {
                                     }
                                 }
                             }
-                            
+
                             // 2. Nếu khớp thì gán site đó, nếu KHÔNG khớp thì lấy site ĐẦU TIÊN
                             if (matchedSiteId) {
                                 itemPrepaymentVendor['vendor.site.id'] = matchedSiteId;
@@ -1384,12 +1659,10 @@ function syncVendorOglFromPrepayment(record) {
 //}
 /**
  * Đồng bộ từng NCC (Logic MỚI: Query QLTS -> Sync OGL -> Create OGL)
- * Không truyền hạng mục thì giữ xử lý HHDV cũ; XDCB dùng site 126150640.
- * @param prepaymentVendor 
- * @param branchCode 
- * @param entityCode  
+ * @param prepaymentVendor
+ * @param branchCode
+ * @param entityCode
  * @param username
- * @param contractCategory HHDV/XDCB, không phải loại phiếu TT/TU/DC.
  */
 function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, contractCategory) {
     // Hạng mục chỉ chọn cấu hình site; không truyền thì giữ HHDV cho mọi caller cũ.
@@ -1408,11 +1681,13 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
             branchCode = branchCode.substr(1);
         } 
     }
+    
     if (!username) username = vars.$lo_operator["contact.name"];
 
     var itemVendor = new SCFile("esdHTKTvendor");
     var rcItem = itemVendor.doSelect('id="' + prepaymentVendor['vendor.id'] + '"');
     var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+    
     if (isXdcb) {
         defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo("XDCB");
     } 
@@ -1432,11 +1707,12 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
             var hasSiteInQLTS = false;
             var itemVendorSiteCheck = new SCFile('esdHTKTvendorSite');
             var queryLocalSite = 'vendor.id = "' + vendorId + '" and ogl.entity = "' + branchCode + '" and active = true';
-            // XDCB phải tìm đúng mã site của hạng mục, tránh dùng site HHDV cùng NCC.
+            
+            // XDCB tìm đúng mã site của hạng mục XDCB, ko dùng site HHDV cùng NCC.
             if (isXdcb) {
                 queryLocalSite += ' and ogl.site.code = "' + defaultVendorSiteInfo.siteCode + '"';}
             var localSiteId = "";
-            
+
             if (itemVendorSiteCheck.doSelect(queryLocalSite) == RC_SUCCESS) {
                 hasSiteInQLTS = true; // Đã tồn tại site hợp lệ trên QLTS
                 if (isXdcb) {
@@ -1483,13 +1759,13 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
             });
 
             if (checkVendorReponse && checkVendorReponse['success'] === true &&
-                checkVendorReponse['data'] && checkVendorReponse['data'].length > 0) {
+                    checkVendorReponse['data'] && checkVendorReponse['data'].length > 0) {
 
                 var allSites = [];
                 if (checkVendorReponse['data'][0].vendorName) {
                     vendorNameFromOGL = checkVendorReponse['data'][0].vendorName;
                 }
-                
+
                 checkVendorReponse['data'].forEach(function(item) {
                     if (item.sites && item.sites.length > 0) {
                         allSites = allSites.concat(item.sites);
@@ -1499,6 +1775,7 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
                 // Xử lý lưu các site trả về từ OGL vào QLTS
                 if (allSites.length > 0) {
                     vendorExistInOGL = allSites.find(function(x) { return x.vendorSiteCode == defaultVendorSiteInfo.siteCode; }) != null;
+                    
                     // XDCB cùng mã site nhưng khác chi nhánh thì vẫn cần tạo cho chi nhánh phiếu.
                     if (isXdcb && vendorExistInOGL) {
                         vendorExistInOGL = allSites.some(function(x) {
@@ -1508,7 +1785,7 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
 
                     allSites.forEach(function(item) {
                         item['vendor.id'] = vendorId;
-                        item['source'] = "OGL"; // Site nhận từ OGL; giữ giá trị cũ, không phụ thuộc SL workflow.
+                        item['source'] = lib.ESD_HTKT_PREPAYMENT_WF.VENDOR_SITE_SOURCE.OGL;
                         saveVendorSite(item); // Hàm này tự động add/update vào esdHTKTvendorSite
                     });
                 }
@@ -1520,7 +1797,7 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
             if (!vendorExistInOGL) {
                 var vendorInfo = buildVendorAndSiteInfo(itemVendor, defaultVendorSiteInfo, branchCode, entityCode, username, vendorNameFromOGL);
                 var response = createVendor(vendorInfo, vendorId);
-                
+
                 if (response) {
                     if (response['success'] === true) {
                         vendorExistInOGL = true;
@@ -1538,7 +1815,7 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
                     itemVendor['ogl.sync.status'] = true;
                     itemVendor.doUpdate();
                 }
-                
+
                 prepaymentVendor['ogl.sync.status'] = true;
 
                 if (supplierId) {
@@ -1554,7 +1831,8 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
             }
         }
     }
-    // Caller HHDV vẫn tự gán site như trước; XDCB cần trả ID site cho cả TT và từng món DC.
+    
+    // HHDV vẫn tự gán site như trước; XDCB cần trả ID site cho cả TT và từng món DC.
     if (isXdcb) {
         if (prepaymentVendor['ogl.sync.status']) {
             var vendorSites = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vendorId, branchCode);
@@ -1574,15 +1852,16 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
             message: "Chưa lưu/gán được site XDCB cho NCC trong S6." 
         };
     }
+    
     return { success: true };
 }
 /**
  * Tạo payload gọi Tạo NCC/site sang OGL
- * @param esdHTKTvendor 
- * @param defaultVendorSiteInfo 
- * @param branchCode 
- * @param entityCode 
- * @returns 
+ * @param esdHTKTvendor
+ * @param defaultVendorSiteInfo
+ * @param branchCode
+ * @param entityCode
+ * @returns
  */
 function buildVendorAndSiteInfo(esdHTKTvendor, defaultVendorSiteInfo, branchCode, entityCode, username, vendorNameFromOGL) {
     return {
@@ -1612,9 +1891,9 @@ function buildVendorAndSiteInfo(esdHTKTvendor, defaultVendorSiteInfo, branchCode
 
 /**
  * Tạo NCC/site sang OGL
- * @param request 
- * @param vendor.Id 
- * @returns 
+ * @param request
+ * @param vendor.Id
+ * @returns
  */
 function createVendor(request, vendorId) {
     var response = lib.ESD_HTKT_INVOICE_OGL_INTEGRATION.createVendorSiteInfo(request);
@@ -1626,7 +1905,7 @@ function createVendor(request, vendorId) {
             vendorSiteCode: request.vendorSiteCode,
             creditAccount: lib.ESD_HTKT_ACCOUNTING_UTILS.buildAccountSegment(request.crSegment3, request.crSegment1),
             debitAccount: lib.ESD_HTKT_ACCOUNTING_UTILS.buildAccountSegment(request.drSegment3, request.drSegment1),
-            source: "QLTS" // Site tạo từ QLTS; giữ giá trị cũ, không phụ thuộc SL workflow.
+            source: lib.ESD_HTKT_PREPAYMENT_WF.VENDOR_SITE_SOURCE.QLTS
         });
     }
     return response;
@@ -1634,8 +1913,8 @@ function createVendor(request, vendorId) {
 
 /**
  * Lưu thông tin vendorSite vào esdHTKTvendorSite
- * @param item 
- * @returns 
+ * @param item
+ * @returns
  */
 function saveVendorSite(item) {
     var vendorSite = new SCFile('esdHTKTvendorSite');
@@ -1667,163 +1946,12 @@ function saveVendorSite(item) {
     return vendorSite;
 }
 
-//function loadPrepaymentVendorInfo(record) {
-//    // 1. LẤY CHÍNH XÁC CẶP ID TỪ RECORD ĐỂ KHÔNG BỊ LẪN LỘN DỮ LIỆU
-//    // Dù record truyền vào là bảng con hay bảng cha, ta vẫn lấy đúng ID
-//    var prepaymentId = record["prepayment.id"] || record["id"] || "";
-//    var vendorId = record["vendor.id"] || "";
-//
-//    if (!prepaymentId || !vendorId) {
-//        // Nếu thiếu 1 trong 2 ID, dừng luôn, không load sai dữ liệu
-//        return;
-//    }
-//
-//    var itemFile = new SCFile("esdHTKTprepaymentVendor");
-//
-//    var itemQuery =
-//        'select hv.supplier.id as supplier.id,' +
-//        ' hv.vendor.name as supplier.name,' +
-//        ' hpv.payment.method as payment.method,' +
-//        ' hpv.amount as amount,' +
-//        ' hdVendor.unpaid.amount as unpaid.amount,' +
-//        ' hv.vendor.number as tax.code,' +
-//        ' hpv.ogl.sync.status as ogl.sync.status,' +
-//        ' hvs.ogl.site.code as ogl.site.code,' +
-//        ' hvs.ogl.sync.status as hvs.ogl.sync.status,' +
-//        ' hpv.vendor.site.id as vendor.site.id,' +
-//        ' hpv.currency as currency,' +
-//        ' hp.unit.lv1 as unit.lv1,' +
-//        ' hp.unit.lv2 as unit.lv2,' +
-//        ' hp.current.phase as current.phase,' +
-//        ' hp.status as status,' +
-//        ' hp.created.by as created.by,' +
-//        ' hp.initial.role as initial.role,' +
-//        ' hp.user.checker.kttc as user.checker.kttc,' +
-//        ' hp.contract.id as contract.id,' +
-//        ' hp.guarantee.no as guarantee.no,' +
-//        ' hp.issuing.bank as issuing.bank,' +
-//        ' hp.guarantee.amount as guarantee.amount,' +
-//        ' hp.guarantee.expiry.date as guarantee.expiry.date' +
-//        ' from esdHTKTprepaymentVendor hpv' +
-//        ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
-//        ' LEFT JOIN esdHTKTprepayment hp ON (hpv.prepayment.id = hp.id)' +
-//        ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
-//        ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)' +
-//        // 2. SỬA MỆNH ĐỀ WHERE ĐỂ KHÓA CHẶT VÀO ĐÚNG 1 NHÀ CUNG CẤP TRONG PHIẾU
-//        ' where hpv.prepayment.id = "' + prepaymentId + '" and hpv.vendor.id = "' + vendorId + '"';
-//
-//    if (itemFile.doSelect(itemQuery) == RC_SUCCESS) {
-//
-//        vars.$currency = itemFile["currency"];
-//        vars.$supplierId = itemFile["supplier.id"];
-//        
-//        // Gán trực tiếp vào biến record hiện tại để dữ liệu không bị lây nhiễm chéo
-//        if (vars.$L_file) {
-//            vars.$L_file["payment.method"] = itemFile["payment.method"];
-//        }
-//        
-//        vars.$remainingAmt = itemFile["unpaid.amount"];
-//        vars.$taxCode = itemFile["tax.code"];
-//        vars.$supplierdisplays = [itemFile["supplier.name"]];
-//        vars.$suppliervalues = [itemFile["supplier.id"]];
-//        vars.$oglSiteCode = itemFile["ogl.site.code"];
-//        
-//        // ----------------- XỬ LÝ LOGIC BẢO LÃNH THEO STATUS -----------------
-//        var prepaymentStatus = itemFile["status"];
-//
-//        var isApprovedOrAccounted = (prepaymentStatus === "approved" || prepaymentStatus === "accounted");
-//        var bankCode = "";
-//        if (isApprovedOrAccounted) {
-//            vars.$guaranteeNo = itemFile["guarantee.no"];
-//            bankCode = itemFile["issuing.bank"];
-//            vars.$guaranteeAmount = itemFile["guarantee.amount"];
-//            vars.$expireDate = itemFile["guarantee.expiry.date"];
-//        } else {
-//            vars.$guaranteeNo = "";
-//            bankCode = "";
-//            vars.$guaranteeAmount = "";
-//            vars.$expireDate = "";
-//
-//            var contractId = itemFile["contract.id"];
-//            if (contractId != null && contractId !== "") {
-//                var docInfoFile = new SCFile("esdHDcontractDocInfo");
-//                var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
-//
-//                if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
-//                    vars.$guaranteeNo = docInfoFile["doc.no"];
-//                    bankCode = docInfoFile["issuing.bank"];
-//                    vars.$guaranteeAmount = docInfoFile["guarantee.amount"];
-//                    vars.$expireDate = docInfoFile["expire.date"];
-//                }
-//                try { docInfoFile.doClose(); } catch (e) {}
-//            }
-//        }
-//        
-//        // =========================================================
-//        // MAP MÃ NGÂN HÀNG -> TÊN NGÂN HÀNG
-//        // =========================================================
-//        var bankNameDisplay = bankCode; 
-//        if (bankCode) {
-//            try {
-//                var bankMapFile = new SCFile("esdDMcategoryItems", SCFILE_READONLY);
-//                var rcBankMap = bankMapFile.doSelect('category.id="dmhd_ngan_hang" and item.id="' + bankCode + '"');
-//
-//                if (rcBankMap == RC_SUCCESS) {
-//                    bankNameDisplay = bankMapFile["item.name"];
-//                }
-//                try { bankMapFile.doClose(); } catch (e) {}
-//            } catch (e) {}
-//        }
-//        vars.$issuingBank = bankNameDisplay;
-//
-//        // --------------------------------------------------------------------
-//        var rawAmount = itemFile["amount"];
-//        if (rawAmount != null && rawAmount !== "") {
-//            vars.$isAmount = rawAmount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-//        } else {
-//            vars.$isAmount = "";
-//        }
-//        
-//        vars.$unitLv1 = itemFile["unit.lv1"];
-//        vars.$unitLv2 = itemFile["unit.lv2"];
-//
-//        vars.$showSyncVendorOgl =
-//            itemFile["current.phase"] == "initial_kttc" &&
-//            (
-//                itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
-//                (
-//                    itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-//                    itemFile["initial.role"] == "kttc"
-//                )
-//            );
-//
-//        vars.$canEditSite = vars.$showSyncVendorOgl && itemFile["ogl.sync.status"] == true
-//
-//        vars.$canEditObj =
-//            (
-//                itemFile["current.phase"] == "initial_dmms" &&
-//                itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-//                itemFile["initial.role"] == "dmms"
-//            ) ||
-//            (
-//                itemFile["current.phase"] == "initial_kttc" &&
-//                (
-//                    itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
-//                    (
-//                        itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-//                        itemFile["initial.role"] == "kttc"
-//                    )
-//                )
-//            );
-//    }
-//    try { itemFile.doClose(); } catch (e) {}
-//}
 function loadPrepaymentVendorInfo(record) {
     try {
         // 1. LẤY CHÍNH XÁC CẶP ID TỪ RECORD ĐỂ KHÔNG BỊ LẪN LỘN DỮ LIỆU
         var prepaymentId = record["prepayment.id"] || record["id"] || "";
         var vendorId = record["vendor.id"] || "";
-
+        var poIdInput = record["po.id"] || "";
         if (!prepaymentId) {
             return;
         }
@@ -1831,63 +1959,137 @@ function loadPrepaymentVendorInfo(record) {
         var itemFile = new SCFile("esdHTKTprepaymentVendor");
 
         var itemQuery =
-            'select hv.supplier.id as supplier.id,' +
-            ' hv.vendor.name as supplier.name,' +
-            ' hpv.payment.method as payment.method,' +
-            ' hpv.amount as amount,' +
-            ' hpv.contract.amount as contract.amount,' +
-            ' hdVendor.unpaid.amount as unpaid.amount,' +
-            ' hv.vendor.number as tax.code,' +
-            ' hpv.ogl.sync.status as ogl.sync.status,' +
-            ' hvs.ogl.site.code as ogl.site.code,' +
-            ' hvs.ogl.sync.status as hvs.ogl.sync.status,' +
-            ' hpv.vendor.site.id as vendor.site.id,' +
-            ' hpv.currency as currency,' +
-            ' hp.unit.lv1 as unit.lv1,' +
-            ' hp.unit.lv2 as unit.lv2,' +
-            ' hp.current.phase as current.phase,' +
-            ' hp.status as status,' +
-            ' hp.created.by as created.by,' +
-            ' hp.initial.role as initial.role,' +
-            ' hp.user.checker.kttc as user.checker.kttc,' +
-            ' hp.contract.id as contract.id,' +
-            ' hp.guarantee.no as guarantee.no,' +
-            ' hp.issuing.bank as issuing.bank,' +
-            ' hp.guarantee.amount as guarantee.amount,' +
-            ' hp.guarantee.expiry.date as guarantee.expiry.date' +
-            ' from esdHTKTprepaymentVendor hpv' +
-            ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
-            ' LEFT JOIN esdHTKTprepayment hp ON (hpv.prepayment.id = hp.id)' +
-            ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
-            ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)' +
-            ' where hpv.prepayment.id = "' + prepaymentId + '" and hpv.vendor.id = "' + vendorId + '"';
-
+                'select hv.supplier.id as supplier.id,' +
+                ' hv.vendor.name as supplier.name,' +
+                ' hpv.payment.method as payment.method,' +
+                ' hpv.amount as amount,' +
+                ' hpv.po.id as po.id,' + // <-- Đã lấy mã PO
+                ' hpv.contract.amount as contract.amount,' +
+                ' hdVendor.unpaid.amount as unpaid.amount,' +
+                ' hv.vendor.number as tax.code,' +
+                ' hpv.ogl.sync.status as ogl.sync.status,' +
+                ' hvs.ogl.site.code as ogl.site.code,' +
+                ' hvs.ogl.sync.status as hvs.ogl.sync.status,' +
+                ' hpv.vendor.site.id as vendor.site.id,' +
+                ' hpv.currency as currency,' +
+                ' hp.unit.lv1 as unit.lv1,' +
+                ' hp.unit.lv2 as unit.lv2,' +
+                ' hp.current.phase as current.phase,' +
+                ' hp.status as status,' +
+                ' hp.created.by as created.by,' +
+                ' hp.initial.role as initial.role,' +
+                ' hp.user.checker.kttc as user.checker.kttc,' +
+                ' hp.contract.id as contract.id,' +
+                ' hp.guarantee.no as guarantee.no,' +
+                ' hp.issuing.bank as issuing.bank,' +
+                ' hp.guarantee.amount as guarantee.amount,' +
+                ' hp.guarantee.expiry.date as guarantee.expiry.date' +
+                ' from esdHTKTprepaymentVendor hpv' +
+                ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
+                ' LEFT JOIN esdHTKTprepayment hp ON (hpv.prepayment.id = hp.id)' +
+                ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
+                ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)' +
+                ' where hpv.prepayment.id = "' + prepaymentId + '" and hpv.vendor.id = "' + vendorId + '"';
+        if (poIdInput !== "") {
+            itemQuery += ' and hpv.po.id = "' + poIdInput + '"';
+        }
         var rcMain = itemFile.doSelect(itemQuery);
 
         if (rcMain == RC_SUCCESS) {
             vars.$currency = itemFile["currency"];
             vars.$supplierId = itemFile["supplier.id"];
             
+            // =========================================================
+            // BỔ SUNG CỤM THÔNG TIN PO/PHIẾU ĐẶT HÀNG LÊN MÀN HÌNH VIEW
+            // =========================================================
+            vars.$poId = itemFile["po.id"]; 
+            vars.$poContractName = "";
+            vars.$poContractValueAfterTax = "";
+            vars.$poContractCreatedAt = null;
+
+            var rawPoValue = null; // Biến tạm để giữ giá trị thô của PO
+
+            if (vars.$poId !== "") {
+                var poFile = new SCFile("esdHDcontract", SCFILE_READONLY);
+                // Tìm kiếm PO trong bảng hợp đồng dựa theo mã po.id
+                if (poFile.doSelect('id="' + vars.$poId + '"') == RC_SUCCESS) {
+                    vars.$poContractName = poFile["name"]; 
+                    
+                    // Lấy giá trị tổng gốc để hiển thị trên UI
+                    var originalPoValue = String(poFile["contract.value.after.tax"] || "0").replace(/,/g, '').trim(); 
+                    if (originalPoValue === "") originalPoValue = "0";
+
+                    // Gán vào biến UI (có fomat phân cách hàng nghìn)
+                    vars.$poContractValueAfterTax = originalPoValue.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+                    
+                    vars.$poContractCreatedAt = poFile["created.at"]; 
+
+                    // ---------------------------------------------------------
+                    // [TÍNH ĐỘNG] - LẤY SỐ TIỀN CÒN LẠI TỪ BẢNG CÔNG NỢ
+                    // ---------------------------------------------------------
+                    var totalPaidAmt = "0";
+                    var totalAdvanceAmt = "0";
+                    
+                    var debtFile = new SCFile("esdHTKTreportVendorDebt", SCFILE_READONLY);
+                    
+                    // CHÚ Ý: Giả định PO ID được lưu tại trường "contract.id" trong bảng báo cáo công nợ. 
+                    // Nếu bên bạn lưu PO ID ở trường tên khác (vd: po.id), hãy thay chữ "contract.id" thành tên tương ứng.
+                    var debtQuery = 'contract.id="' + vars.$poId + '"'; 
+                    
+                    if (debtFile.doSelect(debtQuery) == RC_SUCCESS) {
+                        totalPaidAmt = String(debtFile["total.paid.amount"] || "0").replace(/,/g, '').trim();
+                        totalAdvanceAmt = String(debtFile["total.advance.amount"] || "0").replace(/,/g, '').trim();
+                        
+                        if (totalPaidAmt === "") totalPaidAmt = "0";
+                        if (totalAdvanceAmt === "") totalAdvanceAmt = "0";
+                    }
+                    try { debtFile.doClose(); } catch (e) {}
+
+                    // Thực hiện phép trừ: rawPoValue = (Tổng PO) - (Tổng ĐNTT) - (Tổng ĐNTU)
+                    try {
+                        var tempRemaining = lib.ESD_HTKT_Utils.subtractStringsManual(originalPoValue, totalPaidAmt);
+                        rawPoValue = lib.ESD_HTKT_Utils.subtractStringsManual(tempRemaining, totalAdvanceAmt);
+                    } catch (mathErr) {
+                        // Fallback an toàn nếu hàm thư viện báo lỗi ép kiểu
+                        var fOriginal = parseFloat(originalPoValue) || 0;
+                        var fPaid = parseFloat(totalPaidAmt) || 0;
+                        var fAdvance = parseFloat(totalAdvanceAmt) || 0;
+                        rawPoValue = (fOriginal - fPaid - fAdvance).toString();
+                    }
+                }
+                try { poFile.doClose(); } catch (e) {}
+            }
+            // =========================================================
+
             if (vars.$L_file) {
                 vars.$L_file["payment.method"] = itemFile["payment.method"];
             }
-            
+
             vars.$taxCode = itemFile["tax.code"];
             vars.$supplierdisplays = [itemFile["supplier.name"]];
             vars.$suppliervalues = [itemFile["supplier.id"]];
             vars.$oglSiteCode = itemFile["ogl.site.code"];
-            
+
             // ----------------- XỬ LÝ LOGIC STATUS (BẢO LÃNH & REMAINING AMOUNT) -----------------
             var prepaymentStatus = itemFile["status"];
             var isApprovedOrAccounted = (prepaymentStatus === "approved" || prepaymentStatus === "accounted");
             var bankCode = "";
 
             if (isApprovedOrAccounted) {
-                vars.$remainingAmt = itemFile["contract.amount"]; // Lấy từ bảng prepaymentVendor
+                // ƯU TIÊN 1: PHIẾU ĐÃ CHỐT -> LẤY TỪ BẢNG PREPAYMENT VENDOR BẤT KỂ LÀ PO HAY HĐ
+                vars.$remainingAmt = itemFile["contract.amount"]; 
             } else {
-                vars.$remainingAmt = itemFile["unpaid.amount"];   // Giữ nguyên logic cũ lấy từ hợp đồng
+                // ƯU TIÊN 2: NẾU LÀ PHIẾU ĐẶT HÀNG (CÓ PO) ĐANG XỬ LÝ -> LẤY VALUE.AFTER.TAX CỦA PO
+                if (vars.$poId != null && vars.$poId !== "") {
+                    vars.$remainingAmt = rawPoValue;
+                } 
+                // ƯU TIÊN 3: LÀ HỢP ĐỒNG ĐANG XỬ LÝ -> LẤY UNPAID.AMOUNT TỪ HỢP ĐỒNG GỐC
+                else {
+                    vars.$remainingAmt = itemFile["unpaid.amount"];   
+                }
             }
 
+            // XỬ LÝ BẢO LÃNH
             if (isApprovedOrAccounted) {
                 vars.$guaranteeNo = itemFile["guarantee.no"];
                 bankCode = itemFile["issuing.bank"];
@@ -1904,7 +2106,7 @@ function loadPrepaymentVendorInfo(record) {
                     var docInfoFile = new SCFile("esdHDcontractDocInfo");
                     var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
                     var rcDoc = docInfoFile.doSelect(docQuery);
-                    
+
                     if (rcDoc == RC_SUCCESS) {
                         vars.$guaranteeNo = docInfoFile["doc.no"];
                         bankCode = docInfoFile["issuing.bank"];
@@ -1914,11 +2116,11 @@ function loadPrepaymentVendorInfo(record) {
                     try { docInfoFile.doClose(); } catch (e) {}
                 }
             }
-            
+
             // =========================================================
             // MAP MÃ NGÂN HÀNG -> TÊN NGÂN HÀNG
             // =========================================================
-            var bankNameDisplay = bankCode; 
+            var bankNameDisplay = bankCode;
             if (bankCode) {
                 try {
                     var bankMapFile = new SCFile("esdDMcategoryItems", SCFILE_READONLY);
@@ -1940,38 +2142,38 @@ function loadPrepaymentVendorInfo(record) {
             } else {
                 vars.$isAmount = "";
             }
-            
+
             vars.$unitLv1 = itemFile["unit.lv1"];
             vars.$unitLv2 = itemFile["unit.lv2"];
 
             vars.$showSyncVendorOgl =
-                itemFile["current.phase"] == "initial_kttc" &&
-                (
-                    itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
+                    itemFile["current.phase"] == "initial_kttc" &&
                     (
-                        itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-                        itemFile["initial.role"] == "kttc"
-                    )
-                );
+                            itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
+                            (
+                                    itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
+                                    itemFile["initial.role"] == "kttc"
+                            )
+                    );
 
             vars.$canEditSite = vars.$showSyncVendorOgl && itemFile["ogl.sync.status"] == true;
 
             vars.$canEditObj =
-                (
-                    itemFile["current.phase"] == "initial_dmms" &&
-                    itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-                    itemFile["initial.role"] == "dmms"
-                ) ||
-                (
-                    itemFile["current.phase"] == "initial_kttc" &&
                     (
-                        itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
-                        (
+                            itemFile["current.phase"] == "initial_dmms" &&
                             itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
-                            itemFile["initial.role"] == "kttc"
-                        )
-                    )
-                );
+                            itemFile["initial.role"] == "dmms"
+                    ) ||
+                    (
+                            itemFile["current.phase"] == "initial_kttc" &&
+                            (
+                                    itemFile["user.checker.kttc"] == vars.$lo_operator["contact.name"] ||
+                                    (
+                                            itemFile["created.by"] == vars.$lo_operator["contact.name"] &&
+                                            itemFile["initial.role"] == "kttc"
+                                    )
+                            )
+                    );
         }
 
         try { itemFile.doClose(); } catch (e) {}
@@ -2044,7 +2246,7 @@ function updateVendorContractAmount(record) {
     }
 
     var prepVendorFile = new SCFile("esdHTKTprepaymentVendor");
-    
+
     // Tìm TẤT CẢ nhà cung cấp thuộc phiếu này
     var rc = prepVendorFile.doSelect('prepayment.id="' + prepaymentId + '"');
 
@@ -2067,36 +2269,36 @@ function updateVendorContractAmount(record) {
             if (contractSupplierFile.doSelect('contract.id="' + currentContractId + '" and supplier.id="' + currentSupplierId + '"') == RC_SUCCESS) {
                 // Lấy số tiền unpaid của riêng NCC này trong hợp đồng
                 var unpaidAmount = String(contractSupplierFile["unpaid.amount"] || "0.00");
-                
+
                 // Cập nhật vào dòng vendor hiện tại
                 prepVendorFile["contract.amount"] = unpaidAmount;
                 prepVendorFile.doUpdate();
             }
             try { contractSupplierFile.doClose(); } catch(e) {}
         }
-        
+
         // Chuyển sang nhà cung cấp tiếp theo trong phiếu
         rc = prepVendorFile.getNext();
     }
-    
+
     try { prepVendorFile.doClose(); } catch(e) {}
-    
+
     return true;
 }
 function updateRemainingAmountForPendingTickets(record) {
     var prepaymentId =
-        String(record.id || record["id"] || "");
+            String(record.id || record["id"] || "");
 
     if (!prepaymentId) {
         return;
     }
 
     var currentContractId =
-        String(
-            record.contract_id ||
-            record["contract.id"] ||
-            ""
-        );
+            String(
+                    record.contract_id ||
+                    record["contract.id"] ||
+                    ""
+            );
 
     var currentRequestAmount = "0.00";
     var currentSupplierId = "";
@@ -2105,49 +2307,49 @@ function updateRemainingAmountForPendingTickets(record) {
     // 1. Lấy thông tin phiếu vừa được duyệt
     // =========================================================
     var prepVendorFile =
-        new SCFile(
-            "esdHTKTprepaymentVendor",
-            SCFILE_READONLY
-        );
+            new SCFile(
+                    "esdHTKTprepaymentVendor",
+                    SCFILE_READONLY
+            );
 
     if (
-        prepVendorFile.doSelect(
-            'prepayment.id="' + prepaymentId + '"'
-        ) == RC_SUCCESS
+            prepVendorFile.doSelect(
+                    'prepayment.id="' + prepaymentId + '"'
+            ) == RC_SUCCESS
     ) {
 
         currentRequestAmount =
-            String(
-                prepVendorFile["amount"] || "0.00"
-            );
+                String(
+                        prepVendorFile["amount"] || "0.00"
+                );
 
         if (!currentContractId) {
             currentContractId =
-                String(
-                    prepVendorFile["contract.id"] || ""
-                );
+                    String(
+                            prepVendorFile["contract.id"] || ""
+                    );
         }
 
         var vendorId =
-            prepVendorFile["vendor.id"];
+                prepVendorFile["vendor.id"];
 
         if (vendorId) {
 
             var vendorFile =
-                new SCFile(
-                    "esdHTKTvendor",
-                    SCFILE_READONLY
-                );
+                    new SCFile(
+                            "esdHTKTvendor",
+                            SCFILE_READONLY
+                    );
 
             if (
-                vendorFile.doSelect(
-                    'id="' + vendorId + '"'
-                ) == RC_SUCCESS
+                    vendorFile.doSelect(
+                            'id="' + vendorId + '"'
+                    ) == RC_SUCCESS
             ) {
                 currentSupplierId =
-                    String(
-                        vendorFile["supplier.id"] || ""
-                    );
+                        String(
+                                vendorFile["supplier.id"] || ""
+                        );
             }
 
             try {
@@ -2169,26 +2371,26 @@ function updateRemainingAmountForPendingTickets(record) {
     // 2. Lấy giá trị gốc của NCC trong hợp đồng
     // =========================================================
     var contractSupplierFile =
-        new SCFile(
-            "esdHDcontractSupplier",
-            SCFILE_READONLY
-        );
+            new SCFile(
+                    "esdHDcontractSupplier",
+                    SCFILE_READONLY
+            );
 
     if (
-        contractSupplierFile.doSelect(
-            'contract.id="' +
-            currentContractId +
-            '" and supplier.id="' +
-            currentSupplierId +
-            '"'
-        ) == RC_SUCCESS
+            contractSupplierFile.doSelect(
+                    'contract.id="' +
+                    currentContractId +
+                    '" and supplier.id="' +
+                    currentSupplierId +
+                    '"'
+            ) == RC_SUCCESS
     ) {
 
         var initialAmount =
-            String(
-                contractSupplierFile["remaining.amount"] ||
-                "0.00"
-            );
+                String(
+                        contractSupplierFile["remaining.amount"] ||
+                        "0.00"
+                );
 
 
         // =====================================================
@@ -2196,47 +2398,47 @@ function updateRemainingAmountForPendingTickets(record) {
         //     Không lấy phiếu hiện tại
         // =====================================================
         var totalOtherApprovedAmount =
-            "0.00";
+                "0.00";
 
         var checkFile =
-            new SCFile(
-                "esdHTKTprepaymentVendor",
-                SCFILE_READONLY
-            );
+                new SCFile(
+                        "esdHTKTprepaymentVendor",
+                        SCFILE_READONLY
+                );
 
         var checkQuery =
-            'select pv.amount as amount ' +
-            'from esdHTKTprepaymentVendor pv ' +
-            'join esdHTKTprepayment p ' +
-            'on (pv.prepayment.id = p.id) ' +
-            'join esdHTKTvendor v ' +
-            'on (pv.vendor.id = v.id) ' +
-            'where p.contract.id="' +
-            currentContractId +
-            '" ' +
-            'and v.supplier.id="' +
-            currentSupplierId +
-            '" ' +
-            'and (p.status="approved" or p.status="accounted") ' +
-            'and p.id ~= "' +
-            prepaymentId +
-            '"';
+                'select pv.amount as amount ' +
+                'from esdHTKTprepaymentVendor pv ' +
+                'join esdHTKTprepayment p ' +
+                'on (pv.prepayment.id = p.id) ' +
+                'join esdHTKTvendor v ' +
+                'on (pv.vendor.id = v.id) ' +
+                'where p.contract.id="' +
+                currentContractId +
+                '" ' +
+                'and v.supplier.id="' +
+                currentSupplierId +
+                '" ' +
+                'and (p.status="approved" or p.status="accounted") ' +
+                'and p.id ~= "' +
+                prepaymentId +
+                '"';
 
         var rcCheck =
-            checkFile.doSelect(checkQuery);
+                checkFile.doSelect(checkQuery);
 
         while (rcCheck == RC_SUCCESS) {
 
             totalOtherApprovedAmount =
-                lib.ESD_HTKT_Utils.addStringsManual(
-                    totalOtherApprovedAmount,
-                    String(
-                        checkFile["amount"] || "0.00"
-                    )
-                );
+                    lib.ESD_HTKT_Utils.addStringsManual(
+                            totalOtherApprovedAmount,
+                            String(
+                                    checkFile["amount"] || "0.00"
+                            )
+                    );
 
             rcCheck =
-                checkFile.getNext();
+                    checkFile.getNext();
         }
 
         try {
@@ -2248,67 +2450,67 @@ function updateRemainingAmountForPendingTickets(record) {
         // 2.2 Tính số tiền còn lại
 
         var newRemainingAmount =
-            lib.ESD_HTKT_Utils.subtractStringsManual(
-                initialAmount,
-                totalOtherApprovedAmount
-            );
+                lib.ESD_HTKT_Utils.subtractStringsManual(
+                        initialAmount,
+                        totalOtherApprovedAmount
+                );
 
         newRemainingAmount =
-            lib.ESD_HTKT_Utils.subtractStringsManual(
-                newRemainingAmount,
-                currentRequestAmount
-            );
+                lib.ESD_HTKT_Utils.subtractStringsManual(
+                        newRemainingAmount,
+                        currentRequestAmount
+                );
 
 
         // =====================================================
         // 3. Cập nhật số dư cho tất cả phiếu đang chờ duyệt
         // =====================================================
         var pendingFile =
-            new SCFile(
-                "esdHTKTprepaymentVendor"
-            );
+                new SCFile(
+                        "esdHTKTprepaymentVendor"
+                );
 
         var pendingQuery =
-            'select pv.id as id ' +
-            'from esdHTKTprepaymentVendor pv ' +
-            'join esdHTKTprepayment p ' +
-            'on (pv.prepayment.id = p.id) ' +
-            'join esdHTKTvendor v ' +
-            'on (pv.vendor.id = v.id) ' +
-            'where p.contract.id="' +
-            currentContractId +
-            '" ' +
-            'and v.supplier.id="' +
-            currentSupplierId +
-            '" ' +
-            'and p.id ~= "' +
-            prepaymentId +
-            '" ' +
-            'and p.status ~= "approved" ' +
-            'and p.status ~= "accounted" ' +
-            'and p.status ~= "cancelled"';
+                'select pv.id as id ' +
+                'from esdHTKTprepaymentVendor pv ' +
+                'join esdHTKTprepayment p ' +
+                'on (pv.prepayment.id = p.id) ' +
+                'join esdHTKTvendor v ' +
+                'on (pv.vendor.id = v.id) ' +
+                'where p.contract.id="' +
+                currentContractId +
+                '" ' +
+                'and v.supplier.id="' +
+                currentSupplierId +
+                '" ' +
+                'and p.id ~= "' +
+                prepaymentId +
+                '" ' +
+                'and p.status ~= "approved" ' +
+                'and p.status ~= "accounted" ' +
+                'and p.status ~= "cancelled"';
 
         var rcPending =
-            pendingFile.doSelect(pendingQuery);
+                pendingFile.doSelect(pendingQuery);
 
         while (rcPending == RC_SUCCESS) {
 
             var pvId =
-                pendingFile["id"];
+                    pendingFile["id"];
 
             var updateFile =
-                new SCFile(
-                    "esdHTKTprepaymentVendor"
-                );
+                    new SCFile(
+                            "esdHTKTprepaymentVendor"
+                    );
 
             if (
-                updateFile.doSelect(
-                    'id="' + pvId + '"'
-                ) == RC_SUCCESS
+                    updateFile.doSelect(
+                            'id="' + pvId + '"'
+                    ) == RC_SUCCESS
             ) {
 
                 updateFile["contract.amount"] =
-                    newRemainingAmount;
+                        newRemainingAmount;
 
                 updateFile.doUpdate();
             }
@@ -2318,7 +2520,7 @@ function updateRemainingAmountForPendingTickets(record) {
             } catch (e) {}
 
             rcPending =
-                pendingFile.getNext();
+                    pendingFile.getNext();
         }
 
         try {
@@ -2330,3 +2532,6 @@ function updateRemainingAmountForPendingTickets(record) {
         contractSupplierFile.doClose();
     } catch (e) {}
 }
+
+
+

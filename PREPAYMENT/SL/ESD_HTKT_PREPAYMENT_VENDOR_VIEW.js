@@ -155,3 +155,76 @@ function renderTabLiabilityInfo(endpoint, input, extraData) {
     }
     return lib.ESD_Addon_Nextjs_V1.renderPageNextJS('TamUngMuaSam/ThongTinDeNghi/TabThongTinCongNo', '', currentRecord);
 }
+
+
+/**
+ * Tab "Hàng hoá dịch vụ" - giải ngân theo HHDV (Đề nghị tạm ứng).
+ * HTML-Generating Script: ESD_HTKT_PREPAYMENT_VENDOR_VIEW.renderTabHHDV
+ * Số tiền đề nghị tạm ứng lấy từ biến form $isAmount (esdHTKTprepaymentVendor_do_save_view),
+ * fallback cột amount của esdHTKTprepaymentVendor.
+ */
+function renderTabHHDV(endpoint, input, extraData) {
+    var currentRecord = extraData;
+    if (!currentRecord || Array.isArray(currentRecord) || typeof currentRecord !== 'object') {
+        currentRecord = {};
+    }
+
+    var localFile = vars.$L_file || {};
+    var rowId = currentRecord["id"] || localFile["id"] || "";
+    var prepaymentId = currentRecord["prepayment.id"] || currentRecord["prepaymentId"] || localFile["prepayment.id"] || "";
+    var contractId = currentRecord["contract.id"] || currentRecord["contractId"] || localFile["contract.id"] || "";
+    var vendorId = currentRecord["vendor.id"] || currentRecord["vendorId"] || localFile["vendor.id"] || "";
+    var vendorNumber = currentRecord["vendor.number"] || currentRecord["vendorNumber"] || localFile["vendor.number"] || "";
+    var status = currentRecord["status"] || localFile["prepayment.status"] || localFile["status"] || "";
+
+    // Số tiền đề nghị tạm ứng của NCC
+    var amount = vars.$isAmount;
+    if (amount === undefined || amount === null || String(amount).trim() === "") {
+        amount = localFile["amount"];
+    }
+    amount = String(amount === undefined || amount === null ? "" : amount).replace(/,/g, "").trim();
+
+    // Thông tin phân quyền (BR-01)
+    if (prepaymentId) {
+        var prepFile = new SCFile("esdHTKTprepayment", SCFILE_READONLY);
+        if (prepFile.doSelect('id="' + prepaymentId + '"') === RC_SUCCESS) {
+            if (!contractId && prepFile["contract.id"]) {
+                contractId = prepFile["contract.id"];
+            }
+            currentRecord["currentPhase"] = prepFile["current.phase"];
+            currentRecord["initialRole"] = prepFile["initial.role"];
+            currentRecord["createdBy"] = prepFile["created.by"];
+            currentRecord["userCheckerDmms"] = prepFile["user.checker.dmms"] || prepFile["use.checker.dmms"];
+            currentRecord["userCheckerKttc"] = prepFile["user.checker.kttc"];
+            currentRecord["userApproverKttc"] = prepFile["user.approver.kttc"];
+            currentRecord["userApproverDmms"] = prepFile["user.approver.dmms"];
+            currentRecord["userCheckerFinal"] = prepFile["user.checker.final"];
+            currentRecord["userApproverFinal"] = prepFile["user.approver.final"];
+            if (prepFile["status"]) {
+                status = prepFile["status"];
+            }
+        }
+        prepFile.doClose();
+    }
+
+    currentRecord["id"] = rowId;
+    currentRecord["prepaymentVendorId"] = rowId;
+    currentRecord["prepaymentId"] = prepaymentId;
+    currentRecord["prepayment.id"] = prepaymentId;
+    currentRecord["contractId"] = contractId;
+    currentRecord["contract.id"] = contractId;
+    currentRecord["vendorId"] = vendorId;
+    currentRecord["vendor.id"] = vendorId;
+    currentRecord["vendorNumber"] = vendorNumber;
+    currentRecord["vendor.number"] = vendorNumber;
+    currentRecord["status"] = status;
+    currentRecord["isAmount"] = amount;
+    currentRecord["currentUser"] = vars['$lo.contact.name'] || currentRecord["currentUser"] || "";
+    currentRecord.isFromHK = String(vars["$G.HTKT_PREPAYMENT_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
+
+    return lib.ESD_Addon_Nextjs_V1.renderPageNextJS(
+            "TamUngMuaSam/ThongTinDeNghi/TabHangHoaDichVu",
+            "",
+            currentRecord
+    );
+}

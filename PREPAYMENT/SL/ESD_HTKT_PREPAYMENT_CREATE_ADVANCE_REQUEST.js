@@ -51,11 +51,30 @@ function createAdvanceRequest(input) {
         // =========================================================================
         // BỔ SUNG: Tính toán động số tiền còn lại của hợp đồng trước khi tạo phiếu
         // =========================================================================
-        var sourceContractId = String(contractData.sourceContractId || contractData['sourceContractId'] || contractData.sourceContract || contractData['id'] || '').trim();
-        var contractId = String(contractData.contractId || contractData['contractId'] || contractData['id'] || '').trim();
+        var sourceContractId = String(contractData.sourceContractId || contractData['sourceContractId'] || contractData.sourceContract || contractData.contractId || contractData['contractId'] || contractData['id'] || '').trim();
+        var contractId = sourceContractId;
 
         contractData.sourceContractId = sourceContractId;
         contractData.contractId = contractId;
+
+        var purchaseOrderIds = htktCreatePrepay_normalizePurchaseOrderIds(
+                contractData['list.po.id'] || contractData['po.id'] || contractData['purchase.order'] || contractData.purchaseOrder
+        );
+        var purchaseOrderVendors = [];
+        for (var poIndex = 0; poIndex < purchaseOrderIds.length; poIndex++) {
+            var purchaseOrderVendorList = htktCreatePrepay_resolvePurchaseOrderVendors(
+                    purchaseOrderIds[poIndex]
+            );
+            if (!purchaseOrderVendorList || purchaseOrderVendorList.length === 0) {
+                return {
+                    success: false,
+                    message: "Không tìm thấy nhà cung cấp hợp lệ cho PO " + purchaseOrderIds[poIndex] + ". Phiếu chưa được tạo."
+                };
+            }
+            for (var vendorIndex = 0; vendorIndex < purchaseOrderVendorList.length; vendorIndex++) {
+                purchaseOrderVendors.push(purchaseOrderVendorList[vendorIndex]);
+            }
+        }
 
         if (contractId) {
             try {
@@ -157,6 +176,12 @@ function createAdvanceRequest(input) {
         }
 
         if (returnCode == RC_SUCCESS) {
+            var vendorLinkResult = htktCreatePrepay_createPurchaseOrderVendorRows(
+                    prepaymentRec['id'],
+                    purchaseOrderVendors,
+                    currentUser
+            );
+
             /*
              * Lưu lịch sử với operator là user thật.
              */
@@ -190,7 +215,9 @@ function createAdvanceRequest(input) {
 
             return {
                 success: true,
-                message: "Thêm đề nghị tạm ứng thành công.",
+                message: vendorLinkResult.errors.length > 0 ?
+                        "Đã tạo phiếu nhưng có lỗi tạo dòng nhà cung cấp: " + vendorLinkResult.errors.join("; ") :
+                        "Thêm đề nghị tạm ứng thành công.",
                 id: prepaymentRec['id']
             };
         } else {
@@ -248,6 +275,7 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
     prepaymentRec['source.contract.id'] = contractData.sourceContractId || contractData['sourceContractId'] || contractData['id'] || "";
     prepaymentRec['contract.id'] = contractData.contractId || contractData['contractId'] || contractData['id'] || "";
     prepaymentRec['contract.name'] = contractData['name'];
+    prepaymentRec['list.po.id'] = contractData['list.po.id'] || contractData['po.id'] || contractData['purchase.order'] || contractData.purchaseOrder || "";
     prepaymentRec['purchase.order'] = contractData['purchase.order'] || contractData.purchaseOrder || "";
     prepaymentRec['current.phase'] = "start";
     prepaymentRec['executor'] = contractData['currentUser'];
@@ -293,6 +321,170 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
         );
     }
 
+}
+
+function htktCreatePrepay_normalizePurchaseOrderIds(rawValue) {
+    var values = rawValue || [];
+    if (typeof values === "string") {
+        var normalized = values.replace(/^\s+|\s+$/g, "");
+        try {
+            values = normalized.charAt(0) === "[" ? JSON.parse(normalized) : normalized.split(/[,;|]/);
+        } catch (eParsePoIds) {
+            values = normalized.split(/[,;|]/);
+        }
+    }
+    if (!Array.isArray(values)) values = [values];
+
+    var result = [];
+    var seen = {};
+    for (var i = 0; i < values.length; i++) {
+        var rawId = values[i];
+        var poId = String(
+                rawId && typeof rawId === "object" ?
+                        rawId.id || rawId.value || rawId.code || rawId.no || "" :
+                        rawId || ""
+        ).replace(/^\s+|\s+$/g, "");
+        if (poId && !seen[poId]) {
+            seen[poId] = true;
+            result.push(poId);
+        }
+    }
+    return result;
+}
+
+function htktCreatePrepay_resolvePurchaseOrderVendors(poId) {
+    var contractSupplierFile = null;
+    var result = [];
+
+    try {
+        contractSupplierFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
+    var contractSupplierRc = contractSupplierFile.doSelect(
+                'contract.id="' + escapeSmQueryValue(poId) + '"'
+    );
+
+        while (contractSupplierRc === RC_SUCCESS) {
+            var supplierId = String(contractSupplierFile["supplier.id"] || "").replace(/^\s+|\s+$/g, "");
+            if (!supplierId) return null;
+
+            var supplierFile = new SCFile("esdDMSupplier", SCFILE_READONLY);
+            try {
+                if (supplierFile.doSelect('id="' + escapeSmQueryValue(supplierId) + '"') !== RC_SUCCESS) return null;
+
+                var vendorData = {
+                    poId: poId,
+                    supplierId: supplierId,
+                    supplierName: String(supplierFile["supplier.name"] || supplierFile["name"] || "").replace(/^\s+|\s+$/g, ""),
+                    taxCode: String(supplierFile["tax.code"] || "").replace(/^\s+|\s+$/g, ""),
+                    address: String(supplierFile["address"] || ""),
+                    vendorType: String(supplierFile["type"] || ""),
+                    amount: String(contractSupplierFile["unpaid.amount"] || "0"),
+                    paymentMethod: String(contractSupplierFile["payment.method"] || "CHUYENKHOAN")
+                };
+
+                if (!vendorData.taxCode) return null;
+                result.push(vendorData);
+            } finally {
+                try { supplierFile.doClose(); } catch (eCloseSupplier) {}
+            }
+
+            contractSupplierRc = contractSupplierFile.getNext();
+        }
+
+        return result;
+    } catch (eResolvePoVendor) {
+        print("[ERROR htktCreatePrepay_resolvePurchaseOrderVendors] PO " + poId + ": " + eResolvePoVendor);
+        return [];
+    } finally {
+        try { if (contractSupplierFile) contractSupplierFile.doClose(); } catch (eCloseContractSupplier) {}
+    }
+}
+
+function htktCreatePrepay_createPurchaseOrderVendorRows(prepaymentId, purchaseOrderVendors, currentUser) {
+    var result = { createdCount: 0, errors: [] };
+
+    for (var i = 0; i < purchaseOrderVendors.length; i++) {
+        var item = purchaseOrderVendors[i];
+        var vendorFile = null;
+        var prepaymentVendorFile = null;
+
+        try {
+            vendorFile = new SCFile("esdHTKTvendor");
+            var vendorQuery = 'vendor.number="' + escapeSmQueryValue(item.taxCode) + '" and supplier.id="' +
+                    escapeSmQueryValue(item.supplierId) + '"';
+            var vendorRc = vendorFile.doSelect(vendorQuery);
+            if (vendorRc !== RC_SUCCESS) {
+                try { vendorFile.doClose(); } catch (eCloseMissingVendor) {}
+                var vendorId = new Datum();
+                var vendorNumberRc = new Datum();
+                system.functions.rtecall("getnumber", vendorNumberRc, vendorId, "esdHTKTvendor");
+
+                vendorFile = new SCFile("esdHTKTvendor");
+                vendorFile["id"] = vendorId;
+                vendorFile["vendor.name"] = item.supplierName;
+                vendorFile["vendor.number"] = item.taxCode;
+                vendorFile["username"] = currentUser;
+                vendorFile["ogl.country"] = "VN";
+                vendorFile["address"] = item.address;
+                vendorFile["supplier.id"] = item.supplierId;
+                vendorFile["vendor.type"] = item.vendorType;
+                var addVendorRc = vendorFile.doAction("add");
+                if (addVendorRc !== RC_SUCCESS && addVendorRc !== true) {
+                    throw new Error("Không tạo được NCC " + item.supplierId);
+                }
+            }
+
+            var resolvedVendorId = String(vendorFile["id"] || "").replace(/^\s+|\s+$/g, "");
+            if (!resolvedVendorId) throw new Error("Không xác định được mã NCC " + item.supplierId);
+
+            prepaymentVendorFile = new SCFile("esdHTKTprepaymentVendor");
+            var existingQuery = 'prepayment.id="' + escapeSmQueryValue(prepaymentId) + '" and po.id="' +
+                    escapeSmQueryValue(item.poId) + '" and vendor.id="' + escapeSmQueryValue(resolvedVendorId) + '"';
+            if (prepaymentVendorFile.doSelect(existingQuery) === RC_SUCCESS) {
+                result.createdCount++;
+                continue;
+            }
+
+            var numberClass = "esdHTKTprepaymentVendor";
+            var numberRc = new SCDatum();
+            numberRc.setValue(-1);
+            var nextNumber = new SCDatum();
+            system.functions.rtecall("getnumber", numberRc, nextNumber, numberClass);
+
+            var rcText = String(numberRc.getText()).replace(/^\s+|\s+$/g, "");
+            var rawNumber = String(nextNumber.getText()).replace(/^\s+|\s+$/g, "");
+            if (/^"[^\"]*"$/.test(rawNumber) || /^'[^']*'$/.test(rawNumber)) {
+                rawNumber = rawNumber.substring(1, rawNumber.length - 1);
+            }
+            if (rcText !== "0" || !/^\d+$/.test(rawNumber)) {
+                throw new Error("Không cấp được mã dòng nhà cung cấp cho PO " + item.poId);
+            }
+
+            var prepaymentVendorId = ("000000000000000" + Number(rawNumber)).slice(-15);
+            prepaymentVendorFile = new SCFile("esdHTKTprepaymentVendor");
+            prepaymentVendorFile["id"] = prepaymentVendorId;
+            prepaymentVendorFile["prepayment.id"] = prepaymentId;
+            prepaymentVendorFile["vendor.id"] = resolvedVendorId;
+            prepaymentVendorFile["po.id"] = item.poId;
+            prepaymentVendorFile["vendor.site.id"] = "";
+            prepaymentVendorFile["currency"] = "VND";
+            prepaymentVendorFile["amount"] = item.amount;
+            prepaymentVendorFile["contract.amount"] = item.amount;
+            prepaymentVendorFile["payment.method"] = item.paymentMethod;
+
+            var addVendorLinkRc = prepaymentVendorFile.doAction("add");
+            if (addVendorLinkRc !== RC_SUCCESS && addVendorLinkRc !== true) {
+                throw new Error("Không tạo được dòng NCC " + item.supplierId + " cho PO " + item.poId);
+            }
+            result.createdCount++;
+        } catch (eCreateVendorRow) {
+            result.errors.push(String(eCreateVendorRow.message || eCreateVendorRow));
+        } finally {
+            try { if (vendorFile) vendorFile.doClose(); } catch (eCloseVendor) {}
+            try { if (prepaymentVendorFile) prepaymentVendorFile.doClose(); } catch (eClosePrepaymentVendor) {}
+        }
+    }
+
+    return result;
 }
 
 /**

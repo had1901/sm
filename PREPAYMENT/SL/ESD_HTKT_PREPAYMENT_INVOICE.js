@@ -428,10 +428,10 @@ function deletePrepaymentInvoice(input) {
         if (vendorId && prepaymentId) {
             var vendorFileCheck = new SCFile("esdHTKTprepaymentVendor");
             var vendorQueryCheck = "prepayment.id=\"" + prepaymentId + "\" and vendor.id=\"" + vendorId + "\"";
-            
+
             if (vendorFileCheck.doSelect(vendorQueryCheck) === RC_SUCCESS) {
                 var currentAmount = String(vendorFileCheck["amount"] || "0");
-                
+
                 // Trừ tiền bằng thư viện SL (String)
                 var newAmount = lib.ESD_HTKT_Utils.subtractStringsManual(currentAmount, invoiceGrandTotal);
 
@@ -441,7 +441,7 @@ function deletePrepaymentInvoice(input) {
                     var mapping = " FROM esdHTKTinvoice i JOIN esdHTKTvendor v ON (i.seller.tax.code = v.vendor.number) ";
                     var control = " WHERE i.request.id = \"" + prepaymentId + "\" AND v.id = \"" + vendorId + "\" AND i.id ~= \"" + invoiceId + "\"";
                     var querySQL = "SELECT i.id " + mapping + control;
-                    
+
                     var hasOtherInvoices = false;
                     // Nếu truy vấn select trả về thành công nghĩa là vẫn còn hóa đơn khác đang gắn
                     if (checkOtherInvFile.doSelect(querySQL) === RC_SUCCESS) {
@@ -456,7 +456,7 @@ function deletePrepaymentInvoice(input) {
                         };
                     }
                 }
-                 var remainingData = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentRemainingAmount(prepaymentId);
+                var remainingData = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentRemainingAmount(prepaymentId);
                 var totalRemainingAmount = "0";
 
                 if (Array.isArray(remainingData)) {
@@ -489,7 +489,7 @@ function deletePrepaymentInvoice(input) {
                     var guaranteeAmountStr = null;
                     var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
                     var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
-                    
+
                     if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
                         guaranteeAmountStr = docInfoFile["guarantee.amount"];
                     }
@@ -557,6 +557,7 @@ function deletePrepaymentInvoice(input) {
 
         if (rcInv === RC_SUCCESS) {
             invFile["request.id"] = null;
+            invFile["deduction.type"] = null;
             var rcUpdate = invFile.doUpdate();
 
             if (rcUpdate !== RC_SUCCESS) {
@@ -571,7 +572,7 @@ function deletePrepaymentInvoice(input) {
 
         // 5. Cập nhật lại số tiền (amount) trong bảng esdHTKTprepaymentVendor và esdHTKTprepayment
         if (vendorId && prepaymentId && lib.ESD_HTKT_Utils.compareMoneyStrings(invoiceGrandTotal, "0") !== 0) {
-            
+
             // 5.1 Cập nhật amount cho esdHTKTprepaymentVendor (Nhà cung cấp hiện tại)
             var vendorFile = new SCFile("esdHTKTprepaymentVendor");
             var vendorQuery = "prepayment.id=\"" + prepaymentId + "\" and vendor.id=\"" + vendorId + "\"";
@@ -580,10 +581,10 @@ function deletePrepaymentInvoice(input) {
             if (rcVendor === RC_SUCCESS) {
                 var currentAmountToUpdate = String(vendorFile["amount"] || "0");
                 var calculatedVendorAmount = lib.ESD_HTKT_Utils.subtractStringsManual(currentAmountToUpdate, invoiceGrandTotal);
-                
+
                 // NẾU TỔNG VỀ 0 HOẶC ÂM -> GÁN RỖNG ("") HOẶC NULL
                 if (lib.ESD_HTKT_Utils.compareMoneyStrings(calculatedVendorAmount, "0") <= 0) {
-                    vendorFile["amount"] = ""; 
+                    vendorFile["amount"] = "";
                 } else {
                     vendorFile["amount"] = calculatedVendorAmount;
                 }
@@ -597,11 +598,11 @@ function deletePrepaymentInvoice(input) {
             // 5.2 Tính lại tổng số tiền của tất cả NCC và cập nhật vào bảng esdHTKTprepayment
             var sumPrepaymentAmount = "0";
             var hasValidVendorAmount = false; // Kiểm tra xem còn NCC nào có tiền > 0 không
-            
+
             var sumVendorFile = new SCFile("esdHTKTprepaymentVendor");
             var sumVendorQuery = "prepayment.id=\"" + prepaymentId + "\"";
             var rcSumVendor = sumVendorFile.doSelect(sumVendorQuery);
-            
+
             while (rcSumVendor == RC_SUCCESS) {
                 var vAmount = String(sumVendorFile["amount"] || "0");
                 if (vAmount !== "") {
@@ -612,7 +613,7 @@ function deletePrepaymentInvoice(input) {
                 }
                 rcSumVendor = sumVendorFile.getNext();
             }
-            
+
             var prepaymentFile = new SCFile("esdHTKTprepayment");
             var prepaymentQuery = "id=\"" + prepaymentId + "\"";
             var rcPrepayment = prepaymentFile.doSelect(prepaymentQuery);
@@ -673,7 +674,7 @@ function mapRowToObject(scFileRecord, fieldMappings) {
 function syncPrepaymentEntryAfterInvoiceDelete(prepaymentId) {
     try {
         lib.ESD_HTKT_PREPAYMENT_ENTRY.syncPrepaymentEntryBySourceChange(
-            "esdHTKTprepaymentInvoice", { "prepayment.id": prepaymentId }
+                "esdHTKTprepaymentInvoice", { "prepayment.id": prepaymentId }
         );
     } catch (syncError) {
         console.error("Khong the sinh lai but toan cho " + prepaymentId + ": " + syncError.toString());
@@ -766,6 +767,7 @@ function unlinkAllInvoicesOnPrepaymentCancel(prepaymentId) {
             }
             if (currentOwner === id) {
                 invFile["request.id"] = null;
+                invFile["deduction.type"] = null;
                 var updateRc = invFile.doUpdate();
                 if (updateRc != RC_SUCCESS && updateRc !== true) {
                     throw new Error("Khong clear duoc request.id hoa don " + currentId + ".");

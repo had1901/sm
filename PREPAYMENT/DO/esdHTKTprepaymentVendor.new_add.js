@@ -127,6 +127,8 @@ if (errorMss && errorMss.length > 0) {
                 vars.$L_file['vendor.site.id']  = vars.$oglSiteCode; 
                 vars.$L_file['currency']        = vars.$currency; 
                 vars.$L_file['amount']          = vars.$isAmount; 
+                print("amount ở đâu", vars.$L_file['amount']);
+                 print("amount ở đâu", vars.$L_file);
                 vars.$L_file['contract.amount'] = vars.$remainingAmt;
 
                 // 4. Quyết định action: Nếu tạo mới dùng "add", nếu Back lại đã có ID dùng "save"

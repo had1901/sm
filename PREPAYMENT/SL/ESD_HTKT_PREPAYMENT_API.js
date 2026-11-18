@@ -192,7 +192,9 @@ function run() {
                 result = lib.ESD_HTKT_PREPAYMENT_LOAD_APRROVAL_COMBOBOX.savePrepaymentApprovalField(saveDetails);
                 break;
                 // =================================
-
+			case 'addPrepaymentVendorsByPO':
+			    result = lib.ESD_HTKT_PREPAYMENT_VENDOR.addPrepaymentVendorsByPO(input);
+			    break;
             default:
                 result = { success: false, error: 'Hanh dong (name) khong hop le: ' + name };
         }
