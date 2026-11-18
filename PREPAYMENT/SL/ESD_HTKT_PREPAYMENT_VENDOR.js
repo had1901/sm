@@ -225,6 +225,10 @@ function addPrepaymentVendorsByPO(input) {
                         continue;
                     }
 
+                    // NCC đã có trên phiếu qua PO khác: bút toán sinh theo NCC, nên dòng PO mới
+                    // dùng chung Site/hình thức thanh toán/TK thụ hưởng với dòng đã có.
+                    var sameVendorInfo = getSamePrepaymentVendorAccountingInfo(prepaymentId, resolvedVendorId);
+
                     var numberRc = new SCDatum();
                     numberRc.setValue(-1);
                     var nextNumber = new SCDatum();
@@ -248,6 +252,13 @@ function addPrepaymentVendorsByPO(input) {
                     prepaymentVendorFile["amount"] = String(contractSupplierFile["unpaid.amount"] || "0");
                     prepaymentVendorFile["contract.amount"] = String(contractSupplierFile["unpaid.amount"] || "0");
                     prepaymentVendorFile["payment.method"] = String(contractSupplierFile["payment.method"] || "CHUYENKHOAN");
+                    if (sameVendorInfo) {
+                        for (var sameField in sameVendorInfo) {
+                            if (Object.prototype.hasOwnProperty.call(sameVendorInfo, sameField)) {
+                                prepaymentVendorFile[sameField] = sameVendorInfo[sameField];
+                            }
+                        }
+                    }
 
                     var addLinkRc = prepaymentVendorFile.doAction("add");
                     if (addLinkRc !== RC_SUCCESS && addLinkRc !== true) {
@@ -281,6 +292,47 @@ function addPrepaymentVendorsByPO(input) {
     };
 }
 
+
+/* Trường hạch toán dùng chung giữa các dòng PO của cùng NCC trên một phiếu tạm ứng. */
+var PREPAYMENT_VENDOR_SHARED_ACCOUNTING_FIELDS = [
+    "vendor.site.id", "payment.method", "beneficiary.account", "beneficiary.name",
+    "beneficiary.bank", "bank.branch.code", "transaction.des", "ogl.sync.status"
+];
+
+/**
+ * Lấy thông tin hạch toán của dòng NCC đã có trên phiếu (PO khác) để chép sang dòng PO mới.
+ * Chỉ trả các trường có giá trị; null nếu NCC chưa có trên phiếu.
+ */
+function getSamePrepaymentVendorAccountingInfo(prepaymentId, vendorId) {
+    var file = null;
+    try {
+        file = new SCFile("esdHTKTprepaymentVendor", SCFILE_READONLY);
+        var rc = file.doSelect('prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) +
+            '" and vendor.id="' + escapePrepaymentVendorQueryValue(vendorId) + '"');
+        var best = null;
+        var bestScore = -1;
+        while (rc === RC_SUCCESS) {
+            var info = {};
+            var score = 0;
+            for (var i = 0; i < PREPAYMENT_VENDOR_SHARED_ACCOUNTING_FIELDS.length; i++) {
+                var name = PREPAYMENT_VENDOR_SHARED_ACCOUNTING_FIELDS[i];
+                var value = file[name];
+                if (value === null || value === undefined || String(value) === "") continue;
+                info[name] = value;
+                score++;
+            }
+            // Ưu tiên dòng đã điền đủ nhất (thường là dòng KTTC đã cập nhật Site/TK).
+            if (score > bestScore) {
+                best = info;
+                bestScore = score;
+            }
+            rc = file.getNext();
+        }
+        return bestScore > 0 ? best : null;
+    } finally {
+        try { if (file) file.doClose(); } catch (eCloseSame) {}
+    }
+}
 
 function getListPrepaymentVendor(input) {
     var invoiceList = [];
@@ -360,6 +412,77 @@ function getListPrepaymentVendor(input) {
 }
 
 
+/**
+ * Dòng NCC + PO nhận hóa đơn. Tab hóa đơn mở từ dòng esdHTKTprepaymentVendor nên gửi id dòng;
+ * client cũ chỉ gửi vendorId thì lấy dòng đầu tiên của NCC (đúng khi NCC chỉ có một PO).
+ * Trả { id, poId, vendorPoCount } hoặc null nếu không tìm thấy.
+ */
+function resolvePrepaymentVendorRowForInvoice(prepaymentId, vendorId, prepaymentVendorId) {
+    var file = null;
+    var row = null;
+    var count = 0;
+    try {
+        file = new SCFile("esdHTKTprepaymentVendor", SCFILE_READONLY);
+        var rc = file.doSelect('prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) +
+            '" and vendor.id="' + escapePrepaymentVendorQueryValue(vendorId) + '"');
+        while (rc === RC_SUCCESS) {
+            count++;
+            var currentId = String(file["id"] || "");
+            if (!row && (!prepaymentVendorId || currentId === String(prepaymentVendorId))) {
+                row = { id: currentId, poId: String(file["po.id"] || "").replace(/^\s+|\s+$/g, "") };
+            }
+            rc = file.getNext();
+        }
+    } finally {
+        try { if (file) file.doClose(); } catch (eCloseRow) {}
+    }
+    if (!row) return null;
+    row.vendorPoCount = count;
+    return row;
+}
+
+/**
+ * Hóa đơn đi theo PO: liên kết esdHTKTprepaymentInvoice có po.id của dòng NCC + PO.
+ * Liên kết cũ chưa có po.id chỉ thuộc dòng khi NCC có đúng một PO trên phiếu.
+ */
+function isPrepaymentInvoiceLinkForPo(linkPoId, poId, vendorPoCount) {
+    var linkPo = String(linkPoId || "").replace(/^\s+|\s+$/g, "");
+    if (linkPo) return linkPo === String(poId || "");
+    return vendorPoCount <= 1;
+}
+
+/** Đọc lại liên kết vừa lưu để chắc po.id đã được ghi xuống DB. */
+function isPrepaymentInvoiceLinkSavedWithPo(prepaymentId, invoiceId, poId) {
+    var file = null;
+    try {
+        file = new SCFile("esdHTKTprepaymentInvoice", SCFILE_READONLY);
+        if (file.doSelect('prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) +
+                '" and invoice.id="' + escapePrepaymentVendorQueryValue(invoiceId) + '"') !== RC_SUCCESS) return false;
+        return String(file["po.id"] || "") === String(poId);
+    } finally {
+        try { if (file) file.doClose(); } catch (eCloseSaved) {}
+    }
+}
+
+/** Tập invoice.id đã gán cho dòng NCC + PO (key '$' + invoice.id). */
+function getPrepaymentInvoiceIdsForPo(prepaymentId, poId, vendorPoCount) {
+    var ids = {};
+    var file = null;
+    try {
+        file = new SCFile("esdHTKTprepaymentInvoice", SCFILE_READONLY);
+        var rc = file.doSelect('prepayment.id="' + escapePrepaymentVendorQueryValue(prepaymentId) + '"');
+        while (rc === RC_SUCCESS) {
+            if (isPrepaymentInvoiceLinkForPo(file["po.id"], poId, vendorPoCount)) {
+                ids["$" + String(file["invoice.id"] || "")] = true;
+            }
+            rc = file.getNext();
+        }
+    } finally {
+        try { if (file) file.doClose(); } catch (eCloseLinks) {}
+    }
+    return ids;
+}
+
 function getPrepaymentRemainingAmount(prepaymentId,vendorId) {
     var resultList = [];
 
@@ -368,6 +491,7 @@ function getPrepaymentRemainingAmount(prepaymentId,vendorId) {
     }
 
     var fieldMappings = [
+        ['hpv.id', 'prepayment_vendor_id', 'S'],
         ['hdVendor.supplier.id', 'supplier_id', 'S'],
         ['hdVendor.supplier.name', 'supplier_name', 'S'],
         ['hpv.payment.method', 'payment_method', 'S'],
@@ -521,6 +645,7 @@ function getInvoicesBySupplier(input) {
 
         prepaymentId = tempObj.prepaymentId || "";
         vendorId = tempObj.vendorId || "";
+        var prepaymentVendorId = tempObj.prepaymentVendorId || "";
 
     } catch (ex) {
         print("[DEBUG run] Error parsing JSON: " + ex);
@@ -528,6 +653,10 @@ function getInvoicesBySupplier(input) {
     }
 
     if (!prepaymentId) return invoiceList;
+
+    // Hóa đơn đi theo PO: chỉ trả hóa đơn đã gán cho đúng dòng NCC + PO đang mở.
+    var poRow = resolvePrepaymentVendorRowForInvoice(prepaymentId, vendorId, prepaymentVendorId);
+    var poInvoiceIds = poRow ? getPrepaymentInvoiceIdsForPo(prepaymentId, poRow.poId, poRow.vendorPoCount) : null;
 
     var fieldMappings = [
         ['i.id', 'id', 'S'], // Số hoá đơn
@@ -562,9 +691,10 @@ function getInvoicesBySupplier(input) {
 
         var item = mapRowToObject(f, fieldMappings);
 
-        item.dateChecker = checkInvoiceStatus(f["last.check.date"]);
-
-        invoiceList.push(item);
+        if (!poInvoiceIds || poInvoiceIds["$" + item.id]) {
+            item.dateChecker = checkInvoiceStatus(f["last.check.date"]);
+            invoiceList.push(item);
+        }
 
         rc = f.getNext();
     }
@@ -661,18 +791,29 @@ function createListInvoinVendor(input) {
             };
         }
 
-        // Bước 2.1: Kiểm tra cặp prepayment.id và vendor.id trong esdHTKTprepaymentVendor
-        var checkVendorFile = new SCFile("esdHTKTprepaymentVendor");
-        var checkVendorQuery = "prepayment.id=\"" + prepaymentId + "\" and vendor.id=\"" + vendorId + "\"";
-        var rcCheckVendor = checkVendorFile.doSelect(checkVendorQuery);
+        // Bước 2.1: Xác định dòng NCC + PO nhận hóa đơn (hóa đơn đi theo PO).
+        var invoicePoRow = resolvePrepaymentVendorRowForInvoice(
+            prepaymentId, vendorId, dataObj[0]['prepaymentVendorId'] || ""
+        );
 
-        if (rcCheckVendor != RC_SUCCESS) {
+        if (!invoicePoRow) {
             return {
                 success: false,
                 message: "Không tìm thấy thông tin khoản tạm ứng của nhà cung cấp trong hệ thống. Thao tác đã bị hủy.",
                 checkStatus: []
             };
         }
+        // NCC có nhiều PO mà client không gửi dòng PO: không đoán PO cho hóa đơn.
+        if (invoicePoRow.vendorPoCount > 1 && !dataObj[0]['prepaymentVendorId']) {
+            return {
+                success: false,
+                message: "Nhà cung cấp có nhiều PO trên đề nghị; vui lòng mở đúng dòng PO để gán hóa đơn.",
+                checkStatus: []
+            };
+        }
+        var invoicePoInvoiceIds = getPrepaymentInvoiceIdsForPo(
+            prepaymentId, invoicePoRow.poId, invoicePoRow.vendorPoCount
+        );
         print("test 123")
 
         // Bước 2.2: Tính tổng grandTotal của tất cả hóa đơn MỚI được chọn
@@ -690,8 +831,11 @@ function createListInvoinVendor(input) {
 
         var rcExisting = existingInvoiceFile.doSelect(queryExistingSQL);
         while (rcExisting === RC_SUCCESS) {
-            var existAmt = String(existingInvoiceFile["grand.total"] || existingInvoiceFile["grandTotal"] || "0");
-            sumExistingGrandTotal = lib.ESD_HTKT_Utils.addStringsManual(sumExistingGrandTotal, existAmt);
+            // Chỉ cộng hóa đơn đã gán cho cùng PO.
+            if (invoicePoInvoiceIds["$" + String(existingInvoiceFile["id"] || existingInvoiceFile[0] || "")]) {
+                var existAmt = String(existingInvoiceFile["grand.total"] || existingInvoiceFile["grandTotal"] || "0");
+                sumExistingGrandTotal = lib.ESD_HTKT_Utils.addStringsManual(sumExistingGrandTotal, existAmt);
+            }
             rcExisting = existingInvoiceFile.getNext();
         }
 
@@ -763,6 +907,9 @@ function createListInvoinVendor(input) {
 
         if (Array.isArray(remainingData) && remainingData.length > 0) {
             for (var m = 0; m < remainingData.length; m++) {
+                // NCC nhiều PO: chỉ tính dòng PO đang gán hóa đơn, không cộng trùng các dòng PO khác.
+                if (invoicePoRow.vendorPoCount > 1 &&
+                        String(remainingData[m].prepayment_vendor_id || "") !== invoicePoRow.id) continue;
                 var rAmt = String(remainingData[m].remaining_amount || "0");
                 totalRemainingAmount = lib.ESD_HTKT_Utils.addStringsManual(totalRemainingAmount, rAmt);
             }
@@ -831,11 +978,22 @@ function createListInvoinVendor(input) {
                 continue;
             }
 
-            // 3. Tạo bản ghi liên kết
+            // 3. Tạo bản ghi liên kết (gắn PO của dòng NCC đang mở)
             var itemRec = new SCFile("esdHTKTprepaymentInvoice");
             mapPrepaymentAttachment(itemRec, feeData);
+            itemRec['po.id'] = invoicePoRow.poId;
 
             var rc = itemRec.doInsert();
+
+            // NCC nhiều PO: liên kết phải lưu được po.id, nếu không hóa đơn sẽ không thuộc PO nào
+            // (thường do dbdict esdHTKTprepaymentInvoice chưa có field po.id).
+            if ((rc === true || rc == RC_SUCCESS) && invoicePoRow.poId && invoicePoRow.vendorPoCount > 1 &&
+                    !isPrepaymentInvoiceLinkSavedWithPo(itemRec["prepayment.id"], invoiceId, invoicePoRow.poId)) {
+                try { itemRec.doDelete(); } catch (eRollbackLink) {}
+                failedInvoiceDetails.push("Hóa đơn " + invoiceNumber +
+                    " (không lưu được PO cho liên kết; kiểm tra field po.id của esdHTKTprepaymentInvoice)");
+                continue;
+            }
 
             if (rc === true || rc == RC_SUCCESS) {
                 successInvoiceIds.push(invoiceId);
@@ -926,7 +1084,10 @@ function createListInvoinVendor(input) {
                 if (processedPrepaymentItems.hasOwnProperty(key)) {
                     var itemInfo = processedPrepaymentItems[key];
                     var vendorFile = new SCFile("esdHTKTprepaymentVendor");
-                    var vendorQuery = "prepayment.id=\"" + itemInfo.prepaymentId + "\" and vendor.id=\"" + itemInfo.vendorId + "\"";
+                    // Cập nhật đúng dòng NCC + PO nhận hóa đơn.
+                    var vendorQuery = invoicePoRow.id
+                        ? "id=\"" + escapePrepaymentVendorQueryValue(invoicePoRow.id) + "\""
+                        : "prepayment.id=\"" + itemInfo.prepaymentId + "\" and vendor.id=\"" + itemInfo.vendorId + "\"";
 
                     if (vendorFile.doSelect(vendorQuery) == RC_SUCCESS) {
                         vendorFile["amount"] = totalAccumulatedGrandTotal;
@@ -1211,8 +1372,10 @@ function deletePrepaymentVendor(input) {
         try { remainingVendorRow.doClose(); } catch (eCloseRemainingVendor) {}
     }
 
-    // XÓA HÓA ĐƠN LIÊN KẾT nếu NCC không còn PO/dòng vendor nào trong phiếu.
-        if (shouldDeleteVendorInvoices) {
+    // XÓA HÓA ĐƠN LIÊN KẾT: hóa đơn đi theo PO nên luôn gỡ hóa đơn của PO bị xóa;
+    // hóa đơn cũ chưa có po.id chỉ gỡ khi NCC không còn PO/dòng vendor nào trong phiếu.
+    var deletedPoId = String(poId || "").replace(/^\s+|\s+$/g, "");
+        if (shouldDeleteVendorInvoices || deletedPoId) {
             try {
         // 2.1. Lấy mã số thuế của Vendor đang bị xóa
         var taxId = "";
@@ -1238,8 +1401,12 @@ function deletePrepaymentVendor(input) {
                         if (invFile.doSelect(invQuery) === RC_SUCCESS) {
                             var invoiceTaxId = invFile["seller.tax.code"];
 
-                            // Nếu hóa đơn này thuộc về Nhà cung cấp vừa bị xóa (trùng MST)
-                            if (invoiceTaxId === taxId) {
+                            var linkPoId = String(prepInvFile["po.id"] || "").replace(/^\s+|\s+$/g, "");
+                            // NCC không còn dòng nào: gỡ mọi hóa đơn của NCC; còn PO khác: chỉ gỡ hóa đơn của PO bị xóa.
+                            var linkBelongsToDeletedRow = shouldDeleteVendorInvoices ||
+                                (linkPoId !== "" && linkPoId === deletedPoId);
+                            // Nếu hóa đơn này thuộc về Nhà cung cấp/PO vừa bị xóa (trùng MST)
+                            if (invoiceTaxId === taxId && linkBelongsToDeletedRow) {
                                 // Xóa khỏi bảng trung gian
                                 prepInvFile.doDelete();
 
@@ -1955,7 +2122,7 @@ function loadPrepaymentVendorInfo(record) {
         if (!prepaymentId) {
             return;
         }
-
+        var joinContractIdField = (poIdInput !== "") ? "hpv.po.id" : "hp.contract.id";
         var itemFile = new SCFile("esdHTKTprepaymentVendor");
 
         var itemQuery =
@@ -1988,7 +2155,8 @@ function loadPrepaymentVendorInfo(record) {
                 ' LEFT JOIN esdHTKTvendor hv ON (hpv.vendor.id = hv.id)' +
                 ' LEFT JOIN esdHTKTprepayment hp ON (hpv.prepayment.id = hp.id)' +
                 ' LEFT JOIN esdHTKTvendorSite hvs ON (hvs.id = hpv.vendor.site.id)' +
-                ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)' +
+//                ' LEFT JOIN esdHDcontractSupplier hdVendor ON (hp.contract.id = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)' +
+                ' LEFT JOIN esdHDcontractSupplier hdVendor ON (' + joinContractIdField + ' = hdVendor.contract.id AND hv.supplier.id = hdVendor.supplier.id)' +
                 ' where hpv.prepayment.id = "' + prepaymentId + '" and hpv.vendor.id = "' + vendorId + '"';
         if (poIdInput !== "") {
             itemQuery += ' and hpv.po.id = "' + poIdInput + '"';
