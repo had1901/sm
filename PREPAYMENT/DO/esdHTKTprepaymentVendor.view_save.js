@@ -1,3 +1,16 @@
+// Đọc lại NCC/HS và số dư S4 trước khi chạy validate TU cũ; giữ biến nhập $isAmount.
+var isTUXdcb = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file);
+vars.$G_hasError = false;
+if (isTUXdcb) {
+    try {
+        lib.ESD_HTKT_PAYMENT_VENDOR.preparePaymentXdcbSave(vars.$L_file);
+    } catch (sourceError) {
+        vars.$G_hasError = true;
+        vars.$G_errMsg = String(sourceError.message || sourceError);
+        vars.$L_action = "do nothing";
+    }
+}
+if (!vars.$G_hasError) {
 var errorMss = lib.ESD_HTKT_PREPAYMENT_WF.validateVendorAndPaymentDetails(vars.$L_file);
 
 if (errorMss && errorMss.length > 0) {
@@ -45,6 +58,18 @@ if (errorMss && errorMss.length > 0) {
 
     // CHỈ CẬP NHẬT DATABASE KHI KHÔNG BỊ LỖI (Bao gồm cả lỗi không lấy được tên Vietinbank)
     if (!vars.$G_hasError) {
+        // Chỉ ghi master/site sau khi các kiểm tra số tiền/thụ hưởng TU cũ đã thành công.
+        if (isTUXdcb) {
+            try {
+                var syncResult = lib.ESD_HTKT_PAYMENT_VENDOR.savePaymentXdcbSupplier(vars.$L_file);
+                if (!syncResult.success) print("Đồng bộ NCC/Site TU XDCB chưa thành công: " + syncResult.message);
+            } catch (saveError) {
+                vars.$G_hasError = true;
+                vars.$G_errMsg = String(saveError.message || saveError);
+                vars.$L_action = "do nothing";
+            }
+        }
+        if (!vars.$G_hasError) {
         vars.$L_file.amount = vars.$isAmount;
 
         // ============================
@@ -68,5 +93,7 @@ if (errorMss && errorMss.length > 0) {
                 var rcUpdate = prepaymentFile.doUpdate();
             }
         }
+        }
     }
+}
 }

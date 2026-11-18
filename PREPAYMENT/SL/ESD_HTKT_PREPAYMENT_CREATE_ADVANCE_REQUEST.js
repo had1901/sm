@@ -46,6 +46,27 @@ function createAdvanceRequest(input) {
 
         var contractList = JSON.parse(rawData);
         var contractData = contractList[0];
+        // XDCB đọc lại nguồn trên SM trước khi cấp số; không tin tên/tiền/HS do client gửi.
+        var isXdcb = String(contractData.contractCategory || "").toUpperCase() === "XDCB";
+        if (isXdcb) {
+            var xdcbActor = htktCreatePrepay_resolveCurrentUser(contractData);
+            var sourceResult = lib.ESD_HTKT_EXPENSE_CONTRACT.getPaymentXdcbContract({ details: {
+                currentUser: xdcbActor,
+                contractId: contractData.sourceContractId || contractData.contractId || contractData.id,
+                contractDossierId: contractData.contractDossierId || ""
+            } }, "PREPAYMENT");
+            if (!sourceResult.success) return sourceResult;
+            var source = sourceResult.data;
+            contractData.id = source.id;
+            contractData.sourceContractId = source.id;
+            contractData.contractId = source.id;
+            contractData.name = source.name;
+            contractData.totalValue = source.contractAmount;
+            contractData.currency = source.currency;
+            contractData.contractDossierId = source.dossier ? source.dossier.id : "";
+            // S4 không có PO. HHDV vẫn đi nguyên phần chọn PO phía dưới.
+            contractData['list.po.id'] = contractData['po.id'] = contractData['purchase.order'] = contractData.purchaseOrder = "";
+        }
 
 
         // =========================================================================
@@ -78,7 +99,14 @@ function createAdvanceRequest(input) {
 
         if (contractId) {
             try {
-                var remainingContractValue = calculateContractRemainingValue(contractId);
+                // HHDV giữ nguồn số dư cũ; XDCB dùng số dư HĐ/HS đã đọc từ S4.
+                var remainingContractValue = isXdcb
+                    ? (source.dossier
+                        ? lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getContractDossierAmounts(source.dossier).remainingAmount
+                        : lib.ESD_HTKT_PAYMENT_VENDOR.paymentXdcbRemaining(source.contractAmount, source.totalPaidAmount))
+                    : calculateContractRemainingValue(contractId);
+
+                if (isXdcb && remainingContractValue === "") remainingContractValue = null;
 
                 // 4. KIỂM TRA CHẶN: Chặn tạo nếu giá trị HĐ còn lại = 0 (nếu remaining.amount là null thì là HĐ chưa thực hiện -> cho phép tạo)
                 if (remainingContractValue !== null && Number(remainingContractValue) <= 0) {
@@ -197,7 +225,9 @@ function createAdvanceRequest(input) {
 
             //Đồng bộ giá trị Tạm ứng/Thanh toán giữa Squad 6 và Squad 2
             try {
-                lib.ESD_HD_Integration.createContractPayment(prepaymentRec);
+                // Hai nguồn tách tại điểm gọi: XDCB cập nhật trạng thái HS, HHDV giữ sync S2.
+                if (isXdcb) lib.ESD_HTKT_PAYMENT_VENDOR.syncXdcbCreatedToSquad4(prepaymentRec);
+                else lib.ESD_HD_Integration.createContractPayment(prepaymentRec);
             } catch (ex) {
                 print("[ERROR] Đồng bộ createContractPayment thất bại cho ID: " + prepaymentRec["id"] + " | Detail: " + ex);
             }
@@ -240,7 +270,10 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
 
     // 4. Map riêng biệt chi tiết từng trường một từ JSON vào Record
     prepaymentRec['transaction.type'] = "Tạm ứng";
-    prepaymentRec['original.contract.category'] = "Mua sắm HHDV";
+    // Giữ nguyên giá trị HHDV cũ; chỉ phiếu XDCB mới lưu nguồn XDCB.
+    var isXdcb = String(contractData.contractCategory || "").toUpperCase() === "XDCB";
+    prepaymentRec['original.contract.category'] = isXdcb ? "XDCB" : "Mua sắm HHDV";
+    if (isXdcb) prepaymentRec['contract.dossier.id'] = contractData.contractDossierId || "";
     prepaymentRec['department'] =
             contractData['unitLv3'] ||
             contractData['unitLv2'] ||
@@ -270,7 +303,7 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
 
     prepaymentRec['created.at'] = new Date();
     prepaymentRec['created.by'] = contractData['createdBy'];
-    prepaymentRec['currency'] = "VND";
+    prepaymentRec['currency'] = isXdcb ? contractData.currency || "VND" : "VND";
     prepaymentRec['contract.amount'] = contractData['totalValue'] || 0;
     prepaymentRec['source.contract.id'] = contractData.sourceContractId || contractData['sourceContractId'] || contractData['id'] || "";
     prepaymentRec['contract.id'] = contractData.contractId || contractData['contractId'] || contractData['id'] || "";
@@ -903,6 +936,12 @@ function listPurchaseContracts(input) {
         };
     }
 
+    // XDCB dùng reader chung TT/DC, nhưng quyền và loại HS là của TU.
+    if (String(params.contractCategory || "").toUpperCase() === "XDCB") {
+        params.currentUser = currentUser;
+        return lib.ESD_HTKT_EXPENSE_CONTRACT.listPaymentXdcbContracts({ details: params }, "PREPAYMENT");
+    }
+
     // PHÂN TRANG: chỉ bổ sung start/count, không thay đổi điều kiện nghiệp vụ.
     var start = parseInt(params.start, 10);
     var count = parseInt(params.count, 10);
@@ -1444,6 +1483,11 @@ function htktCreatePrepay_getVar(name) {
 
 //-----
 function listFileAttachment(input) {
+    // TU XDCB phân nguồn từ cha đã lưu; S2 giữ truy vấn cũ khi không phải XDCB.
+    var sourceParams = JSON.parse(input.details || input.queryString || "{}");
+    if (sourceParams.prepaymentId && lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb({ "prepayment.id": sourceParams.prepaymentId })) {
+        return lib.ESD_HTKT_PAYMENT_FILE_ATTACHMENT.listPaymentSourceDocuments({ details: sourceParams });
+    }
 
     // 1. Lấy dữ liệu linh hoạt từ details hoặc queryString
     var rawData = input ? (input.details || input.queryString) : null;

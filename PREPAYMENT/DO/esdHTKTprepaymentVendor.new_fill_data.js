@@ -1,3 +1,14 @@
+// Chỉ chọn và điền NCC; không tạo master, site hoặc lưu dòng TU tại bước này.
+if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
+    try {
+        lib.ESD_HTKT_PAYMENT_VENDOR.selectPaymentXdcbSupplier(vars.$L_file, vars.$supplierId);
+        vars.$G_hasError = false;
+    } catch (sourceError) {
+        vars.$G_hasError = true;
+        vars.$G_errMsg = String(sourceError.message || sourceError);
+        vars.$L_action = "do nothing";
+    }
+} else {
 var findVendor = arrVendors.find(x => x['supplier.id'] == vars.$supplierId);
 
 if (findVendor) {
@@ -37,4 +48,5 @@ if (findVendor) {
 //    vars.$expireDate = findVendor["expire.date"];
     vars.$currency = "VND";
     vars.$vendorType = findVendor["type"];
+}
 }

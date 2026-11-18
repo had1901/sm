@@ -134,7 +134,7 @@ function run() {
                 break;
 
             case 'listFileAttachment':
-                lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.listFileAttachment(input);
+                result = lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.listFileAttachment(input);
                 break;
                 //bao cao
             case 'getListReportPayment':

@@ -24,6 +24,8 @@ vars.$vendorSiteOptDisp = [];
 vars.$canEditObj = false;
 
 // Hàm này sẽ gán vars.$showSyncVendorOgl và vars.$canEditSite (kiểm tra role KTTC + OGL sync)
+var isTUXdcb = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file);
+vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file) === true;
 lib.ESD_HTKT_PREPAYMENT_VENDOR.loadPrepaymentVendorInfo(vars.$L_file);
 if (isPostAuditVendorView) {
     vars.$canEditSite = false;
@@ -39,6 +41,7 @@ if (entityInfo && entityInfo.entity && entityInfo.oglBranchCode) {
     if (vars.$branchCode && vars.$L_file.vendor_id) {
         var result = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorSiteList(vars.$L_file.vendor_id, vars.$branchCode);
         
+        if (isTUXdcb) result = result.filter(function (site) { return String(site['ogl.site.code']) === "126150640"; });
         if (result && result.length > 0) {
             vars.$vendorSiteOptValue = [];
             vars.$vendorSiteOptDisp = [];
@@ -49,12 +52,12 @@ if (entityInfo && entityInfo.entity && entityInfo.oglBranchCode) {
             });
 
             // Tự động fill Site NCC nếu ở role KTTC và đã đồng bộ OGL
-            var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+            var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo(isTUXdcb ? "XDCB" : "HHDV");
 
             if (vars.$canEditSite && (!vars.$L_file.vendor_site_id || vars.$L_file.vendor_site_id == "")) {
                 
                 if (result && result.length > 0) {
-                    var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
+                    var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo(isTUXdcb ? "XDCB" : "HHDV");
                     var matchedSite = null;
             
                     // 1. Thử tìm xem có site nào khớp với cấu hình Default không
@@ -65,7 +68,7 @@ if (entityInfo && entityInfo.entity && entityInfo.oglBranchCode) {
                     // 2. Nếu khớp thì lấy site đó, nếu KHÔNG khớp (hoặc không có default) thì lấy luôn site ĐẦU TIÊN
                     if (matchedSite) {
                         vars.$L_file.vendor_site_id = matchedSite.id;
-                    } else {
+                    } else if (!isTUXdcb) {
                         vars.$L_file.vendor_site_id = result[0].id;
                     }
                 }

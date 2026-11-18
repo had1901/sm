@@ -1,3 +1,16 @@
+// Đọc lại NCC/HS và số dư S4 trước khi chạy validate TU cũ; giữ biến nhập $isAmount.
+var isTUXdcb = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file);
+vars.$G_hasError = false;
+if (isTUXdcb) {
+    try {
+        lib.ESD_HTKT_PAYMENT_VENDOR.preparePaymentXdcbSave(vars.$L_file);
+    } catch (sourceError) {
+        vars.$G_hasError = true;
+        vars.$G_errMsg = String(sourceError.message || sourceError);
+        vars.$L_action = "do nothing";
+    }
+}
+if (!vars.$G_hasError) {
 var errorMss = lib.ESD_HTKT_PREPAYMENT_WF.validateVendorAndPaymentDetails(vars.$L_file); 
 
 if (errorMss && errorMss.length > 0) { 
@@ -38,6 +51,18 @@ if (errorMss && errorMss.length > 0) {
 
     if (!vars.$G_hasError) {
         // 2. Tìm / tạo vendor
+        // XDCB tái sử dụng master theo MST như TT/DC; HHDV giữ điều kiện MST + supplier.id cũ.
+        if (isTUXdcb) {
+            try {
+                var syncResult = lib.ESD_HTKT_PAYMENT_VENDOR.savePaymentXdcbSupplier(vars.$L_file);
+                var $vendorId = vars.$L_file["vendor.id"];
+                if (!syncResult.success) print("Đồng bộ NCC/Site TU XDCB chưa thành công: " + syncResult.message);
+            } catch (saveError) {
+                vars.$G_hasError = true;
+                vars.$G_errMsg = String(saveError.message || saveError);
+                vars.$L_action = "do nothing";
+            }
+        } else {
         var itemVendor = new SCFile('esdHTKTvendor'); 
         var queryVendor = 'vendor.number = "' + vars.$taxCode + 
                           '" and supplier.id = "' + vars.$supplierId + '"';
@@ -73,6 +98,8 @@ if (errorMss && errorMss.length > 0) {
                 vars.$G_errMsg = "Lỗi tạo mới nhà cung cấp (esdHTKTvendor).";
                 vars.$L_action = "do nothing";
             }
+        }
+
         }
 
         // 3. Xử lý ID và Gán dữ liệu cho Prepayment Vendor
@@ -124,7 +151,7 @@ if (errorMss && errorMss.length > 0) {
             // Gán/Cập nhật dữ liệu cho prepayment vendor
             if (!vars.$G_hasError) {
                 vars.$L_file['vendor.id']       = $vendorId; 
-                vars.$L_file['vendor.site.id']  = vars.$oglSiteCode; 
+                if (!isTUXdcb) vars.$L_file['vendor.site.id'] = vars.$oglSiteCode;
                 vars.$L_file['currency']        = vars.$currency; 
                 vars.$L_file['amount']          = vars.$isAmount; 
                 print("amount ở đâu", vars.$L_file['amount']);
@@ -136,4 +163,5 @@ if (errorMss && errorMss.length > 0) {
             }
         }
     }
+}
 }

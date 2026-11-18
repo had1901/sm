@@ -84,9 +84,17 @@ vars.$totalPayment = "0";
 vars.$remainingContractValue = "0";
 vars.$totalPrepaymentAndPayment = "0";
 
+// Tách tiền HĐ gốc và hàng tiền HS; không thay bind của số tiền đề nghị TU.
+vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(record) === true;
+var isTUXdcb = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record);
 var contractId = record.contract_id;
+if (isTUXdcb) {
+    var sourceContract = lib.ESD_HTKT_PAYMENT_VENDOR.getPaymentXdcbContractInfo(record);
+    vars.$totalPrepaymentAndPayment = sourceContract.totalPaidAmount;
+    vars.$remainingContractValue = sourceContract.remainingAmount;
+}
 
-if (contractId) {
+if (contractId && !isTUXdcb) {
     var contractFile = null;
     var totalPrepaymentAndPayment = "0";
 

@@ -487,6 +487,11 @@ function deletePrepaymentInvoice(input) {
 
                 if (contractId) {
                     var guaranteeAmountStr = null;
+                        // XDCB dùng bảo lãnh tạm ứng S4 theo HĐ; công thức so sánh phía sau giữ nguyên.
+                    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb({ "prepayment.id": prepaymentId })) {
+                        var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
+                        guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
+                    } else {
                     var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
                     var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
@@ -494,6 +499,7 @@ function deletePrepaymentInvoice(input) {
                         guaranteeAmountStr = docInfoFile["guarantee.amount"];
                     }
                     try { docInfoFile.doClose(); } catch(e) {}
+                }
 
                     var cleanGuaranteeStr = String(guaranteeAmountStr || "").replace(/,/g, '').trim();
 

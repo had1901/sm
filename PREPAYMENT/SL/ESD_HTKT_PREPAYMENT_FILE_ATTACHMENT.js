@@ -58,6 +58,16 @@ function addFileAttachment(fileInput) {
             return { success: false, message: "Dữ liệu không phải là mảng hoặc mảng trống" };
         }
         
+        // XDCB chỉ gửi ID tài liệu; reader chung đọc lại quyền/HS/ECM trước khi lưu liên kết TU.
+        var parentId = String(dataObj[0].transactionId || "");
+        if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb({ "prepayment.id": parentId })) {
+            return lib.ESD_HTKT_PAYMENT_FILE_ATTACHMENT.addPaymentSourceDocuments({ details: {
+                prepaymentId: parentId,
+                currentUser: dataObj[0].currentUser || vars.$lo_operator["contact.name"],
+                documents: dataObj
+            } });
+        }
+
         // Tạo mảng để lưu lại danh sách tên các file thêm thành công
         var successFileNames = [];
 

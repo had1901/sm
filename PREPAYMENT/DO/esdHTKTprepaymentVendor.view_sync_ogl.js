@@ -1,3 +1,13 @@
+// Nút Đồng bộ TU dùng cùng hàm XDCB của TT/DC; HHDV giữ nguyên xử lý phía dưới.
+if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
+    var syncResult = lib.ESD_HTKT_PAYMENT_VENDOR.syncPaymentXdcbVendorToOgl(vars.$L_file);
+    vars.$G_hasError = !syncResult.success;
+    vars.$G_errMsg = syncResult.success ? "" : syncResult.message;
+    if (syncResult.success) {
+        vars.$L_file.doUpdate();
+        lib.ESD_HTKT_PREPAYMENT_VENDOR.loadPrepaymentVendorInfo(vars.$L_file);
+    }
+} else {
 var defaultVendorSiteInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.getVendorDefaultSiteInfo();
 var itemFile = new SCFile("esdHTKTvendor");
 var itemQuery = `id="${vars.$L_file['vendor.id']}"`;
@@ -55,4 +65,5 @@ function updateVendorSiteIdForPrepaymentVendor(vendorSiteId) {
 if (vars.$isAmount != null && vars.$isAmount !== "") {
     var cleanAmount = vars.$isAmount.toString().replace(/,/g, '');
     vars.$isAmount = cleanAmount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
 }

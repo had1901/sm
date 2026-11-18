@@ -389,25 +389,26 @@ function loadContractDossierScreen(record) {
     vars.$totalContractDossierPaid = "";
     vars.$contractDossierRemainingAmount = "";
     try {
-        var paymentId = expenseSupplierText(record && (record["payment.id"] || record.payment_id));
+        var paymentId = expenseSupplierText(record && (record["payment.id"] || record.payment_id || record["prepayment.id"] || record.prepayment_id));
         var payment = null;
         // FD phiếu TT đã có chính record cha; FD NCC cần đọc lại cha theo payment.id.
-        if (!paymentId && record && record["transaction.type"] === "Thanh toán") {
+        if (!paymentId && record && (record["transaction.type"] === "Thanh toán" || record["transaction.type"] === "Tạm ứng")) {
             paymentId = expenseSupplierText(record.id);
             payment = record;
         }
         var prefix = paymentId.substr(0, 2);
-        if (prefix !== "TT" && prefix !== "DC") return false;
+        // TU giữ HS trên cha như TT; DC giữ HS trên món.
+        if (prefix !== "TT" && prefix !== "TU" && prefix !== "DC") return false;
         if (!payment) {
-            payment = expenseSupplierReadOne("esdHTKTpayment", 'id="' + expenseSupplierQuote(paymentId) + '"',
+            payment = expenseSupplierReadOne(prefix === "TU" ? "esdHTKTprepayment" : "esdHTKTpayment", 'id="' + expenseSupplierQuote(paymentId) + '"',
                 ["id", "transaction.type", "original.contract.category", "contract.id", "contract.dossier.id"], false);
         }
         if (!payment || expenseSupplierText(payment["original.contract.category"]).toUpperCase() !== "XDCB") return false;
-        if (payment["transaction.type"] !== (prefix === "TT" ? "Thanh toán" : "Dự chi")) return false;
+        if (payment["transaction.type"] !== (prefix === "TU" ? "Tạm ứng" : prefix === "TT" ? "Thanh toán" : "Dự chi")) return false;
 
         // Có hồ sơ đã chọn mới là TH2; không tự lấy hồ sơ khác chỉ vì cùng HĐ.
-        var dossierId = expenseSupplierText(prefix === "TT" ? payment["contract.dossier.id"] : record["contract.dossier.id"]);
-        var contractId = expenseSupplierText(prefix === "TT" ? payment["contract.id"] : record["contract.id"] || record.contract_id);
+        var dossierId = expenseSupplierText(prefix !== "DC" ? payment["contract.dossier.id"] : record["contract.dossier.id"]);
+        var contractId = expenseSupplierText(prefix !== "DC" ? payment["contract.id"] : record["contract.id"] || record.contract_id);
         if (!dossierId || !contractId) return false;
         var dossier = expenseSupplierReadOne("esdXDCBctrPaymentAdvance",
             'id="' + expenseSupplierQuote(dossierId) + '" and ctr.id="' + expenseSupplierQuote(contractId) + '"',

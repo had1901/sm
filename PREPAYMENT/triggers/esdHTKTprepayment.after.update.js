@@ -129,6 +129,8 @@ function calculateTotalVendorAmount(prepaymentId) {
 
 function handlePhaseChangeUpdate(rec, oldRec) {
     if (!rec) return;
+    // S4 không nhận các phase trung gian. HHDV tiếp tục đồng bộ S2 như cũ.
+    if (String(rec["original.contract.category"] || "").toUpperCase() === "XDCB") return;
 
     var phase = rec["current.phase"] || "";
     var old = (oldRec && oldRec["current.phase"]) ? oldRec["current.phase"] : "";
@@ -218,3 +220,14 @@ try {
 //
 //print("[PREPAYMENT_LOG] === SCRIPT END ===");
 //print("=========================================================================");
+// Sau khi TU đã hạch toán và có ngày hoàn thành, dùng cùng adapter S4 của TT/DC.
+// Chạy lại không cộng tiền trùng: adapter kiểm tra khóa phiếu + dòng NCC trước khi gọi S4.
+if (String(record["original.contract.category"] || "").toUpperCase() === "XDCB" &&
+        record.status === "accounted" && record["completed.date"] &&
+        (!oldrecord || oldrecord.status !== "accounted" || !oldrecord["completed.date"])) {
+    try {
+        lib.ESD_HTKT_PAYMENT_VENDOR.syncXdcbAccountedToSquad4(record);
+    } catch (squadError) {
+        print("Đã hạch toán TU; chưa đồng bộ S4: " + String(squadError.message || squadError));
+    }
+}

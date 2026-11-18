@@ -81,6 +81,16 @@ function totalContractSuppliers(input) {
         return totalSuppliers;
     }
 
+    // TU XDCB: đếm NCC từ HĐ/HS đã chọn, không query danh sách NCC của S2.
+    var sourceParams = queryObj || queryObjOld || {};
+    if (sourceParams.prepaymentId && lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb({
+            "prepayment.id": sourceParams.prepaymentId
+        })) {
+        return lib.ESD_HTKT_PAYMENT_VENDOR.getPaymentXdcbSuppliers({
+            "prepayment.id": sourceParams.prepaymentId
+        }).length;
+    }
+
     if (!contractId) return totalSuppliers;
 
     var vendorFile = new SCFile("esdHDcontractSupplier", SCFILE_READONLY);
@@ -490,6 +500,14 @@ function getPrepaymentRemainingAmount(prepaymentId,vendorId) {
         return resultList;
     }
 
+    // TU XDCB: lấy số dư đúng NCC và HS; giữ cấu trúc dữ liệu hóa đơn TU đang dùng.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb({ "prepayment.id": prepaymentId })) {
+        var rows = lib.ESD_HTKT_PAYMENT_VENDOR.getPaymentXdcbRemainingAmounts(prepaymentId);
+        return vendorId ? rows.filter(function (row) {
+            return String(row.vendor_id) === String(vendorId);
+        }) : rows;
+    }
+
     var fieldMappings = [
         ['hpv.id', 'prepayment_vendor_id', 'S'],
         ['hdVendor.supplier.id', 'supplier_id', 'S'],
@@ -860,6 +878,11 @@ function createListInvoinVendor(input) {
 
         if (contractId) {
             var guaranteeAmountStr = null;
+            // XDCB đọc bảo lãnh của HĐ S4; phần kiểm tra hạn mức bên dưới dùng lại như cũ.
+            if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb({ "prepayment.id": prepaymentId })) {
+                var xdcbGuarantee = getPrepaymentGuaranteeInfo(contractId);
+                guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
+            } else {
             var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
             var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
@@ -867,6 +890,7 @@ function createListInvoinVendor(input) {
                 guaranteeAmountStr = docInfoFile["guarantee.amount"];
             }
             try { docInfoFile.doClose(); } catch (e) {}
+            }
 
             var cleanGuaranteeStr = String(guaranteeAmountStr || "").replace(/,/g, '').trim();
 
@@ -1623,6 +1647,22 @@ function checkInvoiceStatus(lastCheckDate) {
 //    }
 //}
 function syncVendorOglFromPrepayment(record) {
+    // TU XDCB: dùng hàm sync chung với TT để chọn site XDCB; HHDV giữ luồng cũ bên dưới.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+        var file = new SCFile("esdHTKTprepaymentVendor");
+        try {
+            var rc = file.doSelect('prepayment.id="' + escapePrepaymentVendorQueryValue(record.id) + '"');
+            while (rc === RC_SUCCESS) {
+                var sync = lib.ESD_HTKT_PAYMENT_VENDOR.syncPaymentXdcbVendorToOgl(file);
+                if (sync.success) file.doUpdate();
+                else print("Đồng bộ NCC/Site TU XDCB chưa thành công: " + sync.message);
+                rc = file.getNext();
+            }
+        } finally {
+            file.doClose();
+        }
+        return;
+    }
     var entityInfo = lib.ESD_HTKT_ACCOUNTING_UTILS.mapPsToEntity(record['unit.lv1']);
 
     if (entityInfo && entityInfo.entity && entityInfo.oglBranchCode) {
@@ -2114,6 +2154,19 @@ function saveVendorSite(item) {
 }
 
 function loadPrepaymentVendorInfo(record) {
+    // TU XDCB dùng loader HĐ/HS/NCC chung của TT; không chạy JOIN HĐ S2/PO bên dưới.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+        var rows = lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentXdcbVendorInfoSafe(record);
+        var context = lib.ESD_HTKT_PAYMENT_VENDOR.getPaymentXdcbContext(record, false);
+        // Phiếu đã duyệt/hạch toán giữ bảo lãnh đã lưu; phiếu đang nhập đọc bảo lãnh từ S4.
+        var locked = context.payment.status === "approved" || context.payment.status === "accounted";
+        var guarantee = locked ? null : getPrepaymentGuaranteeInfo(context.payment["contract.id"]);
+        vars.$guaranteeNo = locked ? context.payment["guarantee.no"] || "" : "";
+        vars.$issuingBank = locked ? context.payment["issuing.bank"] || "" : "";
+        vars.$guaranteeAmount = locked ? context.payment["guarantee.amount"] : guarantee ? guarantee.value : "";
+        vars.$expireDate = locked ? context.payment["guarantee.expiry.date"] : guarantee ? guarantee["expire.date"] : null;
+        return rows;
+    }
     try {
         // 1. LẤY CHÍNH XÁC CẶP ID TỪ RECORD ĐỂ KHÔNG BỊ LẪN LỘN DỮ LIỆU
         var prepaymentId = record["prepayment.id"] || record["id"] || "";
@@ -2407,6 +2460,22 @@ function queryVendorData(record) {
  * @param {SCFile} record - Bản ghi ticket hiện tại đang được phê duyệt (esdHTKTprepayment)
  */
 function updateVendorContractAmount(record) {
+    // TU XDCB: lưu số dư từng NCC/HS từ reader chung, không JOIN supplier.id của S2.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+        var sourceRows = lib.ESD_HTKT_PAYMENT_VENDOR.getPaymentXdcbRemainingAmounts(record.id);
+        var item = new SCFile("esdHTKTprepaymentVendor");
+        try {
+            for (var i = 0; i < sourceRows.length; i++) {
+                if (item.doSelect('id="' + escapePrepaymentVendorQueryValue(sourceRows[i].id) + '"') === RC_SUCCESS) {
+                    item["contract.amount"] = sourceRows[i].remaining_amount;
+                    item.doUpdate();
+                }
+            }
+        } finally {
+            item.doClose();
+        }
+        return true;
+    }
     var prepaymentId = String(record.id || record["id"] || "");
 
     if (!prepaymentId) {
@@ -2454,6 +2523,10 @@ function updateVendorContractAmount(record) {
     return true;
 }
 function updateRemainingAmountForPendingTickets(record) {
+    // XDCB dùng lại hàm cập nhật số dư TU ở trên; HHDV giữ phần xử lý phiếu chờ bên dưới.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+        return updateVendorContractAmount(record);
+    }
     var prepaymentId =
             String(record.id || record["id"] || "");
 
@@ -2703,3 +2776,17 @@ function updateRemainingAmountForPendingTickets(record) {
 
 
 
+
+/**
+ * Đọc bảo lãnh tạm ứng S4 theo contract.id của HĐ gốc, dùng cho màn NCC và kiểm tra hóa đơn.
+ * Chỉ lấy value/expire.date; S4 chưa có số bảo lãnh và ngân hàng nên không tự suy ra từ ID.
+ */
+function getPrepaymentGuaranteeInfo(contractId) {
+    if (!contractId) return null;
+    return lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
+        "esdXDCBrepairProjectCtrGuarantee",
+        'contract.id="' + escapePrepaymentVendorQueryValue(contractId) + '" and name="Bảo lãnh tạm ứng"',
+        ["id", "name", "contract.id", "value", "expire.date", "currency"],
+        false
+    );
+}

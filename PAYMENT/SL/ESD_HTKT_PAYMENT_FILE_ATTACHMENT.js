@@ -224,12 +224,13 @@ function nextId1(name) {
 
 /** API TT -> phiếu cha đã lưu -> category thật; không tin contract/category/actor từ form. */
 function paymentSourceParent(params) {
-    var id = String(params.paymentId || params.transactionId || "").trim();
-    if (id.indexOf("TT.") !== 0 || !params.currentUser) {
+    var id = String(params.paymentId || params.prepaymentId || params.transactionId || "").trim();
+    var isTU = id.indexOf("TU.") === 0;
+    if ((id.indexOf("TT.") !== 0 && !isTU) || !params.currentUser) {
         throw new Error("Thiếu phiếu TT/người thực hiện.");
     }
     var parent = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
-        "esdHTKTpayment",
+        isTU ? "esdHTKTprepayment" : "esdHTKTpayment",
         'id="' + escapePaymentSourceQuery(id) + '"',
         [
             "id",
@@ -243,7 +244,7 @@ function paymentSourceParent(params) {
         ],
         true
     );
-    if (parent["transaction.type"] !== "Thanh toán") {
+    if (parent["transaction.type"] !== (isTU ? "Tạm ứng" : "Thanh toán")) {
         throw new Error("Phiếu không thuộc luồng Thanh toán.");
     }
     if (params.contractId && String(params.contractId) !== String(parent["contract.id"]))
@@ -256,6 +257,7 @@ function listPaymentSourceDocuments(input) {
     try {
         var params = parsePaymentSourceInput(input);
         var parent = paymentSourceParent(params);
+        var isTU = parent["transaction.type"] === "Tạm ứng";
         if (String(parent["original.contract.category"] || "").toUpperCase() !== "XDCB") {
             var legacy = {
                 queryString: JSON.stringify({
@@ -289,7 +291,8 @@ function listPaymentSourceDocuments(input) {
             params.currentUser
         );
         var source = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseDigitizationReadSourceLinks({
-            contractId: parent["contract.id"]
+            contractId: parent["contract.id"],
+            paymentId: isTU ? parent.id : undefined
         });
         var refs = source.references["$" + parent["contract.id"]] || [];
         
@@ -297,7 +300,8 @@ function listPaymentSourceDocuments(input) {
         var selectedSource = lib.ESD_HTKT_EXPENSE_CONTRACT.selectContractDossier(
             { digitizationReferences: refs },
             parent["contract.dossier.id"],
-            true
+            true,
+            isTU ? parent.id : undefined
         );
         refs = selectedSource.digitizationReferences;
         
@@ -344,6 +348,10 @@ function addPaymentSourceDocuments(input) {
     try {
         var params = parsePaymentSourceInput(input);
         var parent = paymentSourceParent(params);
+        // TU dùng bảng liên kết riêng; nội dung nguồn/ECM vẫn do reader SHTL chung kiểm tra.
+        var isTU = parent["transaction.type"] === "Tạm ứng";
+        var attachmentTable = isTU ? "esdHTKTprepaymentAttachment" : "esdHTKTpaymentAttachment";
+        var parentKey = isTU ? "prepayment.id" : "payment.id";
         if (String(parent["original.contract.category"] || "").toUpperCase() !== "XDCB") {
             var oldRows = params.documents || [];
             for (var k = 0; k < oldRows.length; k++) {
@@ -376,8 +384,8 @@ function addPaymentSourceDocuments(input) {
         for (var v = 0; v < validated.length; v++) {
             var doc = validated[v];
             var exists = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
-                "esdHTKTpaymentAttachment",
-                'payment.id="' +
+                attachmentTable,
+                parentKey + '="' +
                     escapePaymentSourceQuery(parent.id) +
                     '" and ecm.doc.id="' +
                     escapePaymentSourceQuery(doc["doc.id"]) +
@@ -386,10 +394,12 @@ function addPaymentSourceDocuments(input) {
                 false
             );
             if (exists) continue; // Retry sau lỗi một phần không tạo trùng liên kết.
-            var target = new SCFile("esdHTKTpaymentAttachment");
+            var target = new SCFile(attachmentTable);
             try {
-                mapPaymentAttachment(target, doc, nextId1("esdHTKTpaymentAttachment"));
-                target["payment.id"] = parent.id;
+                if (isTU) lib.ESD_HTKT_PREPAYMENT_FILE_ATTACHMENT.mapPrepaymentAttachment(target, doc,
+                    nextId1(attachmentTable));
+                else mapPaymentAttachment(target, doc, nextId1(attachmentTable));
+                target[parentKey] = parent.id;
                 target["type"] = "TL_S4";
                 if (target.doInsert() !== RC_SUCCESS)
                     throw new Error("Không lưu được liên kết tài liệu TT: " + doc.name);

@@ -546,10 +546,12 @@ function expenseDigitizationIdQuery(ids, field) {
 }
 
 /** Thanh toán: chỉ đọc HĐ S4 bằng quyền tạo Thanh toán, không tạo phiếu/NCC hay dùng quyền Dự chi. */
-function listPaymentXdcbContracts(input) {
+function listPaymentXdcbContracts(input, selectionType) {
+    // Entry TU trên SM truyền loại này; client không được tự chọn quyền/tiền tố phiếu.
+    var isPrepayment = selectionType === "PREPAYMENT";
     try {
         var params = expenseContractParams(input);
-        var scopeQuery = expenseContractScope(params.currentUser, null, "PAYMENT");
+        var scopeQuery = expenseContractScope(params.currentUser, null, isPrepayment ? "PREPAYMENT" : "PAYMENT");
         var category = expenseContractText(params.category);
         if (category && category !== "HD_GT") {
             throw expenseContractError("XDCB_CATEGORY_UNSUPPORTED", "Nguồn XDCB hiện chỉ hỗ trợ Hợp đồng.");
@@ -570,7 +572,7 @@ function listPaymentXdcbContracts(input) {
         }
         var result = expenseContractReadDigitizations({
             // Chưa có ID phiếu khi mở popup TT; lấy tiền tố từ entrypoint TT, không nhận từ client.
-            paymentPrefix: "TT",
+            paymentPrefix: isPrepayment ? "TU" : "TT",
             contractId: params.contractId,
             start: params.start, 
             count: params.count, 
@@ -609,7 +611,7 @@ function listPaymentXdcbContracts(input) {
 }
 
 /** TT trước tạo phiếu: giữ quyền TT, đọc lại HĐ và xác minh HS–HĐ do người dùng chọn. */
-function getPaymentXdcbContract(input) {
+function getPaymentXdcbContract(input, selectionType) {
     var params = expenseContractParams(input);
     var id = expenseContractText(params.contractId);
     if (!id) {
@@ -623,7 +625,7 @@ function getPaymentXdcbContract(input) {
     params.start = 1;
     params.count = 1;
 
-    var result = listPaymentXdcbContracts({ details: params });
+    var result = listPaymentXdcbContracts({ details: params }, selectionType);
     if (!result.success || !result.data || result.data.length !== 1 || result.data[0].id !== id) {
         return {
             success: false,
@@ -635,7 +637,7 @@ function getPaymentXdcbContract(input) {
         result.data[0],
         params.contractDossierId,
         true,
-        "TT"
+        selectionType === "PREPAYMENT" ? "TU" : "TT"
     )
     return { 
         success: true, 
@@ -804,7 +806,8 @@ function expenseContractScope(currentUser, paymentId, selectionType) {
         expenseContractClose(contact);
     }
     var rights = expenseContractArray(lib.ESD_PERMS_RIGHTS.permsRight(contactId));
-    var isPayment = selectionType === "PAYMENT";
+    var isPrepayment = selectionType === "PREPAYMENT";
+    var isPayment = selectionType === "PAYMENT" || isPrepayment;
     if (!isPayment && rights.indexOf("0040040004000001") < 0) {
         throw expenseContractError("EXPENSE_VIEW_DENIED", "Không có quyền xem dữ liệu Dự chi.");
     }
@@ -815,9 +818,15 @@ function expenseContractScope(currentUser, paymentId, selectionType) {
     }
     var conditions = [];
     // Nhánh Thanh toán lấy vai trò từ quyền thật trên SM, không nhận initialRole/scope/unit từ client.
-    var role = isPayment ? lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.htktCreatePay_detectInitialRoleByRights(contactId) :
-            expenseContractSelectionRole(paymentId);
-    if (isPayment && (!role || rights.indexOf("0040040003000001") < 0 || rights.indexOf("0040040003000010") >= 0)) {
+    // Mỗi phân hệ giữ bộ quyền cũ; chỉ dùng chung điều kiện phạm vi HĐ S4.
+    var role = isPrepayment
+        ? lib.ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST.htktCreatePrepay_detectInitialRoleByRights(contactId)
+        : isPayment ? lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.htktCreatePay_detectInitialRoleByRights(contactId)
+        : expenseContractSelectionRole(paymentId);
+    if (isPrepayment && (!role || rights.indexOf("0040040002000002") < 0)) {
+        throw expenseContractError("PREPAYMENT_CREATE_DENIED", "Không có quyền chọn HĐ để tạo phiếu Tạm ứng.");
+    }
+    if (isPayment && !isPrepayment && (!role || rights.indexOf("0040040003000001") < 0 || rights.indexOf("0040040003000010") >= 0)) {
         throw expenseContractError("PAYMENT_CREATE_DENIED", "Không có quyền chọn HĐ để tạo phiếu Thanh toán.");
     }
     if (role === "dmms") {
