@@ -225,12 +225,12 @@ function nextId1(name) {
 /** API TT -> phiếu cha đã lưu -> category thật; không tin contract/category/actor từ form. */
 function paymentSourceParent(params) {
     var id = String(params.paymentId || params.prepaymentId || params.transactionId || "").trim();
-    var isTU = id.indexOf("TU.") === 0;
-    if ((id.indexOf("TT.") !== 0 && !isTU) || !params.currentUser) {
+    if ((id.indexOf("TT.") !== 0 && id.indexOf("TU.") !== 0) || !params.currentUser) {
         throw new Error("Thiếu phiếu TT/người thực hiện.");
     }
+    var table = id.indexOf("TU.") === 0 ? "esdHTKTprepayment" : "esdHTKTpayment";
     var parent = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.expenseSupplierReadOne(
-        isTU ? "esdHTKTprepayment" : "esdHTKTpayment",
+        table,
         'id="' + escapePaymentSourceQuery(id) + '"',
         [
             "id",
@@ -244,7 +244,7 @@ function paymentSourceParent(params) {
         ],
         true
     );
-    if (parent["transaction.type"] !== (isTU ? "Tạm ứng" : "Thanh toán")) {
+    if (parent["transaction.type"] !== (id.indexOf("TU.") === 0 ? "Tạm ứng" : "Thanh toán")) {
         throw new Error("Phiếu không thuộc luồng Thanh toán.");
     }
     if (params.contractId && String(params.contractId) !== String(parent["contract.id"]))
@@ -257,7 +257,6 @@ function listPaymentSourceDocuments(input) {
     try {
         var params = parsePaymentSourceInput(input);
         var parent = paymentSourceParent(params);
-        var isTU = parent["transaction.type"] === "Tạm ứng";
         if (String(parent["original.contract.category"] || "").toUpperCase() !== "XDCB") {
             var legacy = {
                 queryString: JSON.stringify({
@@ -292,7 +291,7 @@ function listPaymentSourceDocuments(input) {
         );
         var source = lib.ESD_HTKT_EXPENSE_CONTRACT.expenseDigitizationReadSourceLinks({
             contractId: parent["contract.id"],
-            paymentId: isTU ? parent.id : undefined
+            paymentId: String(parent.id).indexOf("TU.") === 0 ? parent.id : undefined
         });
         var refs = source.references["$" + parent["contract.id"]] || [];
         
@@ -301,7 +300,7 @@ function listPaymentSourceDocuments(input) {
             { digitizationReferences: refs },
             parent["contract.dossier.id"],
             true,
-            isTU ? parent.id : undefined
+            String(parent.id).indexOf("TU.") === 0 ? parent.id : undefined
         );
         refs = selectedSource.digitizationReferences;
         
@@ -349,9 +348,9 @@ function addPaymentSourceDocuments(input) {
         var params = parsePaymentSourceInput(input);
         var parent = paymentSourceParent(params);
         // TU dùng bảng liên kết riêng; nội dung nguồn/ECM vẫn do reader SHTL chung kiểm tra.
-        var isTU = parent["transaction.type"] === "Tạm ứng";
-        var attachmentTable = isTU ? "esdHTKTprepaymentAttachment" : "esdHTKTpaymentAttachment";
-        var parentKey = isTU ? "prepayment.id" : "payment.id";
+        var isTu = String(parent.id).indexOf("TU.") === 0;
+        var attachmentTable = isTu ? "esdHTKTprepaymentAttachment" : "esdHTKTpaymentAttachment";
+        var parentKey = isTu ? "prepayment.id" : "payment.id";
         if (String(parent["original.contract.category"] || "").toUpperCase() !== "XDCB") {
             var oldRows = params.documents || [];
             for (var k = 0; k < oldRows.length; k++) {
@@ -396,7 +395,7 @@ function addPaymentSourceDocuments(input) {
             if (exists) continue; // Retry sau lỗi một phần không tạo trùng liên kết.
             var target = new SCFile(attachmentTable);
             try {
-                if (isTU) lib.ESD_HTKT_PREPAYMENT_FILE_ATTACHMENT.mapPrepaymentAttachment(target, doc,
+                if (isTu) lib.ESD_HTKT_PREPAYMENT_FILE_ATTACHMENT.mapPrepaymentAttachment(target, doc,
                     nextId1(attachmentTable));
                 else mapPaymentAttachment(target, doc, nextId1(attachmentTable));
                 target[parentKey] = parent.id;
