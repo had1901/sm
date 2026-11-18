@@ -1905,6 +1905,8 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
     if (rcItem == RC_SUCCESS) {
         var supplierId = itemVendor['supplier.id'];
         var vendorId = itemVendor['id'];
+        // XDCB chỉ cập nhật NCC S2 khi ID và MST cùng khớp; không suy nguồn từ định dạng mã.
+        var vendorTaxCode = String(itemVendor["vendor.number"] || "");
 
         if (itemVendor['vendor.name'] && itemVendor['vendor.number']) {
 
@@ -1940,7 +1942,7 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
                 if (supplierId) {
                     var itemSupplier = new SCFile("esdDMSupplier");
                     if (itemSupplier.doSelect('id="' + supplierId + '"') == RC_SUCCESS) {
-                        if (!itemSupplier['isAccounted']) {
+                        if ((!isXdcb || String(itemSupplier["tax.code"] || "") === vendorTaxCode) && !itemSupplier['isAccounted']) {
                             itemSupplier['isAccounted'] = true;
                             itemSupplier.doUpdate();
                         }
@@ -2028,7 +2030,7 @@ function syncVendorToOgl(prepaymentVendor, branchCode, entityCode, username, con
                 if (supplierId) {
                     var itemSupplierObj = new SCFile("esdDMSupplier");
                     if (itemSupplierObj.doSelect('id="' + supplierId + '"') == RC_SUCCESS) {
-                        if (!itemSupplierObj['isAccounted']) {
+                        if ((!isXdcb || String(itemSupplierObj["tax.code"] || "") === vendorTaxCode) && !itemSupplierObj['isAccounted']) {
                             itemSupplierObj['isAccounted'] = true;
                             itemSupplierObj.doUpdate();
                         }

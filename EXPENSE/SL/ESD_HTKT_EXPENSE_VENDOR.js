@@ -1177,7 +1177,7 @@ function getListExpenseVendor(input) {
 		var vendorQuery =
 				"SELECT pv.id, pv.payment.id, pv.contract.id," +
 				" v.vendor.number, v.vendor.name, pv.amount, pv.currency," +
-				" pv.total.invoice, pv.ogl.sync.status, v.ogl.vendor.id, pv.vendor.id, pv.vendor.site.id" +
+				" pv.total.invoice, pv.ogl.sync.status, v.ogl.vendor.id, pv.vendor.id, pv.vendor.site.id, v.supplier.id" +
 				" FROM esdHTKTpaymentVendor pv" +
 				" LEFT JOIN esdHTKTvendor v ON (pv.vendor.id = v.id)" +
 				' WHERE pv.payment.id="' + escapeExpenseVendorQueryValue(paymentId) + '" ORDER BY pv.id ASC';
@@ -1215,7 +1215,11 @@ function buildExpenseVendorItem(paymentVendorFile, isXdcb) {
 		vendor_id: normalizeExpenseVendorValue(paymentVendorFile[10]),
 		vendor_site_id: normalizeExpenseVendorValue(paymentVendorFile[11])
 	};
-	if (isXdcb) result.contract_code = contractId;
+	if (isXdcb) {
+		result.contract_code = contractId;
+		// Mã NCC dùng hiển thị; vendor_number vẫn là MST cho OGL/import/đồng bộ S4.
+		result.supplier_id = String(paymentVendorFile[12] || "");
+	}
 	return result;
 }
 

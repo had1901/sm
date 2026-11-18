@@ -303,7 +303,7 @@ function resolveExpenseXdcbSupplier(contract, supplierId, taxCode) {
     throw new Error("NCC/MST đã chọn không thuộc nguồn NCC của HĐ XDCB.");
 }
 
-/** Đọc NCC S6 đã lưu; supplier.id vẫn giữ ý nghĩa liên kết danh mục S2. */
+/** Đọc NCC S6; supplier.id giữ mã S2 đã có hoặc mã S6 tự cấp cho NCC nguồn S4. */
 function getExpenseAccountingVendor(vendorId) {
     return expenseSupplierReadOne("esdHTKTvendor", 'id="' + expenseSupplierQuote(vendorId) + '"',
         ["id", "vendor.number", "vendor.name", "address", "supplier.id", "ogl.sync.status"], true);
@@ -319,7 +319,7 @@ function ensureExpenseXdcbVendor(supplier, actor) {
     var existing = expenseSupplierReadOne("esdHTKTvendor", query, fields, false);
     if (existing) {
         if (!existing.id || !existing["vendor.name"]) throw new Error("NCC S6 cùng MST thiếu ID hoặc tên.");
-        return existing.id;
+        return ensureExpenseXdcbSupplierCode(existing);
     }
     var file = new SCFile("esdHTKTvendor");
     try {
@@ -328,7 +328,7 @@ function ensureExpenseXdcbVendor(supplier, actor) {
         existing = expenseSupplierReadOne("esdHTKTvendor", query, fields, false);
         if (existing) {
             if (!existing.id || !existing["vendor.name"]) throw new Error("NCC S6 cùng MST thiếu ID hoặc tên.");
-            return existing.id;
+            return ensureExpenseXdcbSupplierCode(existing);
         }
         file["id"] = vendorId;
         file["vendor.number"] = tax;
@@ -336,17 +336,48 @@ function ensureExpenseXdcbVendor(supplier, actor) {
         file["address"] = expenseSupplierText(supplier.address);
         file["username"] = actor;
         file["ogl.country"] = "VN";
-        // Không gán ID Contractor vào supplier.id vì helper S2 dùng field đó để cập nhật esdDMSupplier.
+        // Mã NCC cấp một lần tại S6; MST và khóa Contractor của S4 vẫn giữ riêng.
+        file["supplier.id"] = nextExpenseXdcbSupplierCode();
         var rc = file.doAction("add");
         if (rc !== RC_SUCCESS) {
             existing = expenseSupplierReadOne("esdHTKTvendor", query, fields, false);
-            if (existing && existing.id && existing["vendor.name"]) return existing.id;
+            if (existing && existing.id && existing["vendor.name"]) return ensureExpenseXdcbSupplierCode(existing);
             throw new Error("Không lưu được NCC XDCB về S6. Code: " + rc);
         }
         existing = expenseSupplierReadOne("esdHTKTvendor", query, fields, true);
         if (!existing.id) throw new Error("NCC S6 vừa tạo chưa có ID hợp lệ.");
-        return existing.id;
+        return ensureExpenseXdcbSupplierCode(existing);
     } finally { expenseSupplierClose(file); }
+}
+
+/** NCC S4 cũ chưa có mã: bổ sung khi lưu; mã đã có, gồm mã S2, luôn được giữ nguyên. */
+function ensureExpenseXdcbSupplierCode(vendor) {
+    if (expenseSupplierText(vendor["supplier.id"])) return vendor.id;
+    var file = new SCFile("esdHTKTvendor");
+    try {
+        var query = 'id="' + expenseSupplierQuote(vendor.id) + '"';
+        var rc = file.doSelect(query);
+        if (rc !== RC_SUCCESS) throw new Error("Không đọc được NCC S6 để bổ sung mã. Code: " + rc);
+        // Đọc lại trên bản ghi trước khi cấp số, tránh đổi mã vừa được phiên khác lưu.
+        if (expenseSupplierText(file["supplier.id"])) return vendor.id;
+        file["supplier.id"] = nextExpenseXdcbSupplierCode();
+        rc = file.doUpdate();
+        var saved = expenseSupplierReadOne("esdHTKTvendor", query, ["id", "supplier.id"], true);
+        if (!expenseSupplierText(saved["supplier.id"])) {
+            throw new Error("Chưa lưu được mã NCC S6. Code: " + rc);
+        }
+        return saved.id;
+    } finally { expenseSupplierClose(file); }
+}
+
+/** TU/TT/DC dùng chung Number SM; giữ nguyên mã trả về, toàn bộ quy tắc đặt tại Number. */
+function nextExpenseXdcbSupplierCode() {
+    var code = expenseSupplierText(expenseSupplierNumber("esdHTKTvendorCode"));
+    if (!code) throw new Error("Number esdHTKTvendorCode chưa trả về mã NCC.");
+    // Không dùng lại mã nếu bộ đếm bị reset hoặc đã có dữ liệu được nhập trước đó.
+    var existing = expenseSupplierReadOne("esdHTKTvendor", 'supplier.id="' + expenseSupplierQuote(code) + '"', ["id"], false);
+    if (existing) throw new Error("Mã " + code + " đã tồn tại. Cần kiểm tra bộ đếm esdHTKTvendorCode.");
+    return code;
 }
 
 /**
