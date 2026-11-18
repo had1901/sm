@@ -362,7 +362,15 @@ function updateNextStatus(record, previousRecord) {
 
         var contractId = record["contract.id"];
         if (contractId) {
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+            // XDCB dùng bảo lãnh tạm ứng S4 theo HĐ; công thức so sánh phía sau giữ nguyên.
+            if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+                var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
+                record["guarantee.no"] = "";
+                record["issuing.bank"] = "";
+                record["guarantee.amount"] = xdcbGuarantee ? xdcbGuarantee.value : null;
+                record["guarantee.expiry.date"] = xdcbGuarantee ? xdcbGuarantee["expire.date"] : null;
+            } else {
+var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
             var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
             if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
@@ -373,6 +381,7 @@ function updateNextStatus(record, previousRecord) {
                 record["guarantee.expiry.date"] = docInfoFile["expire.date"];
             }
             try { docInfoFile.doClose(); } catch (e) {}
+            }
         }
     }
 
@@ -679,6 +688,11 @@ function returnToUpdate(record, documentsAlreadyDeleted) {
 
 function validateDataInPhase(record) {
     var errorMss = [];
+    // Kiểm tra lại đúng HS TAM_UNG, NCC và số dư mới nhất ở mọi bước kiểm tra của TU.
+    if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+        var xdcbErrors = lib.ESD_HTKT_PAYMENT_VENDOR.validatePaymentXdcbVendors(record);
+        if (xdcbErrors) errorMss = errorMss.concat(xdcbErrors);
+    }
 
     // Validate chung thông tin NCC + thanh toán
     var vendorErrors = validateVendorAndPaymentDetailsOnWorkflow(record);
@@ -840,13 +854,19 @@ function validateFromPdCapThamQuyenToEnd(record) {
 
         // 1. Lấy giá trị bảo lãnh từ Database (bảng esdHDcontractDocInfo)
         if (contractId) {
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+            // XDCB dùng bảo lãnh tạm ứng S4 theo HĐ; công thức so sánh phía sau giữ nguyên.
+            if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+                var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
+                guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
+            } else {
+var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
             var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
             if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
                 guaranteeAmountStr = docInfoFile["guarantee.amount"];
             }
             try { docInfoFile.doClose(); } catch(e) {}
+            }
         }
 
         // Làm sạch chuỗi bảo lãnh để kiểm tra xem có hợp lệ và > 0 không
@@ -1051,13 +1071,19 @@ function validateVendorAndPaymentDetails(record) {
             var guaranteeAmountStr = null;
 
             // 2.1 Lấy giá trị bảo lãnh trực tiếp từ DB
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+            // XDCB dùng bảo lãnh tạm ứng S4 theo HĐ; công thức so sánh phía sau giữ nguyên.
+            if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+                var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
+                guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
+            } else {
+var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
             var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
             if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
                 guaranteeAmountStr = docInfoFile["guarantee.amount"];
             }
             try { docInfoFile.doClose(); } catch(e) {}
+            }
 
             // Làm sạch chuỗi bảo lãnh để kiểm tra có giá trị hợp lệ (> 0) hay không
             var cleanGuaranteeStr = String(guaranteeAmountStr || "").replace(/,/g, '').trim();
@@ -1345,7 +1371,12 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
         // =========================================================================
         if (contractId) {
             var guaranteeAmountStr = null;
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+            // XDCB dùng bảo lãnh tạm ứng S4 theo HĐ; công thức so sánh phía sau giữ nguyên.
+            if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(record)) {
+                var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
+                guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
+            } else {
+var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
             // Dùng BAOLANHBH chuẩn giống hệt các function khác
             var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
@@ -1353,6 +1384,7 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
                 guaranteeAmountStr = docInfoFile["guarantee.amount"];
             }
             try { docInfoFile.doClose(); } catch(e) {}
+            }
 
             var cleanGuaranteeStr = String(guaranteeAmountStr || "").replace(/,/g, '').trim();
 
