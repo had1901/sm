@@ -19,6 +19,7 @@ if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
         vars.$G_hasError = false;
         vars.$G_errMsg = "";
     } catch (xdcbError) {
+        vars.$supplierCode = "";
         vars.$G_hasError = true;
         vars.$G_errMsg = String(xdcbError.message || xdcbError);
         vars.$L_action = "do nothing";
@@ -38,6 +39,7 @@ if (supplierPaymentId.indexOf("DC.") === 0 &&
         lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.clearExpenseSupplierScreenDraft();
         // Xóa thông tin lựa chọn lỗi; giữ số tiền/nội dung đang nhập và NCC đã lưu trên record.
         vars.$supplierId = "";
+        vars.$supplierCode = "";
         vars.$supplierName = "";
         vars.$taxCode = "";
         vars.$supplierAddress = "";
@@ -63,6 +65,7 @@ if (supplierPaymentId.indexOf("DC.") === 0 &&
     }
     if (findVendor) {
         vars.$supplierId = findVendor["supplier.id"];
+        vars.$supplierCode = vars.$supplierId || "";
         vars.$supplierName = findVendor["supplier.name"];
         vars.$taxCode = findVendor["tax.code"];
         vars.$L_file["transaction.des"] = findVendor["description"];

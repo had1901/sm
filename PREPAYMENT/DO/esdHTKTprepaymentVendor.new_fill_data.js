@@ -4,6 +4,7 @@ if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
         lib.ESD_HTKT_PAYMENT_VENDOR.selectPaymentXdcbSupplier(vars.$L_file, vars.$supplierId);
         vars.$G_hasError = false;
     } catch (sourceError) {
+        vars.$supplierCode = "";
         vars.$G_hasError = true;
         vars.$G_errMsg = String(sourceError.message || sourceError);
         vars.$L_action = "do nothing";
@@ -32,6 +33,7 @@ if (findVendor) {
     }
 
     vars.$supplierId = findVendor['supplier.id'];
+    vars.$supplierCode = vars.$supplierId || "";
     vars.$supplierName = findVendor['supplier.name'];
     vars.$taxCode = findVendor['tax.code'];
     vars.$remainingAmt = findVendor['remaining.amount'];

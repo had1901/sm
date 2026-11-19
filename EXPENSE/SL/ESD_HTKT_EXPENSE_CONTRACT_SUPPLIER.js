@@ -309,6 +309,14 @@ function getExpenseAccountingVendor(vendorId) {
         ["id", "vendor.number", "vendor.name", "address", "supplier.id", "ogl.sync.status"], true);
 }
 
+/** Đọc mã S6 của đúng NCC đang chọn theo MST; chỉ hiển thị, không cấp số hoặc lưu DB. */
+function getExpenseSupplierCodeByTax(taxCode) {
+    var tax = expenseSupplierText(taxCode);
+    if (!tax) return "";
+    var vendor = expenseSupplierReadOne("esdHTKTvendor", 'vendor.number="' + expenseSupplierQuote(tax) + '"', ["supplier.id"], false);
+    return expenseSupplierText(vendor && vendor["supplier.id"]);
+}
+
 /** Tái sử dụng NCC S6 theo MST; không tạo một vendor cho mỗi ID join/gói thầu. */
 function ensureExpenseXdcbVendor(supplier, actor) {
     var tax = expenseSupplierText(supplier["tax.code"]);
@@ -556,6 +564,8 @@ function loadExpenseSupplierScreen(record) {
         vars.$vendorType = draftSupplier.type || "";
     }
     vars.$G_supplier_id = vars.$supplierId;
+    // Mã hiển thị lấy ở master S6; khóa droplist S4 phía trên vẫn giữ nguyên.
+    vars.$supplierCode = getExpenseSupplierCodeByTax(vars.$taxCode);
     // Chỉ cập nhật biến hiển thị số dư NCC; không ghi đè record.amount người dùng đang nhập.
     vars.$remainingAmount = "";
     for (var moneyIndex = 0; moneyIndex < options.length; moneyIndex++) {
@@ -599,6 +609,7 @@ function selectExpenseSupplier(record, supplierId) {
             vars.$supplierId = options[i]["supplier.id"];
             vars.$supplierName = options[i]["supplier.name"];
             vars.$taxCode = options[i]["tax.code"];
+            vars.$supplierCode = getExpenseSupplierCodeByTax(vars.$taxCode);
             vars.$remainingAmount = options[i]["remaining.amount"] == null ? "" : options[i]["remaining.amount"];
             vars.$supplierAddress = expenseSupplierText(options[i].address);
             vars.$G_supplier_id = options[i]["supplier.id"];
@@ -645,6 +656,8 @@ function saveExpenseXdcbDetails(record) {
         throw new Error("Không được đổi NCC khi món Dự chi đã gắn hóa đơn.");
     }
     var vendorId = ensureExpenseXdcbVendor(supplier, actor);
+    // Lần lưu đầu đã có mã từ Number: điền ngay lên FD mà không thay khóa NCC nguồn S4.
+    vars.$supplierCode = getExpenseSupplierCodeByTax(supplier["tax.code"]);
     record["vendor.site.id"] = "";
     record["vendor.id"] = vendorId;
     record["amount"] = amount;

@@ -1,3 +1,5 @@
+// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
+vars.$supplierCode = vars.$supplierId || "";
 try {
   if (system.functions.filename(vars.$L_file) == "ModuleStatus") {
     lib.custom.selectWfPhaseByWorkflow(vars.$L_file.workflow);

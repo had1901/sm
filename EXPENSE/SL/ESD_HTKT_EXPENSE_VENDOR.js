@@ -1789,6 +1789,7 @@ function loadPaymentVendorInfo(record) {
 		if (isFirstItem) {
 			vars.$currency = itemFile["currency"];
 			vars.$supplierId = itemFile["current.supplier.id"];
+			vars.$supplierCode = vars.$supplierId || "";
 			vars.$supplierName = itemFile["current.supplier.name"];
 			vars.$taxCode = itemFile["current.tax.code"];
 			vars.$oglSiteCode = itemFile["ogl.site.code"];
