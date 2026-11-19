@@ -2221,6 +2221,7 @@ function loadPrepaymentVendorInfo(record) {
         if (rcMain == RC_SUCCESS) {
             vars.$currency = itemFile["currency"];
             vars.$supplierId = itemFile["supplier.id"];
+            vars.$supplierCode = vars.$supplierId || "";
             
             // =========================================================
             // BỔ SUNG CỤM THÔNG TIN PO/PHIẾU ĐẶT HÀNG LÊN MÀN HÌNH VIEW

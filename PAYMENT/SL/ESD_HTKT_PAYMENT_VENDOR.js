@@ -1359,6 +1359,7 @@ function loadPaymentVendorInfo(record) {
 
         vars.$currency = itemFile["currency"];
         vars.$supplierId = itemFile["supplier.id"];
+        vars.$supplierCode = vars.$supplierId || "";
         vars.$L_file["payment.method"] = itemFile["payment.method"];
         vars.$remainingAmount = itemFile['unpaid.amount'];
         vars.$taxCode = itemFile["tax.code"];
@@ -2442,6 +2443,8 @@ function loadPaymentXdcbVendorInfo(record) {
     vars.$supplierName = selected ? selected["supplier.name"] : "";
     vars.$supplierAddress = selected ? selected.address || "" : "";
     vars.$taxCode = selected ? selected["tax.code"] : "";
+    // TU/TT dùng mã master S6 cho ô Mã NCC; supplierId vẫn là khóa chọn NCC S4.
+    vars.$supplierCode = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierCodeByTax(vars.$taxCode);
     vars.$unitLv1 = context.payment["unit.lv1"];
     vars.$unitLv2 = context.payment["unit.lv2"];
     vars.$currency = record.currency || getPaymentXdcbContractInfo(record).currency;
@@ -2473,6 +2476,7 @@ function loadPaymentXdcbVendorInfoSafe(record) {
         vars.$suppliervalues = [];
         vars.$supplierId = "";
         vars.$G_supplier_id = "";
+        vars.$supplierCode = "";
         vars.$supplierName = "";
         vars.$supplierAddress = "";
         vars.$taxCode = "";
@@ -2501,6 +2505,7 @@ function selectPaymentXdcbSupplier(record, supplierId) {
     vars.$G_supplier_id = supplier["supplier.id"];
     vars.$supplierName = supplier["supplier.name"];
     vars.$taxCode = supplier["tax.code"];
+    vars.$supplierCode = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierCodeByTax(vars.$taxCode);
     vars.$remainingAmount = supplier["remaining.amount"];
     vars.$supplierAddress = supplier.address || "";
     if (context.parentKey === "prepayment.id") vars.$remainingAmt = vars.$remainingAmount;
@@ -2565,6 +2570,7 @@ function savePaymentXdcbSupplier(record) {
     var supplier = preparePaymentXdcbSave(record);
     var context = getPaymentXdcbContext(record, true);
     var vendorId = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.ensureExpenseXdcbVendor(supplier, context.actor);
+    vars.$supplierCode = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierCodeByTax(supplier["tax.code"]);
     if (record["vendor.id"] && String(record["vendor.id"]) !== String(vendorId))
         record["vendor.site.id"] = "";
     record["vendor.id"] = vendorId;
