@@ -1,5 +1,3 @@
-// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
-vars.$supplierCode = vars.$supplierId || "";
 try {
     if (system.functions.filename(vars.$L_file)=="ModuleStatus")
     {
@@ -10,6 +8,9 @@ try {
     var table = system.functions.filename(vars.$L_file);
     lib.ESD_Utils.backQueue(table);
 } catch (e) {}
+
+// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
+vars.$supplierCode = vars.$supplierId || "";
 
 //custom back action
 vars.$showSyncVendorOgl = false;
@@ -26,10 +27,13 @@ if (!prepaymentId && vars.$L_file && vars.$L_file.prepayment_id != null) {
         prepaymentId = vars.$L_file.prepayment_id;
     vars.$L_file.prepayment_id = prepaymentId;
 }
+
 // XDCB dùng chung loader NCC/HS của TT; HHDV giữ truy vấn S2/PO cũ ở nhánh else.
 if (prepaymentId) vars.$L_file["prepayment.id"] = prepaymentId;
+
 var isTUXdcb = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file);
 vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file) === true;
+
 if (isTUXdcb) {
     arrVendors = lib.ESD_HTKT_PREPAYMENT_VENDOR.loadPrepaymentVendorInfo(vars.$L_file);
 } else {
@@ -238,8 +242,6 @@ if (!isGuaranteeFilled) {
     vars.$supplierdisplays = [];
     vars.$suppliervalues = [];
 }
-
-
 }
 
 // droplist ngan hang thu huong

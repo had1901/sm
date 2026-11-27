@@ -1,5 +1,3 @@
-// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
-vars.$supplierCode = vars.$supplierId || "";
 try {
     if (system.functions.filename(vars.$L_file) == "ModuleStatus") {
         lib.custom.selectWfPhaseByWorkflow(vars.$L_file.workflow);
@@ -8,6 +6,9 @@ try {
     var table = system.functions.filename(vars.$L_file);
     lib.ESD_Utils.backQueue(table);
 } catch (e) { }
+
+// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
+vars.$supplierCode = vars.$supplierId || "";
 
 vars.$ReadOnly = !lib.ESD_HTKT_PREPAYMENT_WF.canEditInCurrenPhase(vars.$L_file);
 var isPostAuditVendorView = String(vars["$G.HTKT_PREPAYMENT_MENU_CONTEXT"] || "")
@@ -28,7 +29,9 @@ vars.$canEditObj = false;
 // Hàm này sẽ gán vars.$showSyncVendorOgl và vars.$canEditSite (kiểm tra role KTTC + OGL sync)
 var isTUXdcb = lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file);
 vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file) === true;
+
 lib.ESD_HTKT_PREPAYMENT_VENDOR.loadPrepaymentVendorInfo(vars.$L_file);
+
 if (isPostAuditVendorView) {
     vars.$canEditSite = false;
     vars.$canEditObj = false;
@@ -70,7 +73,7 @@ if (entityInfo && entityInfo.entity && entityInfo.oglBranchCode) {
                     // 2. Nếu khớp thì lấy site đó, nếu KHÔNG khớp (hoặc không có default) thì lấy luôn site ĐẦU TIÊN
                     if (matchedSite) {
                         vars.$L_file.vendor_site_id = matchedSite.id;
-                    } else if (!isTUXdcb) {
+                    } else if (!isTUXdcb)  {
                         vars.$L_file.vendor_site_id = result[0].id;
                     }
                 }
