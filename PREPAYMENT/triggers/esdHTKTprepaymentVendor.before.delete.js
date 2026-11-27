@@ -5,14 +5,16 @@
  *
  * Khi một NCC bị xóa khỏi đề nghị tạm ứng:
  * 1. Dọn dẹp các dữ liệu chi tiết tham chiếu đến cặp prepayment.id + vendor.id
- * 2. Cập nhật lại TỔNG SỐ TIỀN của phiếu tạm ứng (esdHTKTprepayment)
- * 3. Kích hoạt đồng bộ / sinh lại bút toán tạm ứng (esdHTKTprepaymentEntry)
+ * 2. Xóa dữ liệu giải ngân HHDV (esdHTKTpaymentHHDVDisbursement)
+ * 3. Cập nhật lại TỔNG SỐ TIỀN của phiếu tạm ứng (esdHTKTprepayment)
+ * 4. Kích hoạt đồng bộ / sinh lại bút toán tạm ứng (esdHTKTprepaymentEntry)
  */
 function handleRemoveVendorPrepaymentData(rec) {
     if (!rec) return;
 
     var prepaymentId = rec["prepayment.id"];
     var vendorId = rec["vendor.id"]; 
+    var prepaymentVendorId = rec["id"];
 
     if (!prepaymentId) {
         return;
@@ -75,12 +77,28 @@ function handleRemoveVendorPrepaymentData(rec) {
     }
 
     // =========================================================================
-    // 2. TÍNH TOÁN VÀ CẬP NHẬT LẠI TỔNG TIỀN TẠM ỨNG
+    // 2. XÓA DỮ LIỆU GIẢI NGÂN HHDV CỦA NCC NÀY (BR-02)
+    // =========================================================================
+    try {
+        if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" && 
+            typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.clearHHDVDisbursement === "function") {
+            lib.ESD_HTKT_HHDV_DISBURSEMENT.clearHHDVDisbursement(prepaymentId, prepaymentVendorId || vendorId);
+        }
+    } catch (eHhdv) {
+        try {
+            if (typeof lib !== "undefined" && lib.ESD_Utils && typeof lib.ESD_Utils.printMsg === "function") {
+                lib.ESD_Utils.printMsg("[PREPAYMENT-VENDOR-AFTER-DELETE][HHDV-ERROR] " + eHhdv);
+            }
+        } catch (ignore) {}
+    }
+
+    // =========================================================================
+    // 3. TÍNH TOÁN VÀ CẬP NHẬT LẠI TỔNG TIỀN TẠM ỨNG
     // =========================================================================
     updateTotalPrepaymentAmount(prepaymentId);
 
     // =========================================================================
-    // 3. ĐỒNG BỘ LẠI BÚT TOÁN SAU KHI XÓA NCC
+    // 4. ĐỒNG BỘ LẠI BÚT TOÁN SAU KHI XÓA NCC
     // =========================================================================
     try {
         if (system.library.ESD_HTKT_PREPAYMENT_ENTRY && 
@@ -149,7 +167,7 @@ function updateTotalPrepaymentAmount(prepaymentId) {
 
         if (rcPrepay === RC_SUCCESS) {
             if (totalAmount === 0) {
-                prepayFile["amount"] = null; // Trả về null nếu không còn tiền
+                prepayFile["amount"] = null;
             } else {
                 prepayFile["amount"] = totalAmount.toString();
             }
@@ -171,13 +189,6 @@ try {
     var targetRecord = (typeof oldrecord !== "undefined" && oldrecord) ? oldrecord : (typeof record !== "undefined" ? record : null);
 
     if (targetRecord) {
-        // In log debug nếu cần
-        try {
-            if (typeof lib !== "undefined" && lib.ESD_Utils && typeof lib.ESD_Utils.printMsg === "function") {
-                lib.ESD_Utils.printMsg("Trigger After Delete esdHTKTprepaymentVendor: " + targetRecord["prepayment.id"] + " | Vendor: " + targetRecord["vendor.id"]);
-            }
-        } catch (ignore) {}
-
         // Thực thi dọn dẹp và đồng bộ lại bút toán
         handleRemoveVendorPrepaymentData(targetRecord);
     }

@@ -129,6 +129,7 @@ function calculateTotalVendorAmount(prepaymentId) {
 
 function handlePhaseChangeUpdate(rec, oldRec) {
     if (!rec) return;
+    
     // S4 không nhận các phase trung gian. HHDV tiếp tục đồng bộ S2 như cũ.
     if (String(rec["original.contract.category"] || "").toUpperCase() === "XDCB") return;
 
@@ -220,6 +221,8 @@ try {
 //
 //print("[PREPAYMENT_LOG] === SCRIPT END ===");
 //print("=========================================================================");
+
+
 // Sau khi TU đã hạch toán và có ngày hoàn thành, dùng cùng adapter S4 của TT/DC.
 // Chạy lại không cộng tiền trùng: adapter kiểm tra khóa phiếu + dòng NCC trước khi gọi S4.
 if (String(record["original.contract.category"] || "").toUpperCase() === "XDCB" &&
