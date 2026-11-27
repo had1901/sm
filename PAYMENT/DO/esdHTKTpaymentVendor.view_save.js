@@ -59,11 +59,12 @@ if (errorMss && errorMss.length > 0) {
             
         }
     }
-
+    
     if (!vars.$G_hasError && isTtXdcbSave) {
         var xdcbSync = lib.ESD_HTKT_PAYMENT_VENDOR.savePaymentXdcbSupplier(vars.$L_file);
         if (!xdcbSync.success) print("Đồng bộ NCC/Site TT XDCB chưa thành công: " + xdcbSync.message);
     }
+
     if (!vars.$G_hasError) {
         // Dữ liệu hợp lệ hoàn toàn (cả validate nghiệp vụ lẫn tài khoản Vietinbank)
         // Tiếp tục các bước xử lý tiếp theo nếu có

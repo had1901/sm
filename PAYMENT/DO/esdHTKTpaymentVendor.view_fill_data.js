@@ -44,27 +44,9 @@ function savePaymentVendorRecord(record) {
     return isSaved;
 }
 
-// DO dùng chung: chỉ phiếu DC mới kiểm tra context Dự chi; TT XDCB có guard nguồn/quyền riêng.
-var supplierPaymentId = String(
-    vars.$L_file["payment.id"] || vars.$L_file.payment_id || vars.$G_payment_id || ""
-).trim();
-var isXDCB = supplierPaymentId.indexOf("DC.") === 0 &&
-    lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(vars.$L_file, "", false).category === "XDCB";
+var isXDCB = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.getExpenseSupplierContext(vars.$L_file, "", false).category === "XDCB";
 
-if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
-    // TT XDCB: điền NCC S4 và giữ lựa chọn nháp; master/site được xử lý sau validate ở DO Lưu.
-    // Không gọi hàm lưu ngay bên dưới để tránh ghi DB khi TT chưa qua kiểm tra tiền/tài khoản.
-    try {
-        lib.ESD_HTKT_PAYMENT_VENDOR.selectPaymentXdcbSupplier(vars.$L_file, vars.$supplierId);
-        vars.$G_hasError = false;
-        vars.$G_errMsg = "";
-    } catch (xdcbError) {
-        vars.$supplierCode = "";
-        vars.$G_hasError = true;
-        vars.$G_errMsg = String(xdcbError.message || xdcbError);
-        vars.$L_action = "do nothing";
-    }
-} else if (isXDCB) {
+if (isXDCB) {
     try {
         lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.selectExpenseSupplier(vars.$L_file, vars.$supplierId);
         vars.$G_hasError = false;
@@ -81,7 +63,6 @@ if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
         lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.clearExpenseSupplierScreenDraft();
         // Xóa thông tin lựa chọn lỗi để Save không dùng lại tên/MST của NCC trước.
         vars.$supplierId = "";
-        vars.$supplierCode = "";
         vars.$supplierName = "";
         vars.$taxCode = "";
         vars.$supplierAddress = "";
@@ -105,7 +86,6 @@ if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
     }
     if (findVendor) {
         vars.$supplierId = findVendor["supplier.id"];
-        vars.$supplierCode = vars.$supplierId || "";
         vars.$supplierName = findVendor["supplier.name"];
         vars.$taxCode = findVendor["tax.code"];
         vars.$L_file["transaction.des"] = findVendor["description"];

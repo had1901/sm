@@ -72,11 +72,12 @@ if (errorMss && errorMss.length > 0) {
             itemVendor['vendor.type'] = vars.$isCNvendorType ? "CN" : "DN";
             itemVendor.doAction('add');
         }
-        
         }
         // 2. GÁN DỮ LIỆU CHO PAYMENT VENDOR ($L_file)
         vars.$L_file['vendor.id']               = $vendorId;
-        if (!isTtXdcbSave) vars.$L_file['vendor.site.id'] = vars.$oglSiteSode;
+        if (!isTtXdcbSave) {
+            vars.$L_file['vendor.site.id'] = vars.$oglSiteSode;
+        } 
         vars.$L_file['currency']                = vars.$currency;
         vars.$L_file['approved.invoice.amount'] = vars.$approvedInvoiceAmount;
         vars.$L_file['amount']                  = vars.$amount;
