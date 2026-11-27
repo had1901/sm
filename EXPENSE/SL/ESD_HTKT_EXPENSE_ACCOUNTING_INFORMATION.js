@@ -143,6 +143,7 @@ function generatePaymentAccountingInformation(paymentId) {
             );
         }
 
+        payloadResults.data[0].hasPayable = hasPayableAssetEntry(entryGroup.entries);
         payloadResults.data[0].sourcePaymentVendorId = entryGroup.paymentVendorId;
         prepared.push(payloadResults.data[0]);
     }
@@ -334,8 +335,19 @@ function buildAccountingInformationRow(payment, item, createdTime) {
         'transaction.id': '', 'ref.id': '', 'internal.ref.id': item.sourcePaymentVendorId,
         'ap.code': '', 'batch.name': '',
         'created.time': createdTime, 'checked.time': null,
-        amount: item.amount, 'contract.id': item.contractId
+        amount: item.amount, 'contract.id': item.contractId,
+        'has.payable': item.hasPayable === true
     };
+}
+
+function hasPayableAssetEntry(entries) {
+    for (var i = 0; i < entries.length; i++) {
+        if (safeString(entries[i].entry_type).trim().toUpperCase() === 'PAYABLE' &&
+                safeString(entries[i].account_type).trim().toUpperCase() === 'ASSET') {
+            return true;
+        }
+    }
+    return false;
 }
 
 function resolvePaymentMaker(payment) {

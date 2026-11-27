@@ -309,6 +309,7 @@ function getExpenseAccountingVendor(vendorId) {
         ["id", "vendor.number", "vendor.name", "address", "supplier.id", "ogl.sync.status"], true);
 }
 
+
 /** Đọc mã S6 của đúng NCC đang chọn theo MST; chỉ hiển thị, không cấp số hoặc lưu DB. */
 function getExpenseSupplierCodeByTax(taxCode) {
     var tax = expenseSupplierText(taxCode);

@@ -160,6 +160,22 @@ var CATEGORY_TAX_DEDUCTION_TYPE = 'dmhd_loai_khau_tru';
 var DEDUCTION_TYPE_FULL = 'KHAUTRU_001';
 var DEDUCTION_TYPE_RATE = 'KHAUTRU_002';
 var DEDUCTION_TYPE_NONE = 'KHAUTRU_003';
+
+var TAX_DEDUCTION_ACCOUNTS = {
+    KHAUTRU_001: '126120220',
+    KHAUTRU_002: '126120210'
+};
+
+var DEDUCTION_TYPE_ALIASES = {
+    KHAU_TRU_TOAN_BO: 'KHAUTRU_001',
+    KHAU_TRU_TY_LE: 'KHAUTRU_002',
+    KHONG_KHAU_TRU: 'KHAUTRU_003'
+};
+
+function normalizeDeductionType(value) {
+    var code = safeString(value).trim().toUpperCase();
+    return hasOwn(DEDUCTION_TYPE_ALIASES, code) ? DEDUCTION_TYPE_ALIASES[code] : code;
+}
 var GL_UNIT_TRANSACTION_CODE = '98';
 var GL_DEFAULT_ENTITY_CODE = '0000000';
 var GL_DEFAULT_COST_CENTER = '000000';
@@ -404,6 +420,7 @@ function getListExpenseEntry(details) {
     var savedVendorMap = {};
     var savedDebitAmountMap = {};
     var savedCreditAmountMap = {};
+    var savedTaxAmountMap = {};
     var savedPrepaymentMap = {};
     for (var sIdx = 0; sIdx < savedEntries.length; sIdx++) {
         var sRow = savedEntries[sIdx];
@@ -417,7 +434,10 @@ function getListExpenseEntry(details) {
             } else if (sAccountSide === 'credit') {
                 savedCreditAmountMap[savedPaymentVendorId] = (savedCreditAmountMap[savedPaymentVendorId] || 0) + sAmount;
             }
-            if (normalizeEntryType(sRow.entry_type) === ENTRY_TYPE.PREPAYMENT) {
+            var sType = normalizeEntryType(sRow.entry_type);
+            if (sType === ENTRY_TYPE.TAX) {
+                savedTaxAmountMap[savedPaymentVendorId] = (savedTaxAmountMap[savedPaymentVendorId] || 0) + sAmount;
+            } else if (sType === ENTRY_TYPE.PREPAYMENT) {
                 savedPrepaymentMap[savedPaymentVendorId] = (savedPrepaymentMap[savedPaymentVendorId] || 0) + sAmount;
             }
         }
@@ -440,12 +460,17 @@ function getListExpenseEntry(details) {
             continue;
         }
 
-        // Giữ nguyên các dòng tự sinh đã được KTTC chỉnh sửa và lưu cân đối; chỉ sinh lại khi món chưa có dòng hoặc bị lệch Nợ/Có (vd: sau chọn hoàn ứng).
+        // Giữ nguyên các dòng tự sinh đã được KTTC chỉnh sửa và lưu cân đối; chỉ sinh lại khi món chưa có dòng hoặc bị lệch Nợ/Có hoặc thay đổi thuế từ hóa đơn.
         var vendorDebit = savedDebitAmountMap[pVendorId] || 0;
         var vendorCredit = savedCreditAmountMap[pVendorId] || 0;
         var isVendorUnbalanced = Math.abs(vendorDebit - vendorCredit) > MONEY_EPSILON;
 
-        if (!savedVendorMap[pVendorId] || isVendorUnbalanced) {
+        var vTaxInfo = getExpenseInvoiceTaxInfo(expenseId, vItem, targetVendors.length);
+        var expectedTax = vTaxInfo.hasDeductibleTax ? vTaxInfo.totalDeductibleTax : 0;
+        var savedTax = savedTaxAmountMap[pVendorId] || 0;
+        var isTaxChanged = Math.abs(expectedTax - savedTax) > MONEY_EPSILON;
+
+        if (!savedVendorMap[pVendorId] || isVendorUnbalanced || isTaxChanged) {
             if (!isGenerationPhaseLocked(currentPhase)) {
                 syncExpenseEntryForSingleVendor(expenseId, pVendorId);
                 needsUpdate = true;
@@ -967,6 +992,14 @@ function syncExpenseEntryBySourceChange(sourceTable, sourceRecord) {
         var expenseId = expenseIds[i];
         var savedEntries = getSavedExpenseEntries(expenseId);
 
+        // Nếu chưa từng có bút toán nào trong hệ thống (phiếu mới tạo lập / đang ở DMMS):
+        // Sự kiện thay đổi nguồn (xóa/import món) không tự động quét sinh toàn bộ bút toán.
+        // Bút toán sẽ được sinh khi người dùng chủ động bấm "Sinh bút toán" hoặc sang phase KTTC.
+        if (savedEntries.length === 0) {
+            debugExpenseEntry('SOURCE-SYNC-SKIP-NO-ENTRIES', 'expenseId=' + expenseId + ', sourceTable=' + sourceTable);
+            continue;
+        }
+
         // Nếu đã có bút toán và xác định được món dự chi -> Sinh từng thằng 1 cho đúng món đó
         if (savedEntries.length > 0 && paymentVendorId) {
             var singleResult = syncExpenseEntryForSingleVendor(expenseId, paymentVendorId);
@@ -975,7 +1008,7 @@ function syncExpenseEntryBySourceChange(sourceTable, sourceRecord) {
                 errors = errors.concat(singleResult.errors);
             }
         } else {
-            // Lần đầu (chưa có bút toán) hoặc không xác định được món cụ thể -> sync qua hàm chính
+            // DB đã có bút toán nhưng không xác định được món cụ thể -> sync qua hàm chính
             var syncResult = syncExpenseEntryNowByInputDetails({
                 expenseId: expenseId,
                 paymentVendorId: paymentVendorId
@@ -1745,6 +1778,9 @@ function getExpenseInvoiceTaxInfo(expenseId, vendor, vendorCount) {
         if (!isInvoiceForVendor(invoice, vendor, vendorCount, links[i])) continue;
 
         var taxAmount = toNumber(invoice.total_tax);
+        if (taxAmount <= 0 && links[i].deduction_amount > 0) {
+            taxAmount = toNumber(links[i].deduction_amount);
+        }
         if (taxAmount <= 0) continue;
 
         var deductionType = links[i].deduction_type;
@@ -1752,7 +1788,7 @@ function getExpenseInvoiceTaxInfo(expenseId, vendor, vendorCount) {
             continue;
         }
 
-        var deductionTypeCode = safeString(deductionType).trim().toUpperCase();
+        var deductionTypeCode = normalizeDeductionType(deductionType);
         if (deductionTypeCode === DEDUCTION_TYPE_NONE) continue; // Không khấu trừ
 
         if (deductionTypeCode !== DEDUCTION_TYPE_FULL && deductionTypeCode !== DEDUCTION_TYPE_RATE) {
@@ -1785,6 +1821,12 @@ function getExpenseInvoiceTaxInfo(expenseId, vendor, vendorCount) {
 }
 
 function getTaxDeductionAccount(deductionType) {
+    var normalizedCode = normalizeDeductionType(deductionType);
+    var fixedAccount = TAX_DEDUCTION_ACCOUNTS[normalizedCode];
+    if (fixedAccount) {
+        return { number: fixedAccount, name: getGlAccountName(fixedAccount) };
+    }
+
     var itemId = safeString(deductionType).trim();
     var deductionItem = null;
     var accountItem = null;
@@ -1833,8 +1875,19 @@ function hasLinkedInvoicesForVendor(expenseId, vendor, vendorCount) {
 
 function isInvoiceForVendor(invoice, vendor, vendorCount, invoiceLink) {
     if (invoiceLink) {
-        // 1. Khớp trực tiếp theo vendor.id trên bảng esdHTKTpaymentInvoice
-        var linkVendorId = safeString(invoiceLink.vendor_id).trim();
+        // 1. Khớp theo ref.id gắn trực tiếp với món dự chi (payment_vendor_id)
+        var linkRefId = safeString(invoiceLink.ref_id || invoiceLink['ref.id']).trim();
+        var targetPaymentVendorId = safeString(vendor && (vendor.payment_vendor_id || vendor.id)).trim();
+        if (linkRefId && targetPaymentVendorId) {
+            if (linkRefId === targetPaymentVendorId) {
+                return true;
+            }
+            // Nếu hóa đơn đã gắn ref.id với một món dự chi KHÁC thì không thuộc món này
+            return false;
+        }
+
+        // 2. Khớp trực tiếp theo vendor.id trên bảng esdHTKTpaymentInvoice
+        var linkVendorId = safeString(invoiceLink.vendor_id || invoiceLink['vendor.id']).trim();
         var targetVendorId = safeString(vendor && vendor.vendor_id).trim();
 
         if (linkVendorId && targetVendorId) {
@@ -1842,7 +1895,7 @@ function isInvoiceForVendor(invoice, vendor, vendorCount, invoiceLink) {
                 return false;
             }
             // Nếu có cả contract.id trên hóa đơn và NCC thì kiểm tra khớp thêm contract.id
-            var linkContractId = safeString(invoiceLink.contract_id).trim();
+            var linkContractId = safeString(invoiceLink.contract_id || invoiceLink['contract.id']).trim();
             var targetContractId = safeString(vendor && vendor.contract_id).trim();
             if (linkContractId && targetContractId) {
                 return linkContractId === targetContractId;
@@ -1850,34 +1903,35 @@ function isInvoiceForVendor(invoice, vendor, vendorCount, invoiceLink) {
             return true;
         }
 
-        // 2. Nếu hóa đơn có gắn contract.id nhưng chưa có vendor_id trên link
-        var linkContract = safeString(invoiceLink.contract_id).trim();
+        // 3. Nếu hóa đơn có gắn contract.id nhưng chưa có vendor_id trên link
+        var linkContract = safeString(invoiceLink.contract_id || invoiceLink['contract.id']).trim();
         var targetContract = safeString(vendor && vendor.contract_id).trim();
         if (linkContract && targetContract && linkContract !== targetContract) {
             return false;
         }
     }
 
-    // 3. Đối soát theo Mã số thuế bên bán (seller.tax.code) và MST NCC (vendor.number)
-    var sellerTaxCode = normalizeIdentity(invoice.seller_tax_code);
+    // 4. Đối soát theo Mã số thuế bên bán (seller.tax.code) và MST NCC (vendor.number)
+    var sellerTaxCode = normalizeIdentity(invoice && invoice.seller_tax_code);
     var vendorTaxCode = normalizeIdentity(vendor && vendor.vendor_number);
 
-    if (sellerTaxCode && vendorTaxCode) return sellerTaxCode === vendorTaxCode;
+    if (sellerTaxCode && vendorTaxCode && sellerTaxCode === vendorTaxCode) {
+        return true;
+    }
 
     return vendorCount <= 1;
 }
 
 function getExpenseLinkedInvoices(expenseId, paymentVendorId) {
     paymentVendorId = safeString(paymentVendorId).trim();
-    if (!expenseId || !paymentVendorId) {
+    if (!expenseId) {
         return [];
     }
 
     var list = [];
     var f = new SCFile(TABLE_PAYMENT_INVOICE, SCFILE_READONLY);
     var rc;
-    var query = 'payment.id="' + escapeQueryValue(expenseId) +
-            '" and ref.id="' + escapeQueryValue(paymentVendorId) + '"';
+    var query = 'payment.id="' + escapeQueryValue(expenseId) + '"';
 
     try {
         rc = f.doSelect(query);
@@ -1888,16 +1942,19 @@ function getExpenseLinkedInvoices(expenseId, paymentVendorId) {
 
     while (rc === RC_SUCCESS) {
         var invoiceId = readText(f, 'invoice.id');
+        var refId = readText(f, 'ref.id');
         if (invoiceId) {
-            list.push({
-                invoice_id: invoiceId,
-                contract_id: readText(f, 'contract.id'),
-                vendor_id: readText(f, 'vendor.id'),
-                ref_id: readText(f, 'ref.id'),
-                deduction_type: readText(f, 'deduction.type'),
-                deduction_amount: readNumber(f, 'deduction.amount'),
-                deduction_rate: readNumber(f, 'deduction.rate')
-            });
+            if (!paymentVendorId || !refId || refId === paymentVendorId) {
+                list.push({
+                    invoice_id: invoiceId,
+                    contract_id: readText(f, 'contract.id'),
+                    vendor_id: readText(f, 'vendor.id'),
+                    ref_id: refId,
+                    deduction_type: readText(f, 'deduction.type'),
+                    deduction_amount: readNumber(f, 'deduction.amount'),
+                    deduction_rate: readNumber(f, 'deduction.rate')
+                });
+            }
         }
         rc = f.getNext();
     }

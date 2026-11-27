@@ -10,7 +10,8 @@ var DC_COMMON = lib.ESD_HTKT_PAYMENT_COMMON;
 var DC_TABLE = DC_COMMON.getTables();
 
 /* Điền ID template đã upload hoặc truyền input.templateId khi gọi. */
-var DC_TEMPLATE_ID = "7538c94c-c77e-4823-812b-50cf7e43af34";
+//var DC_TEMPLATE_ID = "d3c70010-5ae4-40af-97cf-453e4e3818e0";
+var DC_TEMPLATE_ID = "phieuduchiHTKT";
 var DC_TEMPLATE_CODE = "HTKT-CHUNG-TU-DU-CHI";
 var DC_DOC_SERVICE_BASE_URL = DC_COMMON.trim(lib.ESD_ENV_CONFIG.gendocUrl()).replace(/\/$/, "");
 
@@ -276,6 +277,8 @@ function dcGetVendorSources(paymentId, currency) {
             var vendorInfo = dcGetVendorInfo(vendorId);
 
             result.push({
+                // Mã món dự chi (= esdHTKTpaymentEntry.payment.vendor.id), dùng để tách bảng hạch toán.
+                payment_vendor_id: DC_COMMON.readString(vendorFile, ["id"]),
                 vendor_id: vendorId,
                 vendor_name:
                         vendorInfo.name ||
@@ -322,15 +325,84 @@ function dcFindInvoiceVendorId(vendorSources, sellerTaxCode) {
 }
 
 /**
+ * Món dự chi (esdHTKTpaymentVendor.id) mà một liên kết hóa đơn thuộc về, cùng thứ tự với
+ * ESD_HTKT_EXPENSE_ENTRY.isInvoiceForVendor:
+ *   1. ref.id của liên kết = mã món;
+ *   2. vendor.id của liên kết (kèm contract.id nếu có);
+ *   3. contract.id của liên kết;
+ *   4. MST bên bán = MST NCC; phiếu chỉ có một món thì gán cho món đó.
+ * Mỗi hóa đơn chỉ gán cho MỘT món (món đầu tiên phù hợp) để NCC có nhiều món/HĐ
+ * không bị lặp số hóa đơn và cộng trùng tiền. Trả "" nếu không xác định được.
+ */
+function dcFindInvoiceItemId(vendorSources, link, sellerTaxCode) {
+    var sources = vendorSources || [];
+    var refId = DC_COMMON.trim(link.refId);
+    var linkVendorId = DC_COMMON.trim(link.vendorId);
+    var linkContractId = DC_COMMON.trim(link.contractId);
+    var normalizedTaxCode = dcNormalizeCode(sellerTaxCode);
+    var i, source;
+
+    function itemIdOf(item) {
+        return DC_COMMON.trim(item && item.payment_vendor_id);
+    }
+    function firstWhere(test) {
+        for (var k = 0; k < sources.length; k++) {
+            if (itemIdOf(sources[k]) && test(sources[k] || {})) return itemIdOf(sources[k]);
+        }
+        return "";
+    }
+
+    if (refId) {
+        // Liên kết đã gắn món cụ thể: chỉ thuộc đúng món đó.
+        for (i = 0; i < sources.length; i++) {
+            if (itemIdOf(sources[i]) === refId) return refId;
+        }
+    }
+    if (linkVendorId) {
+        return firstWhere(function(item) {
+            if (DC_COMMON.trim(item.vendor_id) !== linkVendorId) return false;
+            var itemContractId = DC_COMMON.trim(item.contract_id);
+            return !linkContractId || !itemContractId || itemContractId === linkContractId;
+        });
+    }
+    if (linkContractId) {
+        var byContract = firstWhere(function(item) {
+            if (DC_COMMON.trim(item.contract_id) !== linkContractId) return false;
+            return !normalizedTaxCode || !item.vendor_tax_code ||
+                    dcNormalizeCode(item.vendor_tax_code) === normalizedTaxCode;
+        });
+        if (byContract) return byContract;
+    }
+    if (normalizedTaxCode) {
+        var byTaxCode = firstWhere(function(item) {
+            if (linkContractId && DC_COMMON.trim(item.contract_id) &&
+                    DC_COMMON.trim(item.contract_id) !== linkContractId) return false;
+            return dcNormalizeCode(item.vendor_tax_code) === normalizedTaxCode ||
+                    dcNormalizeCode(item.vendor_id) === normalizedTaxCode;
+        });
+        if (byTaxCode) return byTaxCode;
+    }
+    if (sources.length === 1) {
+        source = sources[0] || {};
+        return itemIdOf(source);
+    }
+    return "";
+}
+
+/**
  * Đọc số hóa đơn theo đúng liên kết esdHTKTpaymentInvoice -> esdHTKTinvoice.
- * Kết quả được lập chỉ mục theo vendor.id và tên NCC để map lại dòng tổng hợp.
+ * byItemId/summaryByItemId: theo món dự chi (dùng cho bảng NCC của phiếu in).
+ * byVendorId/byVendorName/summaryByVendorId: giữ như cũ để tương thích.
  */
 function dcGetInvoiceNumberContext(paymentId, vendorSources) {
     var result = {
+        byItemId: {},
+        summaryByItemId: {},
         byVendorId: {},
         byVendorName: {},
         summaryByVendorId: {}
     };
+    var seenByItemId = {};
     var seenByVendorId = {};
     var seenByVendorName = {};
     var invoiceLinkFile = null;
@@ -389,6 +461,32 @@ function dcGetInvoiceNumberContext(paymentId, vendorSources) {
 
                 if (amountBeforeTaxRaw === 0 && lineTotalRaw !== 0) {
                     amountBeforeTaxRaw = lineTotalRaw - taxAmountRaw;
+                }
+
+                var itemId = dcFindInvoiceItemId(vendorSources, {
+                    refId: DC_COMMON.readString(invoiceLinkFile, ["ref.id"]),
+                    vendorId: DC_COMMON.readString(invoiceLinkFile, ["vendor.id"]),
+                    contractId: DC_COMMON.readString(invoiceLinkFile, ["contract.id"])
+                }, sellerTaxCode);
+                // Cùng một hóa đơn chỉ cộng tiền một lần cho mỗi món.
+                if (itemId && !(seenByItemId[itemId] && seenByItemId[itemId]["$" + invoiceId])) {
+                    if (!result.byItemId[itemId]) {
+                        result.byItemId[itemId] = [];
+                        seenByItemId[itemId] = {};
+                        result.summaryByItemId[itemId] = {
+                            amountBeforeTaxRaw: 0,
+                            taxAmountRaw: 0,
+                            lineTotalRaw: 0
+                        };
+                    }
+                    seenByItemId[itemId]["$" + invoiceId] = true;
+                    if (DC_COMMON.trim(invoiceNumber) &&
+                            result.byItemId[itemId].indexOf(DC_COMMON.trim(invoiceNumber)) < 0) {
+                        result.byItemId[itemId].push(DC_COMMON.trim(invoiceNumber));
+                    }
+                    result.summaryByItemId[itemId].amountBeforeTaxRaw += amountBeforeTaxRaw;
+                    result.summaryByItemId[itemId].taxAmountRaw += taxAmountRaw;
+                    result.summaryByItemId[itemId].lineTotalRaw += lineTotalRaw;
                 }
 
                 if (vendorId) {
@@ -510,18 +608,38 @@ function dcGetAccountingEntryOrder(entryType) {
     return 0;
 }
 
-function dcGetAccountingGroupInfo(source) {
+function dcGetAccountingGroupInfo(source, itemIndexById) {
     /*
-     * Mỗi ref.id tương ứng một bảng hạch toán AP. Các dòng chưa có ref.id
-     * cùng thuộc một nhóm rỗng để không làm mất dữ liệu cũ.
+     * Mỗi món dự chi (esdHTKTpaymentVendor.id = esdHTKTpaymentEntry.payment.vendor.id)
+     * có một bảng hạch toán AP riêng, giống tab Hạch toán (ESD_HTKT_EXPENSE_ENTRY).
+     * ref.id là mã tham chiếu nghiệp vụ (vd khoản tạm ứng được hoàn), KHÔNG dùng để tách bảng;
+     * chỉ nhận ref.id khi đó là mã món (dòng thủ công legacy chưa chuyển sang payment.vendor.id).
+     * Dòng không xác định được món gom vào một bảng cuối để không mất dữ liệu.
      */
-    var refId = DC_COMMON.trim(source.refId);
+    var itemId = DC_COMMON.trim(source.paymentVendorId);
+    var legacyRefId = DC_COMMON.trim(source.refId);
+    if (!itemId && legacyRefId && Object.prototype.hasOwnProperty.call(itemIndexById, legacyRefId)) {
+        itemId = legacyRefId;
+    }
     return {
-        key: "REF:" + refId
+        key: "ITEM:" + itemId,
+        itemId: itemId,
+        itemOrder: itemId && Object.prototype.hasOwnProperty.call(itemIndexById, itemId)
+                ? itemIndexById[itemId]
+                : Number.MAX_VALUE
     };
 }
 
-function dcGetAccountingData(paymentId, currency) {
+function dcGetAccountingData(paymentId, currency, vendorSources) {
+    var itemIndexById = {};
+    var itemById = {};
+    for (var itemIndex = 0; itemIndex < (vendorSources || []).length; itemIndex++) {
+        var itemKey = DC_COMMON.trim(vendorSources[itemIndex].payment_vendor_id);
+        if (itemKey && !Object.prototype.hasOwnProperty.call(itemIndexById, itemKey)) {
+            itemIndexById[itemKey] = itemIndex;
+            itemById[itemKey] = vendorSources[itemIndex];
+        }
+    }
     var result = {
         rows: [],
         tables: [],
@@ -568,6 +686,7 @@ function dcGetAccountingData(paymentId, currency) {
                 description: DC_COMMON.readString(entryFile, ["description"]),
                 amountRaw: DC_COMMON.readNumber(entryFile, ["amount"]),
                 order: DC_COMMON.readNumber(entryFile, ["order"]),
+                paymentVendorId: DC_COMMON.readString(entryFile, ["payment.vendor.id"]),
                 refId: DC_COMMON.readString(entryFile, ["ref.id"])
             });
             rc = entryFile.getNext();
@@ -578,12 +697,14 @@ function dcGetAccountingData(paymentId, currency) {
 
     for (var sourceIndex = 0; sourceIndex < sourceRows.length; sourceIndex++) {
         var sourceRow = sourceRows[sourceIndex];
-        var groupInfo = dcGetAccountingGroupInfo(sourceRow);
+        var groupInfo = dcGetAccountingGroupInfo(sourceRow, itemIndexById);
         var group = groupsByKey[groupInfo.key];
 
         if (!group) {
             group = {
                 key: groupInfo.key,
+                itemId: groupInfo.itemId,
+                itemOrder: groupInfo.itemOrder,
                 firstIndex: sourceIndex,
                 sourceRows: [],
                 rows: [],
@@ -597,7 +718,11 @@ function dcGetAccountingData(paymentId, currency) {
         group.sourceRows.push(sourceRow);
     }
 
+    // Bảng theo thứ tự món trên phiếu; dòng chưa xác định được món xếp cuối.
     groups.sort(function(left, right) {
+        if (left.itemOrder !== right.itemOrder) {
+            return left.itemOrder < right.itemOrder ? -1 : 1;
+        }
         return left.firstIndex - right.firstIndex;
     });
 
@@ -649,7 +774,14 @@ function dcGetAccountingData(paymentId, currency) {
             result.rows.push(mappedRow);
         }
 
+        var tableItem = itemById[currentGroup.itemId] || {};
         result.tables.push({
+            // Thông tin món để template có thể in tiêu đề từng bảng nếu cần.
+            table_index: groupIndex + 1,
+            payment_vendor_id: currentGroup.itemId,
+            vendor_id: tableItem.vendor_id || "",
+            vendor_name: tableItem.vendor_name || "",
+            contract_id: tableItem.contract_id || "",
             accounting_rows: currentGroup.rows,
             calc_total_debit_amount: dcFormatMoney(
                     currentGroup.totalDebitRaw
@@ -684,8 +816,12 @@ function dcBuildVendorRows(vendorContext) {
         var source = rows[i] || {};
         var vendorName = DC_COMMON.trim(source.vendor_name);
         var vendorId = DC_COMMON.trim(source.vendor_id);
-        var invoiceSummary =
-                vendorContext.invoices.summaryByVendorId[vendorId] || null;
+        // Hóa đơn và tiền theo từng món (mã món), không gom theo NCC: cùng NCC nhưng món/HĐ
+        // không gắn hóa đơn thì hiện số tiền dự chi của món, không lấy hóa đơn của món khác.
+        var itemId = DC_COMMON.trim(source.payment_vendor_id);
+        var invoiceSummary = itemId
+                ? vendorContext.invoices.summaryByItemId[itemId] || null
+                : vendorContext.invoices.summaryByVendorId[vendorId] || null;
         var amountBeforeTaxRaw = invoiceSummary
                 ? Number(invoiceSummary.amountBeforeTaxRaw || 0)
                 : Number(source.amount_raw || 0);
@@ -695,10 +831,9 @@ function dcBuildVendorRows(vendorContext) {
         var lineTotalRaw = invoiceSummary
                 ? Number(invoiceSummary.lineTotalRaw || 0)
                 : Number(source.amount_raw || 0);
-        var invoiceNumber = dcJoinInvoiceNumbers(
-                vendorContext.invoices.byVendorId,
-                vendorId
-        );
+        var invoiceNumber = itemId
+                ? dcJoinInvoiceNumbers(vendorContext.invoices.byItemId, itemId)
+                : dcJoinInvoiceNumbers(vendorContext.invoices.byVendorId, vendorId);
 
         result.push({
             stt: source.stt || (i + 1),
@@ -771,7 +906,7 @@ function htktBuildTemplateData(paymentId) {
         var contactContext = dcGetContactContext(createdBy);
         var vendorContext = dcBuildVendorContext(safePaymentId, currency);
         var vendorData = dcBuildVendorRows(vendorContext);
-        var accountingData = dcGetAccountingData(safePaymentId, currency);
+        var accountingData = dcGetAccountingData(safePaymentId, currency, vendorContext.sources);
         var accountingAmountRaw = accountingData.totalDebitRaw ||
                 accountingData.totalCreditRaw;
 
