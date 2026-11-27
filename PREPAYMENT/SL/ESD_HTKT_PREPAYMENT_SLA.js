@@ -3,6 +3,11 @@
  * Khung Thông tin SLA Tạm ứng: sao chép bố cục và client từ Dự chi.
  * HTML Viewer: Input = id; HTML Generating Script = ESD_HTKT_PREPAYMENT_SLA.renderInfor
  * Render riêng cho TU, dữ liệu/lịch và phép tính dùng ESD_HTKT_SLA_ENGINE.
+ * Cấu hình SLA chọn theo product.type (esdHTKTprepayment) = product.type (esdHTKTslaConfig), như Thanh toán.
+ * product.type ghi lúc tạo phiếu (ESD_HTKT_PREPAYMENT_CREATE_ADVANCE_REQUEST): HHDV -> "Mua sắm HHDV";
+ * XDCB phân loại HĐ theo esdXDCBrepairProjectCtr (ESD_HTKT_SLA_ENGINE.prepaymentXdcbProductType):
+ *   repair.id -> "BDSC công trình XDCB"; construction.id / không phân loại được -> "Xây dựng cơ bản".
+ * Phiếu cũ chưa có product.type: engine dùng original.contract.category (XDCB thì phân loại HĐ như trên).
  * Job cập nhật Tracking dùng chung ESD_HTKT_SLA_JOB.runBatch().
  */
 function prepaymentSlaClient(rootId, options, calculate) {

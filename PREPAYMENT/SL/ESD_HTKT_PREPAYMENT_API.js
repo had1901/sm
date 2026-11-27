@@ -195,6 +195,13 @@ function run() {
 			case 'addPrepaymentVendorsByPO':
 			    result = lib.ESD_HTKT_PREPAYMENT_VENDOR.addPrepaymentVendorsByPO(input);
 			    break;
+			         // --- TAB HÀNG HOÁ DỊCH VỤ (giải ngân theo HHDV) ---
+            case "getHHDVDisbursement":
+                result = lib.ESD_HTKT_HHDV_DISBURSEMENT.getHHDVDisbursement(input);
+                break;
+            case "saveHHDVDisbursement":
+                result = lib.ESD_HTKT_HHDV_DISBURSEMENT.saveHHDVDisbursement(input);
+                break;
             default:
                 result = { success: false, error: 'Hanh dong (name) khong hop le: ' + name };
         }

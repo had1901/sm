@@ -179,7 +179,7 @@ function checkShowPrint(record) {
 /* Condition hiển thị option "Xóa" trên esdHTKTprepayment.view. */
 function checkShowCancel(record) {
 //    return isPostAuditOperator(record) ? "F" : "T";
-return isPostAuditContext(record) ? "F" : "T";
+    return isPostAuditContext(record) ? "F" : "T";
 }
 
 function checkShowApproval(record) {
@@ -305,8 +305,8 @@ function updateNextStatus(record, previousRecord) {
     if (previousRecord && previousRecord["current.phase"]) {
         oldPhase = String(previousRecord["current.phase"]).trim();
     }
-    
-        // Chặn cả các process gọi trực tiếp hàm chuyển bước, trước mọi thay đổi trạng thái.
+
+    // Chặn cả các process gọi trực tiếp hàm chuyển bước, trước mọi thay đổi trạng thái.
     if (oldPhase === HTKT_WF_PHASE.INITIAL_DMMS || oldPhase === HTKT_WF_PHASE.INITIAL_KTTC) {
         var invoiceErrors = validateInvoices(String(record["id"] || record.id || ""));
         if (invoiceErrors && invoiceErrors.length > 0) {
@@ -371,17 +371,17 @@ function updateNextStatus(record, previousRecord) {
                 record["guarantee.amount"] = xdcbGuarantee ? xdcbGuarantee.value : null;
                 record["guarantee.expiry.date"] = xdcbGuarantee ? xdcbGuarantee["expire.date"] : null;
             } else {
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
-            var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
+                var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+                var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
-            if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
-                // Gán trực tiếp vào record -> Workflow sẽ tự động lưu xuống DB cùng phiếu này
-                record["guarantee.no"] = docInfoFile["doc.no"];
-                record["issuing.bank"] = docInfoFile["issuing.bank"];
-                record["guarantee.amount"] = Number(docInfoFile["guarantee.amount"]) || 0;
-                record["guarantee.expiry.date"] = docInfoFile["expire.date"];
-            }
-            try { docInfoFile.doClose(); } catch (e) {}
+                if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
+                    // Gán trực tiếp vào record -> Workflow sẽ tự động lưu xuống DB cùng phiếu này
+                    record["guarantee.no"] = docInfoFile["doc.no"];
+                    record["issuing.bank"] = docInfoFile["issuing.bank"];
+                    record["guarantee.amount"] = Number(docInfoFile["guarantee.amount"]) || 0;
+                    record["guarantee.expiry.date"] = docInfoFile["expire.date"];
+                }
+                try { docInfoFile.doClose(); } catch (e) {}
             }
         }
     }
@@ -744,6 +744,22 @@ function validateDataInPhase(record) {
         errorMss = errorMss.concat(phaseErrors);
     }
 
+    // Tái kiểm tra BR-04, BR-05 tại thời điểm phê duyệt (BR-07)
+    if (currentPhase === "approval_dmms" || currentPhase === "approval_kttc" || currentPhase === "approval_final") {
+        var pIdAppr = String(record["id"] || record.id || "");
+        try {
+            if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+                typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.validateApproval === "function") {
+                var hhdvApprErr = lib.ESD_HTKT_HHDV_DISBURSEMENT.validateApproval(pIdAppr, true);
+                if (hhdvApprErr) {
+                    errorMss.push(hhdvApprErr);
+                }
+            }
+        } catch (eAppr) {
+            print("[ESD_HTKT_PREPAYMENT_WF] validateApproval HHDV err: " + eAppr);
+        }
+    }
+
     return errorMss.length > 0 ? errorMss : null;
 }
 
@@ -769,6 +785,18 @@ function validateFromCbDmmsToCbKttc() {
         errorMss.push("Nội dung giao dịch không được để trống.");
     } else if (description.length > 255) {
         errorMss.push("Nội dung giao dịch không được vượt quá 255 ký tự.");
+    }
+
+    // Validate HHDV Disbursement (BR-06)
+    try {
+        if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+            typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission === "function") {
+            var prepaymentIdDmms = String(record["id"] || record.id || "");
+            var hhdvErrDmms = lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission(prepaymentIdDmms, true);
+            if (hhdvErrDmms) errorMss.push(hhdvErrDmms);
+        }
+    } catch (eHhdvDmms) {
+        print("[ESD_HTKT_PREPAYMENT_WF] validateSubmission HHDV err: " + eHhdvDmms);
     }
 
     return errorMss.length > 0 ? errorMss : null;
@@ -835,6 +863,17 @@ function validateFromCbKttc() {
         if (mss && mss.length > 0) errorMss = errorMss.concat(mss);
     }
 
+    // Validate HHDV Disbursement (BR-06)
+    try {
+        if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+            typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission === "function") {
+            var hhdvErrKttc = lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission(prepaymentId, true);
+            if (hhdvErrKttc) errorMss.push(hhdvErrKttc);
+        }
+    } catch (eHhdvKttc) {
+        print("[ESD_HTKT_PREPAYMENT_WF] validateSubmission HHDV err: " + eHhdvKttc);
+    }
+
     return errorMss;
 }
 
@@ -861,13 +900,13 @@ function validateFromPdCapThamQuyenToEnd(record) {
                 var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
                 guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
             } else {
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
-            var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
+                var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+                var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
-            if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
-                guaranteeAmountStr = docInfoFile["guarantee.amount"];
-            }
-            try { docInfoFile.doClose(); } catch(e) {}
+                if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
+                    guaranteeAmountStr = docInfoFile["guarantee.amount"];
+                }
+                try { docInfoFile.doClose(); } catch(e) {}
             }
         }
 
@@ -1078,13 +1117,13 @@ function validateVendorAndPaymentDetails(record) {
                 var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
                 guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
             } else {
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
-            var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
+                var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+                var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
-            if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
-                guaranteeAmountStr = docInfoFile["guarantee.amount"];
-            }
-            try { docInfoFile.doClose(); } catch(e) {}
+                if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
+                    guaranteeAmountStr = docInfoFile["guarantee.amount"];
+                }
+                try { docInfoFile.doClose(); } catch(e) {}
             }
 
             // Làm sạch chuỗi bảo lãnh để kiểm tra có giá trị hợp lệ (> 0) hay không
@@ -1378,14 +1417,14 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
                 var xdcbGuarantee = lib.ESD_HTKT_PREPAYMENT_VENDOR.getPrepaymentGuaranteeInfo(contractId);
                 guaranteeAmountStr = xdcbGuarantee ? xdcbGuarantee.value : null;
             } else {
-            var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
-            // Dùng BAOLANHBH chuẩn giống hệt các function khác
-            var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
+                var docInfoFile = new SCFile("esdHDcontractDocInfo", SCFILE_READONLY);
+                // Dùng BAOLANHBH chuẩn giống hệt các function khác
+                var docQuery = 'contract.id="' + contractId + '" and doc.type="BAOLANHTU" and status="Co hieu luc"';
 
-            if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
-                guaranteeAmountStr = docInfoFile["guarantee.amount"];
-            }
-            try { docInfoFile.doClose(); } catch(e) {}
+                if (docInfoFile.doSelect(docQuery) == RC_SUCCESS) {
+                    guaranteeAmountStr = docInfoFile["guarantee.amount"];
+                }
+                try { docInfoFile.doClose(); } catch(e) {}
             }
 
             var cleanGuaranteeStr = String(guaranteeAmountStr || "").replace(/,/g, '').trim();
@@ -1468,12 +1507,12 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
 //}
 function validatePrepaymentVendors(record) {
     var prepaymentId = String(record.prepayment_id || record.id || "");
-    
+
     // LẤY MÃ PO TỪ RECORD (Hỗ trợ cả list.po.id và po.id)
     var poId = String(record["list.po.id"] || record["po.id"] || "").trim();
 
     var vendor = new SCFile("esdHTKTprepaymentVendor", SCFILE_READONLY);
-    
+
     // XÂY DỰNG CÂU QUERY ĐỘNG
     var query = 'prepayment.id="' + prepaymentId + '"';
     if (poId !== "") {
@@ -2179,6 +2218,18 @@ function completeApprovalAfterSignature(record, signResult) {
                 errorUpdate,
                 { replaceResult: replaceResult.data, retrySafe: true }
         );
+    }
+
+    // Cập nhật thông tin giải ngân HHDV sang các phân hệ HĐ và Kế hoạch khi phê duyệt cuối (BR-08 / Mục 3)
+    if (phase === HTKT_WF_PHASE.APPROVAL_FINAL) {
+        try {
+            if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+                typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.syncFinalApproval === "function") {
+                lib.ESD_HTKT_HHDV_DISBURSEMENT.syncFinalApproval(actorResult.data.prepaymentId, true);
+            }
+        } catch (eSyncHhdv) {
+            print("[ESD_HTKT_PREPAYMENT_WF] syncFinalApproval HHDV err: " + eSyncHhdv);
+        }
     }
 
     return htktWfOk({

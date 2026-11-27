@@ -67,7 +67,7 @@ function addFileAttachment(fileInput) {
                 documents: dataObj
             } });
         }
-
+        
         // Tạo mảng để lưu lại danh sách tên các file thêm thành công
         var successFileNames = [];
 

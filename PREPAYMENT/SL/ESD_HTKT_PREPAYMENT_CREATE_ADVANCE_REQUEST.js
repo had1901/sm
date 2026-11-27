@@ -307,6 +307,9 @@ function mapPrepaymentRecord(prepaymentRec, contractData, prepaymentId) {
     prepaymentRec['contract.amount'] = contractData['totalValue'] || 0;
     prepaymentRec['source.contract.id'] = contractData.sourceContractId || contractData['sourceContractId'] || contractData['id'] || "";
     prepaymentRec['contract.id'] = contractData.contractId || contractData['contractId'] || contractData['id'] || "";
+    // Nghiệp vụ SLA (= esdHTKTslaConfig.product.type) lưu vào product.type như Thanh toán.
+    prepaymentRec['product.type'] = htktCreatePrepay_getSlaProductType(
+            isXdcb, prepaymentRec['contract.id'] || prepaymentRec['source.contract.id']);
     prepaymentRec['contract.name'] = contractData['name'];
     prepaymentRec['list.po.id'] = contractData['list.po.id'] || contractData['po.id'] || contractData['purchase.order'] || contractData.purchaseOrder || "";
     prepaymentRec['purchase.order'] = contractData['purchase.order'] || contractData.purchaseOrder || "";
@@ -500,8 +503,6 @@ function htktCreatePrepay_createPurchaseOrderVendorRows(prepaymentId, purchaseOr
             prepaymentVendorFile["po.id"] = item.poId;
             prepaymentVendorFile["vendor.site.id"] = "";
             prepaymentVendorFile["currency"] = "VND";
-            prepaymentVendorFile["amount"] = item.amount;
-            prepaymentVendorFile["contract.amount"] = item.amount;
             prepaymentVendorFile["payment.method"] = item.paymentMethod;
 
             var addVendorLinkRc = prepaymentVendorFile.doAction("add");
@@ -1438,6 +1439,27 @@ function htktCreatePrepay_resolveCurrentUser(source) {
             source["created_by"] ||
             ""
     );
+}
+
+/* Nghiệp vụ SLA của phiếu TU HHDV; phải trùng danh mục Tạm ứng trong ESD_HTKT_SLA. */
+var SLA_PREPAYMENT_HHDV_PRODUCT_TYPE = "Mua sắm HHDV";
+
+/**
+ * Nghiệp vụ SLA lưu vào esdHTKTprepayment.product.type:
+ *   HHDV -> "Mua sắm HHDV"
+ *   XDCB -> phân loại HĐ theo esdXDCBrepairProjectCtr (dùng chung quy tắc với engine SLA):
+ *           repair.id -> "BDSC công trình XDCB"; construction.id / không phân loại được -> "Xây dựng cơ bản".
+ * Lỗi tra cứu thì để trống; engine SLA sẽ tự phân loại lại theo contract.id.
+ */
+function htktCreatePrepay_getSlaProductType(isXdcb, contractId) {
+    if (!isXdcb) return SLA_PREPAYMENT_HHDV_PRODUCT_TYPE;
+    try {
+        var engine = lib.ESD_HTKT_SLA_ENGINE;
+        return String(engine.prepaymentXdcbProductType(engine.createStore(), contractId) || "");
+    } catch (e) {
+        print("[HTKT_PREPAYMENT_PRODUCT] Lỗi phân loại HĐ XDCB " + contractId + ": " + (e && e.message ? e.message : e));
+        return "";
+    }
 }
 
 function htktCreatePrepay_normalizeValue(value) {
