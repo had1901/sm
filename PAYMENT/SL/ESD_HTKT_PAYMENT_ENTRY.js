@@ -211,6 +211,18 @@ var CATEGORY_TAX_DEDUCTION_TYPE = 'dmhd_loai_khau_tru';
 var DEDUCTION_TYPE_FULL = 'KHAUTRU_001';
 var DEDUCTION_TYPE_RATE = 'KHAUTRU_002';
 var DEDUCTION_TYPE_NONE = 'KHAUTRU_003';
+// Mã loại khấu trừ dạng mới (dmhtkt_loai_khau_tru), quy về mã KHAUTRU_00x.
+var DEDUCTION_TYPE_ALIASES = {
+    KHAU_TRU_TOAN_BO: DEDUCTION_TYPE_FULL,
+    KHAU_TRU_TY_LE: DEDUCTION_TYPE_RATE,
+    KHONG_KHAU_TRU: DEDUCTION_TYPE_NONE
+};
+// Tài khoản thuế GTGT đầu vào theo loại khấu trừ (glaccount), giống phân hệ tạm ứng:
+// 126120220 = được khấu trừ toàn bộ, 126120210 = được khấu trừ theo tỷ lệ.
+var TAX_DEDUCTION_ACCOUNTS = {
+    KHAUTRU_001: '126120220',
+    KHAUTRU_002: '126120210'
+};
 var GL_UNIT_TRANSACTION_CODE = '98';
 var GL_DEFAULT_ENTITY_CODE = '0000000';
 var GL_DEFAULT_BRANCH_CODE = '000';
@@ -483,7 +495,7 @@ function getUniqueCostEntriesByAccountNumber(entries) {
         var entry = entries[i];
         if (normalizeEntryType(entry.entry_type) === ENTRY_TYPE.COST) {
             var accountNumber = safeString(entry.account_number).trim();
-            var accountKey = 'vendor|' + safeString(entry.vendor_id).trim() + '|account|' + accountNumber;
+            var accountKey = makeCostGroupKey(entry.vendor_id, accountNumber, entry.po_id);
             if (accountNumber && usedCostAccounts[accountKey]) {
                 usedCostAccounts[accountKey].amount += toNumber(entry.amount);
                 continue;
@@ -585,7 +597,12 @@ function syncPaymentEntryNowByInputDetails(details) {
     if (hasPartialSuccess) {
         // debugPaymentEntry('SYNC', 'Giữ bút toán cũ của NCC lỗi và thay bút toán NCC thành công');
         expectedEntries = expectedEntries.concat(
-                getPreservedAutoEntriesForOtherVendors(savedEntries, successfulVendorIds)
+                getPreservedAutoEntriesForOtherVendors(
+                        savedEntries,
+                        successfulVendorIds,
+                        expectedResult.successfulVendorRowIds,
+                        expectedResult.vendorRows
+                )
         );
     }
     expectedEntries = removeForbiddenAutoCreditEntries(expectedEntries, 'SYNC');
@@ -646,18 +663,28 @@ function syncPaymentEntryNowByInputDetails(details) {
     });
 }
 
-function getPreservedAutoEntriesForOtherVendors(savedEntries, successfulVendorIds) {
+function getPreservedAutoEntriesForOtherVendors(savedEntries, successfulVendorIds, successfulVendorRowIds, vendorRows) {
     var successfulMap = {};
+    var successfulRowMap = {};
+    var useRows = !!(successfulVendorRowIds && vendorRows && vendorRows.length);
     var result = [];
 
     for (var i = 0; i < successfulVendorIds.length; i++) {
         successfulMap[safeString(successfulVendorIds[i]).trim()] = true;
     }
+    for (var r = 0; useRows && r < successfulVendorRowIds.length; r++) {
+        successfulRowMap[safeString(successfulVendorRowIds[r]).trim()] = true;
+    }
 
     for (var j = 0; j < savedEntries.length; j++) {
         var saved = savedEntries[j];
         if (!isAutoEntry(saved)) continue;
-        if (successfulMap[safeString(saved.vendor_id).trim()]) continue;
+        // Theo dòng NCC+PO: PO sinh lỗi giữ bút toán cũ, PO sinh thành công được thay mới.
+        if (useRows) {
+            if (successfulRowMap[getEntryPaymentVendorRowId(saved, vendorRows)]) continue;
+        } else if (successfulMap[safeString(saved.vendor_id).trim()]) {
+            continue;
+        }
         result.push(copyObject({}, saved));
     }
 
@@ -1437,6 +1464,11 @@ function normalizeEditedEntries(paymentId, entries, savedEntries) {
         if (!row.contract_id && savedRow) {
             row.contract_id = safeString(savedRow.contract_id || savedRow['contract.id']).trim();
         }
+        // Popup có thể không gửi PO: giữ dòng NCC+PO của entry đã lưu cùng id.
+        if (savedRow && !isAdditionalEntryType(row.type)) {
+            if (!row.po_id) row.po_id = safeString(savedRow.po_id).trim();
+            if (!row.payment_vendor_id) row.payment_vendor_id = safeString(savedRow.payment_vendor_id).trim();
+        }
 
         if (!savedIds[row.id] || usedIds[row.id]) {
             if (isAdditionalEntryType(row.type)) {
@@ -1487,7 +1519,7 @@ function restoreCostDivisionEntries(editedEntries, previousEntries) {
         previousById[safeString(previous.id).trim()] = previous;
 
         if (normalizeEntryType(previous.entry_type) !== ENTRY_TYPE.COST) continue;
-        var previousKey = makeCostGroupKey(previous.vendor_id, previous.account_number);
+        var previousKey = makeCostGroupKey(previous.vendor_id, previous.account_number, previous.po_id);
         if (!previousCostGroups[previousKey]) previousCostGroups[previousKey] = [];
         previousCostGroups[previousKey].push(previous);
     }
@@ -1505,7 +1537,7 @@ function restoreCostDivisionEntries(editedEntries, previousEntries) {
             continue;
         }
 
-        var groupKey = makeCostGroupKey(original.vendor_id, original.account_number);
+        var groupKey = makeCostGroupKey(original.vendor_id, original.account_number, original.po_id);
         var sourceRows = previousCostGroups[groupKey] || [];
         if (sourceRows.length <= 1) {
             result.push(edited);
@@ -1540,8 +1572,10 @@ function restoreCostDivisionEntries(editedEntries, previousEntries) {
     return result;
 }
 
-function makeCostGroupKey(vendorId, accountNumber) {
-    return 'vendor|' + safeString(vendorId).trim() + '|account|' + safeString(accountNumber).trim();
+function makeCostGroupKey(vendorId, accountNumber, poId) {
+    // Gộp dòng COST theo NCC + PO + tài khoản; NCC nhiều PO không trộn chi phí giữa các bảng.
+    return 'vendor|' + safeString(vendorId).trim() + '|po|' + safeString(poId).trim() +
+            '|account|' + safeString(accountNumber).trim();
 }
 
 
@@ -1564,6 +1598,8 @@ function normalizeEditedEntry(raw) {
         currency: safeString(raw.currency).trim(),
         description: safeString(raw.description).trim(),
         vendor_id: safeString(raw.vendor_id).trim(),
+        po_id: isGlEntry ? '' : safeString(raw.po_id).trim(),
+        payment_vendor_id: isGlEntry ? '' : safeString(raw.payment_vendor_id).trim(),
         contract_id: safeString(raw.contract_id || raw['contract.id']).trim(),
         type: isGlEntry ? TYPE.GL : TYPE.AP,
         order: toNumber(raw.order),
@@ -1702,6 +1738,16 @@ function buildExpectedPaymentEntries(paymentId, vendorId, savedEntries) {
     for (var vi = 0; vi < vendors.length; vi++) {
         vendors[vi] = enrichVendor(vendors[vi]);
     }
+    // Cần tất cả dòng NCC+PO của phiếu để xác định dòng của hóa đơn/PCCP/hoàn ứng,
+    // kể cả khi chỉ sinh lại cho một NCC.
+    var allVendorRows = vendorId ? getPaymentVendors(paymentId, '') : vendors;
+    attachPaymentVendorRows(allVendorRows);
+    for (var vr = 0; vr < vendors.length; vr++) {
+        var fullRow = findPaymentVendorRowById(allVendorRows, vendors[vr].id);
+        vendors[vr].vendor_rows = allVendorRows;
+        vendors[vr].distinct_vendor_count = fullRow ? fullRow.distinct_vendor_count : 1;
+    }
+    var successfulVendorRowIds = [];
 
     var invoiceVendorErrors = getLinkedInvoiceVendorErrors(paymentId, vendors);
     if (invoiceVendorErrors.length > 0) {
@@ -1755,6 +1801,7 @@ function buildExpectedPaymentEntries(paymentId, vendorId, savedEntries) {
 
         rows = rows.concat(vendorRows);
         successfulVendorIds.push(vendor.vendor_id);
+        successfulVendorRowIds.push(vendor.id);
         // debugPaymentEntry('BUILD-VENDOR', 'NCC ' + (vendor.vendor_id || '?') + ' sinh thành công ' + vendorRows.length + ' dòng');
     }
 
@@ -1766,6 +1813,8 @@ function buildExpectedPaymentEntries(paymentId, vendorId, savedEntries) {
         errors: makeUniqueTextList(errors),
         cases: [],
         successfulVendorIds: successfulVendorIds,
+        successfulVendorRowIds: successfulVendorRowIds,
+        vendorRows: allVendorRows,
         currentPhase: request.current_phase
     };
 }
@@ -1804,14 +1853,16 @@ function removeForbiddenAutoCreditEntries(rows, source) {
 // SECTION 04A - DATA CONTEXT: gom (1), (2), (3), thuế, loại NCC và Cost Division
 // -----------------------------------------------------------------------------
 function buildPaymentCaseContext(paymentId, request, vendor, vendorCount, firstOrder, savedEntries) {
-    var taxInfo = getInvoiceTaxInfo(paymentId, vendor, vendorCount);
-    var hasInvoice = hasLinkedInvoicesForVendor(paymentId, vendor, vendorCount);
-    var selectedPrepayment = getSelectedPrepaymentSummary(paymentId, vendor.vendor_id);
+    // Ghép hóa đơn theo MST dùng số NCC phân biệt; một NCC nhiều PO vẫn là một NCC.
+    var invoiceVendorCount = vendor.distinct_vendor_count || vendorCount;
+    var taxInfo = getInvoiceTaxInfo(paymentId, vendor, invoiceVendorCount);
+    var hasInvoice = hasLinkedInvoicesForVendor(paymentId, vendor, invoiceVendorCount);
+    var selectedPrepayment = getSelectedPrepaymentSummary(paymentId, vendor.vendor_id, vendor);
     var approvedAmount = toNumber(vendor.approved_invoice_amount);
     // Phân bổ chi phí phục vụ hạch toán giá trị được chấp nhận (1), không phụ
-    // thuộc việc phiếu đã gắn bản ghi hóa đơn hay chưa.
+    // thuộc việc phiếu đã gắn bản ghi hóa đơn hay chưa. PCCP lấy theo dòng NCC+PO.
     var costDivisions = approvedAmount > 0
-            ? getPaymentCostDivisions(paymentId, vendor.vendor_id)
+            ? getPaymentCostDivisions(paymentId, vendor.vendor_id, vendor)
             : [];
     var isPersonal = isPersonalPaymentVendor(vendor.vendor_type);
     // Thuế GTGT từ hóa đơn sinh tự động cho mọi NCC (bao gồm cá nhân); Thuế TNCN do KT tự thêm sau dưới dạng dòng GL.
@@ -1933,7 +1984,7 @@ function isApPrepaymentEntry(row) {
  * Đọc các dòng AP/PREPAYMENT đã được tạo sau khi người dùng chọn hoàn ứng.
  * Các dòng này không thuộc bộ tự động ban đầu và được giữ lại khi sinh lại.
  */
-function getSelectedPrepaymentSummary(paymentId, vendorId) {
+function getSelectedPrepaymentSummary(paymentId, vendorId, vendorRow) {
     var result = { rowCount: 0, totalAmount: 0 };
     var f = null;
     var query =
@@ -1947,7 +1998,10 @@ function getSelectedPrepaymentSummary(paymentId, vendorId) {
         rc = f.doSelect(query);
         while (rc === RC_SUCCESS) {
             // Chỉ tính dòng AP hoàn ứng; PREPAYMENT loại GL không thuộc luồng này.
-            if (normalizeText(readText(f, 'type')) === normalizeText(TYPE.AP)) {
+            // NCC nhiều PO: chỉ tính hoàn ứng của đúng dòng PO (dòng cũ chưa gắn PO tính cho PO đầu).
+            var belongsToRow = isSourceForPaymentVendorRow(
+                    vendorRow, vendorId, readText(f, 'po.id'), readText(f, 'payment.vendor.id'));
+            if (belongsToRow && normalizeText(readText(f, 'type')) === normalizeText(TYPE.AP)) {
                 var amt = readNumber(f, 'amount');
                 if (amt > 0) {
                     result.rowCount++;
@@ -2036,9 +2090,9 @@ function deriveEntryPlan(c) {
     // Hoàn ứng đúng bằng hóa đơn luôn dùng luồng chuẩn, kể cả NCC cá nhân.
     var standardRecognized = facts.refundOnlyEqualInvoice ||
             (!c.isPersonal && (
-                facts.noRefundCovered ||
-                facts.refundWithoutPaymentDifferent ||
-                facts.refundWithPayment
+                    facts.noRefundCovered ||
+                    facts.refundWithoutPaymentDifferent ||
+                    facts.refundWithPayment
             ));
 
     var personalRecognized = c.isPersonal && (
@@ -2101,7 +2155,7 @@ function buildEntriesFromPlan(c, plan) {
     var orderRef = { value: c.firstOrder };
     var invoiceEnabled = plan.invoiceGate === INVOICE_GATE.ALWAYS ||
             (plan.invoiceGate === INVOICE_GATE.APPROVED_POSITIVE &&
-             moneyIsPositive(c.approvedAmount));
+                    moneyIsPositive(c.approvedAmount));
 
     if (invoiceEnabled) {
         appendExpenseEntries(rows, orderRef, c, plan.expenseMode);
@@ -2346,6 +2400,9 @@ function buildEntryRow(params) {
         currency: params.vendor.currency,
         description: safeString(params.vendor.transaction_description).trim(),
         vendor_id: params.vendor.vendor_id,
+        // Bộ bút toán thuộc dòng NCC+PO nào.
+        po_id: safeString(params.vendor.po_id).trim(),
+        payment_vendor_id: safeString(params.vendor.id).trim(),
         contract_id: safeString(params.vendor.contract_id).trim(),
         type: TYPE.AP,
         order: params.order,
@@ -2537,9 +2594,10 @@ function getAutoEntryRowErrors(row) {
 function getVendorGenerationSubject(vendor) {
     var vendorName = safeString(vendor.vendor_name || vendor.name).trim();
     var vendorId = safeString(vendor.vendor_id || vendor.id).trim();
+    var poSuffix = safeString(vendor.po_id).trim() ? ' (PO ' + safeString(vendor.po_id).trim() + ')' : '';
 
-    if (vendorName) return 'Nhà cung cấp ' + vendorName;
-    if (vendorId) return 'Nhà cung cấp ' + vendorId;
+    if (vendorName) return 'Nhà cung cấp ' + vendorName + poSuffix;
+    if (vendorId) return 'Nhà cung cấp ' + vendorId + poSuffix;
     return 'Nhà cung cấp';
 }
 
@@ -2595,6 +2653,7 @@ function hasLinkedInvoicesForVendor(paymentId, vendor, vendorCount) {
     var links = getLinkedInvoices(paymentId);
 
     for (var i = 0; i < links.length; i++) {
+        if (!isInvoiceLinkForVendorRow(links[i], vendor)) continue;
         var invoice = getInvoiceById(links[i].invoice_id);
         if (isInvoiceForVendor(invoice, vendor, vendorCount)) return true;
     }
@@ -2772,6 +2831,8 @@ function getInvoiceTaxInfo(paymentId, vendor, vendorCount) {
     taxAmounts[DEDUCTION_TYPE_RATE] = 0;
 
     for (var i = 0; i < links.length; i++) {
+        // Hóa đơn đi theo dòng NCC+PO (ref.id / po.id); liên kết cũ tính cho PO đầu của NCC.
+        if (!isInvoiceLinkForVendorRow(links[i], vendor)) continue;
         var invoice = getInvoiceById(links[i].invoice_id);
         if (!isInvoiceForVendor(invoice, vendor, vendorCount)) continue;
 
@@ -2786,7 +2847,7 @@ function getInvoiceTaxInfo(paymentId, vendor, vendorCount) {
             continue;
         }
 
-        var deductionTypeCode = safeString(deductionType).trim().toUpperCase();
+        var deductionTypeCode = normalizeDeductionType(deductionType);
         if (deductionTypeCode === DEDUCTION_TYPE_NONE) continue;
 
         if (deductionTypeCode !== DEDUCTION_TYPE_FULL && deductionTypeCode !== DEDUCTION_TYPE_RATE) {
@@ -2822,7 +2883,22 @@ function getInvoiceTaxInfo(paymentId, vendor, vendorCount) {
 }
 
 
+/** Chuẩn hóa loại khấu trừ về KHAUTRU_00x (nhận cả KHAU_TRU_TOAN_BO/KHAU_TRU_TY_LE/KHONG_KHAU_TRU). */
+function normalizeDeductionType(value) {
+    var code = safeString(value).trim().toUpperCase();
+    return hasOwn(DEDUCTION_TYPE_ALIASES, code) ? DEDUCTION_TYPE_ALIASES[code] : code;
+}
+
+/**
+ * Tài khoản thuế theo loại khấu trừ: cố định theo TAX_DEDUCTION_ACCOUNTS (toàn bộ 126120220,
+ * tỷ lệ 126120210), tên lấy từ glaccount. Loại khác mới tra danh mục như trước.
+ */
 function getTaxDeductionAccount(deductionType) {
+    var fixedAccount = TAX_DEDUCTION_ACCOUNTS[normalizeDeductionType(deductionType)];
+    if (fixedAccount) {
+        return { number: fixedAccount, name: getGlAccountName(fixedAccount) };
+    }
+
     var itemId = safeString(deductionType).trim();
     var deductionItem = null;
     var accountItem = null;
@@ -2875,6 +2951,8 @@ function getLinkedInvoices(paymentId) {
         if (invoiceId) {
             list.push({
                 invoice_id: invoiceId,
+                ref_id: readText(f, 'ref.id').trim(),
+                po_id: readText(f, 'po.id').trim(),
                 deduction_type: readText(f, 'deduction.type'),
                 deduction_amount: readNumber(f, 'deduction.amount'),
                 deduction_rate: readNumber(f, 'deduction.rate')
@@ -2948,7 +3026,7 @@ function getInvoiceById(invoiceId) {
  * Đọc các dòng phân bổ chi phí từ bảng esdHTKTpaymentCostDivision.
  * Mỗi dòng phân bổ tương ứng 1 dòng TT-BK-01.
  */
-function getPaymentCostDivisions(paymentId, vendorId) {
+function getPaymentCostDivisions(paymentId, vendorId, vendorRow) {
     var list = [];
     var f = new SCFile(TABLE_COST_DIVISION, SCFILE_READONLY);
     // ĐÃ CHỐT: lọc theo cả payment.id và vendor.id.
@@ -2966,6 +3044,12 @@ function getPaymentCostDivisions(paymentId, vendorId) {
     }
 
     while (rc === RC_SUCCESS) {
+        // PCCP theo dòng NCC+PO qua ref.id (= id dòng esdHTKTpaymentVendor); PCCP cũ chưa có
+        // ref.id tính cho dòng PO đầu tiên của NCC.
+        if (!isSourceForPaymentVendorRow(vendorRow, readText(f, 'vendor.id') || vendorId, '', readText(f, 'ref.id'))) {
+            rc = f.getNext();
+            continue;
+        }
         list.push({
             id: readText(f, 'id'),
             payment_id: readText(f, 'payment.id'),
@@ -3912,6 +3996,9 @@ function getPaymentVendors(paymentId, vendorId) {
 
     while (rc === RC_SUCCESS) {
         list.push({
+            // Mỗi dòng esdHTKTpaymentVendor là NCC + PO; id dòng là khóa tách bộ bút toán theo PO.
+            id: readText(f, 'id').trim(),
+            po_id: readText(f, 'po.id').trim(),
             vendor_id: readText(f, 'vendor.id'),
             contract_id: readText(f, 'contract.id'),
             vendor_site_id: readText(f, 'vendor.site.id'),
@@ -3937,6 +4024,103 @@ function getPaymentVendors(paymentId, vendorId) {
 
     closeFile(f);
     return list;
+}
+
+// -----------------------------------------------------------------------------
+// TÁCH THEO PO: mỗi dòng esdHTKTpaymentVendor (NCC + PO) là một bộ bút toán riêng.
+// Dữ liệu nguồn gắn dòng PO qua: payment.vendor.id / ref.id (= id dòng NCC+PO) hoặc po.id.
+// Dữ liệu cũ chưa gắn dòng PO được tính cho dòng PO đầu tiên của NCC.
+// -----------------------------------------------------------------------------
+
+/** Gắn danh sách dòng NCC+PO của cả phiếu và số NCC phân biệt vào từng dòng. */
+function attachPaymentVendorRows(vendors) {
+    var distinct = {};
+    var distinctCount = 0;
+
+    for (var i = 0; i < vendors.length; i++) {
+        var vendorKey = safeString(vendors[i].vendor_id).trim();
+        if (!distinct[vendorKey]) {
+            distinct[vendorKey] = true;
+            distinctCount++;
+        }
+    }
+
+    for (var j = 0; j < vendors.length; j++) {
+        vendors[j].vendor_rows = vendors;
+        vendors[j].distinct_vendor_count = distinctCount;
+    }
+
+    return vendors;
+}
+
+/** Các dòng PO của một NCC, sắp theo id: dòng PO đầu = id nhỏ nhất (cùng quy tắc tab Hóa đơn). */
+function getVendorRowsOf(vendorRows, vendorId) {
+    var result = [];
+    var list = vendorRows || [];
+    for (var i = 0; i < list.length; i++) {
+        if (lookupIdsEqual(list[i].vendor_id, vendorId)) result.push(list[i]);
+    }
+    result.sort(function (a, b) {
+        var left = safeString(a.id).trim();
+        var right = safeString(b.id).trim();
+        return left < right ? -1 : left > right ? 1 : 0;
+    });
+    return result;
+}
+
+function findPaymentVendorRowById(vendorRows, rowId) {
+    var id = safeString(rowId).trim();
+    var list = vendorRows || [];
+    if (!id) return null;
+    for (var i = 0; i < list.length; i++) {
+        if (safeString(list[i].id).trim() === id) return list[i];
+    }
+    return null;
+}
+
+/**
+ * Xác định dòng NCC+PO của một bản ghi nguồn (entry, PCCP, liên kết hóa đơn):
+ * 1. rowId (payment.vendor.id / ref.id) trùng id dòng; 2. cùng NCC + po.id;
+ * 3. dữ liệu cũ: dòng PO đầu tiên của NCC.
+ */
+function resolvePaymentVendorRow(vendorRows, vendorId, poId, rowId) {
+    var byId = findPaymentVendorRowById(vendorRows, rowId);
+    if (byId) return byId;
+
+    var sameVendor = getVendorRowsOf(vendorRows, vendorId);
+    var po = safeString(poId).trim();
+    if (po) {
+        for (var i = 0; i < sameVendor.length; i++) {
+            if (safeString(sameVendor[i].po_id).trim() === po) return sameVendor[i];
+        }
+    }
+
+    return sameVendor.length > 0 ? sameVendor[0] : null;
+}
+
+function isSourceForPaymentVendorRow(vendorRow, vendorId, poId, rowId) {
+    if (!vendorRow) return true;
+    var resolved = resolvePaymentVendorRow(vendorRow.vendor_rows || [vendorRow], vendorId, poId, rowId);
+    return !!resolved && safeString(resolved.id).trim() === safeString(vendorRow.id).trim();
+}
+
+/** Liên kết hóa đơn thuộc dòng NCC+PO: theo ref.id / po.id; liên kết cũ thuộc dòng PO đầu của NCC. */
+function isInvoiceLinkForVendorRow(link, vendorRow) {
+    if (!vendorRow || !vendorRow.id) return true;
+    var rows = vendorRow.vendor_rows || [vendorRow];
+    var byId = findPaymentVendorRowById(rows, link.ref_id);
+    if (byId) return byId.id === vendorRow.id;
+
+    var linkPoId = safeString(link.po_id).trim();
+    var sameVendor = getVendorRowsOf(rows, vendorRow.vendor_id);
+    if (linkPoId) return linkPoId === safeString(vendorRow.po_id).trim();
+
+    return sameVendor.length <= 1 || sameVendor[0].id === vendorRow.id;
+}
+
+function getEntryPaymentVendorRowId(entry, vendorRows) {
+    var row = resolvePaymentVendorRow(vendorRows, entry.vendor_id, entry.po_id, entry.payment_vendor_id);
+    return row ? safeString(row.id).trim() : '';
 }
 
 function enrichVendor(vendor) {
@@ -4057,9 +4241,48 @@ function getSavedPaymentEntries(paymentId) {
             escapeQueryValue(paymentId) +
             '" ORDER BY e.order ASC';
 
-    var entries = applyBeneficiaryByEntryType(selectList(TABLE_PAYMENT_ENTRY, sql, fields));
+    var entries = applyBeneficiaryByEntryType(dedupeJoinedPaymentEntries(selectList(TABLE_PAYMENT_ENTRY, sql, fields)));
     enrichPaymentEntriesWithNames(entries);
     return entries;
+}
+
+/**
+ * JOIN pv theo payment.id + vendor.id nhân đôi entry khi một NCC có nhiều dòng PO.
+ * Giữ một dòng cho mỗi entry: ưu tiên dòng pv đúng payment.vendor.id, rồi đúng po.id,
+ * rồi dòng PO đầu (entry cũ). Bỏ các cột pv_* phụ trợ.
+ */
+function dedupeJoinedPaymentEntries(rows) {
+    var bestById = {};
+    var order = [];
+
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var id = '$' + safeString(row.id).trim();
+        var score = getJoinedPaymentEntryScore(row);
+        if (!bestById[id]) {
+            bestById[id] = { row: row, score: score };
+            order.push(id);
+        } else if (score > bestById[id].score) {
+            bestById[id] = { row: row, score: score };
+        }
+    }
+
+    var result = [];
+    for (var j = 0; j < order.length; j++) {
+        var kept = bestById[order[j]].row;
+        delete kept.pv_row_id;
+        delete kept.pv_po_id;
+        result.push(kept);
+    }
+    return result;
+}
+
+function getJoinedPaymentEntryScore(row) {
+    var rowId = safeString(row.payment_vendor_id).trim();
+    var poId = safeString(row.po_id).trim();
+    if (rowId && rowId === safeString(row.pv_row_id).trim()) return 20;
+    if (poId && poId === safeString(row.pv_po_id).trim()) return 10;
+    return 0;
 }
 
 function getPaymentEntryFields() {
@@ -4078,6 +4301,10 @@ function getPaymentEntryFields() {
         ['e.currency', 'currency', 'S'],
         ['e.description', 'description', 'S'],
         ['e.vendor.id', 'vendor_id', 'S'],
+        ['e.po.id', 'po_id', 'S'],
+        ['e.payment.vendor.id', 'payment_vendor_id', 'S'],
+        ['pv.id', 'pv_row_id', 'S'],
+        ['pv.po.id', 'pv_po_id', 'S'],
         ['e.contract.id', 'contract_id', 'S'],
         ['v.vendor.name', 'vendor_name', 'S'],
         ['e.type', 'type', 'S'],
@@ -4117,6 +4344,10 @@ function mergeEditableAutoEntryFields(savedEntries, expectedEntries) {
         var expected = copyObject({}, expectedEntries[j]);
         var expectedEntryKey = makeAutoEntryMatchKey(expected);
         var matches = savedMap[expectedEntryKey] || [];
+        // Entry lưu trước khi có po.id: khớp theo NCC + loại bút toán như cũ.
+        if (matches.length === 0 && safeString(expected.po_id).trim()) {
+            matches = savedMap[makeAutoEntryMatchKey(copyObject(copyObject({}, expected), { po_id: '' }))] || [];
+        }
         var matched = matches.length > 0 ? matches.shift() : null;
 
         if (matched) {
@@ -4145,7 +4376,7 @@ function makeAutoEntryMatchKey(row) {
     var entryType = normalizeEntryType(row.entry_type);
     if (!entryType) return '';
 
-    var key = safeString(row.vendor_id).trim() + '|' + entryType;
+    var key = safeString(row.vendor_id).trim() + '|' + safeString(row.po_id).trim() + '|' + entryType;
 
     // Chi phí và thuế có thể có nhiều dòng nên phân biệt thêm theo tài khoản.
     if (entryType === ENTRY_TYPE.COST || entryType === ENTRY_TYPE.TAX) {
@@ -4214,6 +4445,9 @@ function toPaymentEntryRecord(row) {
         currency: row.currency,
         description: row.description,
         'vendor.id': row.vendor_id,
+        // Dòng NCC+PO của bút toán (GL bổ sung để trống).
+        'po.id': safeString(row.po_id).trim(),
+        'payment.vendor.id': safeString(row.payment_vendor_id).trim(),
         'contract.id': row.contract_id || row['contract.id'] || '',
         type: row.type,
         'ref.id': row.ref_id,
@@ -4813,8 +5047,12 @@ function validateCostDivisionAgainstTable(paymentId, entries) {
         return vendorId; // Fallback về ID nếu không tìm thấy tên
     }
 
-    // 2. Truy vấn dữ liệu phân chia chi phí từ bảng esdHTKTpaymentCostDivision theo paymentId (Đưa lên trước để check xem có dữ liệu hay không)
+    // 2. Truy vấn dữ liệu phân chia chi phí từ bảng esdHTKTpaymentCostDivision theo paymentId
+    var vendorRows = getPaymentVendors(paymentId, '');
+    attachPaymentVendorRows(vendorRows);
+
     var divisionTotals = {};
+    var scopesWithDivision = {};
     var hasCostDivisionData = false; // Biến cờ kiểm tra xem có bản ghi phân chia chi phí nào không
     var fCostDiv = new SCFile('esdHTKTpaymentCostDivision', SCFILE_READONLY);
     var query = 'payment.id="' + escapeQueryValue(paymentId) + '"';
@@ -4825,12 +5063,18 @@ function validateCostDivisionAgainstTable(paymentId, entries) {
             hasCostDivisionData = true; // Đã tìm thấy ít nhất 1 bản ghi phân chia chi phí
 
             var divVendorId = safeString(readText(fCostDiv, 'vendor.id')).trim();
+            var divRefId = safeString(readText(fCostDiv, 'ref.id')).trim();
             var divAccNum = safeString(readText(fCostDiv, 'account.number')).trim();
             var divAmount = parseFloat(readText(fCostDiv, 'amount')) || 0;
 
-            var divKey = divVendorId + "_" + divAccNum;
+            var matchedVendorRow = resolvePaymentVendorRow(vendorRows, divVendorId, '', divRefId);
+            var scopeKey = matchedVendorRow ? safeString(matchedVendorRow.id).trim() : divVendorId;
+            scopesWithDivision[scopeKey] = true;
+
+            var divKey = scopeKey + "_" + divAccNum;
             if (!divisionTotals[divKey]) {
                 divisionTotals[divKey] = {
+                    scopeKey: scopeKey,
                     vendorId: divVendorId,
                     accountNumber: divAccNum,
                     totalAmount: 0
@@ -4851,7 +5095,7 @@ function validateCostDivisionAgainstTable(paymentId, entries) {
         return { success: true };
     }
 
-    // 1. Tính tổng tiền từ entries, nhóm theo: vendor_id + account_number (chỉ xét loại COST và bỏ qua type GL)
+    // 1. Tính tổng tiền từ entries, nhóm theo dòng NCC+PO (scopeKey) + account_number (chỉ xét loại COST và bỏ qua type GL)
     var entryTotals = {};
     for (var i = 0; i < entries.length; i++) {
         var row = entries[i];
@@ -4876,12 +5120,26 @@ function validateCostDivisionAgainstTable(paymentId, entries) {
         var vendorId = row.vendor_id || row.vendorId || "";
         var accNum = safeString(row.account_number).trim();
 
-        // Tạo key định danh duy nhất cho từng cặp (Nhà cung cấp + Số tài khoản)
-        var key = vendorId + "_" + accNum;
+        var entryVendorRow = resolvePaymentVendorRow(
+                vendorRows,
+                vendorId,
+                row.po_id || row.poId,
+                row.payment_vendor_id || row.paymentVendorId
+        );
+        var entryScopeKey = entryVendorRow ? safeString(entryVendorRow.id).trim() : (vendorId || "");
+
+        // Chỉ kiểm tra các dòng NCC/PO có phát sinh dữ liệu trong bảng phân chia chi phí
+        if (!scopesWithDivision[entryScopeKey]) {
+            continue;
+        }
+
+        // Tạo key định danh duy nhất cho từng cặp (dòng NCC/PO + Số tài khoản)
+        var key = entryScopeKey + "_" + accNum;
         var amount = parseFloat(row.amount) || 0;
 
         if (!entryTotals[key]) {
             entryTotals[key] = {
+                scopeKey: entryScopeKey,
                 vendorId: vendorId,
                 accountNumber: accNum,
                 totalAmount: 0

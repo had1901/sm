@@ -16,6 +16,183 @@ function getPaymentApprovalFields() {
     ];
 }
 
+function getPaymentApprovalReadFields() {
+    return [
+        "id",
+        "transaction.type",
+        "initial.role",
+        "current.phase",
+        "status",
+        "created.by",
+        "unit.lv1",
+        "require.check.level1",
+        "require.check.level2",
+        "user.checker.kttc",
+        "user.checker.dmms",
+        "user.approver.dmms",
+        "user.approver.kttc",
+        "user.checker.final",
+        "user.approver.final"
+    ];
+}
+
+function readSmJoinedField(file, aliasName, fallbackField, index) {
+    if (!file) return "";
+    var value;
+    try { value = file[aliasName]; } catch (eAlias) {}
+    if ((typeof value === "undefined" || value === null || value === "") && fallbackField) {
+        try {
+            var fallbackValue = file[fallbackField];
+            if (typeof fallbackValue !== "undefined" && fallbackValue !== null && fallbackValue !== "") {
+                value = fallbackValue;
+            }
+        } catch (eFallback) {}
+    }
+    if ((typeof value === "undefined" || value === null || value === "") && typeof index === "number") {
+        try {
+            var indexedValue = file[index];
+            if (typeof indexedValue !== "undefined" && indexedValue !== null && indexedValue !== "") {
+                value = indexedValue;
+            }
+        } catch (eIndex) {}
+    }
+    return String(value == null ? "" : value).trim();
+}
+
+function buildSmEqualsOrClause(fieldName, values) {
+    var parts = [];
+    for (var i = 0; values && i < values.length; i++) {
+        var val = String(values[i] == null ? "" : values[i]).trim();
+        if (val) {
+            parts.push(fieldName + '="' + escapeSmQueryValue(val) + '"');
+        }
+    }
+    return parts.length ? "(" + parts.join(" or ") + ")" : "";
+}
+
+function resolvePaymentApprovalContactRecord(currentUser, resolvedIdentity) {
+    if (resolvedIdentity && resolvedIdentity.contactResolved === true) {
+        return {
+            found: resolvedIdentity.contactFound === true,
+            unique: resolvedIdentity.contactUnique === true,
+            contactName: String(resolvedIdentity.contactName || "").trim(),
+            lv1: String(resolvedIdentity.lv1 || "").trim()
+        };
+    }
+
+    var actor = String(currentUser == null ? "" : currentUser).trim();
+    var record = {
+        found: false,
+        unique: false,
+        contactName: "",
+        lv1: ""
+    };
+
+    if (!actor) {
+        if (resolvedIdentity) {
+            resolvedIdentity.contactResolved = true;
+            resolvedIdentity.contactFound = false;
+            resolvedIdentity.contactUnique = false;
+        }
+        return record;
+    }
+
+    var contact = null;
+    try {
+        contact = new SCFile("contacts", SCFILE_READONLY);
+        contact.setFields(["contact.name", "lv1.id"]);
+
+        var exactCandidates = uniqueStrings([actor, actor.toUpperCase(), actor.toLowerCase()]);
+        var exactClause = buildSmEqualsOrClause("contact.name", exactCandidates);
+        var rc = exactClause ? contact.doSelect(exactClause) : RC_NO_MORE;
+        if (rc !== RC_SUCCESS) {
+            rc = contact.doSelect('tolower(contact.name)="' + escapeSmQueryValue(actor.toLowerCase()) + '"');
+        }
+
+        if (rc === RC_SUCCESS) {
+            record.found = true;
+            var canonicalName = String(contact["contact.name"] == null ? "" : contact["contact.name"]).trim();
+            var contactLv1 = normalizeHTKTApprovalUnitCode(contact["lv1.id"]);
+            var hasDuplicate = false;
+            try {
+                hasDuplicate = contact.getNext() === RC_SUCCESS;
+            } catch (eGetNext) {
+                hasDuplicate = true;
+            }
+            if (canonicalName && !hasDuplicate) {
+                record.unique = true;
+                record.contactName = canonicalName;
+                record.lv1 = contactLv1;
+            }
+        }
+    } finally {
+        try {
+            if (contact) contact.doClose();
+        } catch (eCloseContact) {}
+    }
+
+    if (resolvedIdentity) {
+        resolvedIdentity.contactResolved = true;
+        resolvedIdentity.contactFound = record.found;
+        resolvedIdentity.contactUnique = record.unique;
+        if (record.unique) {
+            resolvedIdentity.contactName = record.contactName;
+            resolvedIdentity.lv1 = record.lv1;
+        }
+    }
+
+    return record;
+}
+
+function queryPaymentApprovalRightsByContacts(contactIds, rightIds) {
+    var rightMap = {};
+    var safeContacts = uniqueStrings(contactIds);
+    var safeRights = uniqueStrings(rightIds);
+    if (!safeContacts.length || !safeRights.length) {
+        return rightMap;
+    }
+
+    var contactClause = buildSmEqualsOrClause("jcpg.contact.id", safeContacts);
+    var rightClause = buildSmEqualsOrClause("jrp.rights.id", safeRights);
+    if (!contactClause || !rightClause) {
+        return rightMap;
+    }
+
+    var sql =
+            "SELECT jrp.rights.id AS rightId " +
+            "FROM esdjoinRightsPermission jrp " +
+            "JOIN esdQTpermissionGroup pg ON (jrp.permission.group.id = pg.id) " +
+            "JOIN esdjoinContactsPermissionGroup jcpg ON (jcpg.permission.group.id = pg.id) " +
+            'WHERE pg.status = "Dang hoat dong" ' +
+            "AND (pg.start.date <= tod() OR pg.start.date = NULL) " +
+            "AND (pg.end.date >= tod() OR pg.end.date = NULL) " +
+            "AND (jcpg.start.date <= tod() OR jcpg.start.date = NULL) " +
+            "AND (jcpg.end.date >= tod() OR jcpg.end.date = NULL) " +
+            "AND " + contactClause + " " +
+            "AND " + rightClause;
+
+    var rightFile = null;
+    try {
+        rightFile = new SCFile("esdjoinRightsPermission", SCFILE_READONLY);
+        var rc = rightFile.doSelect(sql);
+        while (rc === RC_SUCCESS) {
+            var rightId = readSmJoinedField(rightFile, "rightId", "rights.id", 0);
+            if (rightId) {
+                rightMap[rightId] = true;
+            }
+            rc = rightFile.getNext();
+        }
+    } catch (eRightQuery) {
+        return {};
+    } finally {
+        try {
+            if (rightFile) rightFile.doClose();
+        } catch (eCloseRightQuery) {}
+    }
+
+    return rightMap;
+}
+
 // Dự chi và Thanh toán dùng chung entity esdHTKTpayment. Chỉ paymentId
 // quyết định bộ functional rights dùng cho tái phân công.
 function isDuChiPaymentApprovalRecord(recordOrId) {
@@ -75,7 +252,7 @@ function isDuChiApprovalFieldCompleted(phase, field) {
     return typeof current === "number" && current > fieldPhase[field];
 }
 
-function getDuChiApprovalAccess(payment, currentUser, resolvedIdentity) {
+function getDuChiApprovalAccess(payment, currentUser, resolvedIdentity, accessOptions) {
     var phase = readPaymentApprovalValue(payment, "current.phase").toLowerCase();
     var role = readPaymentApprovalValue(payment, "initial.role").toLowerCase();
     var status = readPaymentApprovalValue(payment, "status").toLowerCase();
@@ -87,14 +264,49 @@ function getDuChiApprovalAccess(payment, currentUser, resolvedIdentity) {
     var canEditLevel1 = !legacyClosed && phase === "initial_dmms" && isDmmsCreator;
     var canEditLevel2 = !legacyClosed && phase === "initial_kttc" && !!actor &&
         ((actor === creator && role === "kttc") || actor === checkerKttc);
-    var leader = getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, "0040040004");
+    var closed = legacyClosed || status === "approved" || status === "accounted";
+    var creationPhase = isDuChiApprovalCreation(payment);
+    var targetField = accessOptions && accessOptions.targetField ? String(accessOptions.targetField).trim() : "";
+    var forFieldOnly = !!(accessOptions && accessOptions.forFieldOnly === true && targetField);
+    var rightBase = getPaymentApprovalRightBase("0040040004");
+    var requiredLeaderRights = null;
+    var needLeaderCheck = true;
+
+    if (forFieldOnly) {
+        if (closed || creationPhase) {
+            needLeaderCheck = false;
+        } else if (targetField === "require.check.level1" || targetField === "require.check.level2") {
+            needLeaderCheck = false;
+        } else if (targetField === "user.checker.dmms" || targetField === "user.approver.dmms") {
+            if (canEditLevel1 || role !== "dmms") {
+                needLeaderCheck = false;
+            } else {
+                requiredLeaderRights = [rightBase + "0005"];
+            }
+        } else if (targetField === "user.checker.kttc") {
+            if (canEditLevel1 || role !== "dmms") {
+                needLeaderCheck = false;
+            } else {
+                requiredLeaderRights = [rightBase + "0006"];
+            }
+        } else if (targetField === "user.approver.kttc" || targetField === "user.checker.final" || targetField === "user.approver.final") {
+            if (canEditLevel2) {
+                needLeaderCheck = false;
+            } else {
+                requiredLeaderRights = [rightBase + "0006"];
+            }
+        }
+    }
+
+    var leader = needLeaderCheck ?
+        getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, "0040040004", requiredLeaderRights) :
+        { isApprovalDmms: false, isApprovalKttc: false };
     // Không fallback theo người được assign: quyền TT hoặc actor trên hồ sơ
     // không tự cấp quyền tái phân công DC.
     var isApprovalDmms = leader.isApprovalDmms === true;
     var isApprovalKttc = leader.isApprovalKttc === true;
-    var closed = legacyClosed || status === "approved" || status === "accounted";
-    var canDmmsReassign = !closed && !isDuChiApprovalCreation(payment) && isApprovalDmms;
-    var canKttcReassign = !closed && !isDuChiApprovalCreation(payment) && isApprovalKttc;
+    var canDmmsReassign = !closed && !creationPhase && isApprovalDmms;
+    var canKttcReassign = !closed && !creationPhase && isApprovalKttc;
     var fieldAccess = {
         "require.check.level1": canEditLevel1,
         "require.check.level2": canEditLevel2,
@@ -116,6 +328,11 @@ function getDuChiApprovalAccess(payment, currentUser, resolvedIdentity) {
         canEditLevel2: canEditLevel2,
         isApprovalDmms: isApprovalDmms,
         isApprovalKttc: isApprovalKttc,
+        leaderChecked: needLeaderCheck && !requiredLeaderRights,
+        leaderRights: {
+            isApprovalDmms: isApprovalDmms,
+            isApprovalKttc: isApprovalKttc
+        },
         canViewEarly: isApprovalDmms || isApprovalKttc,
         fieldAccess: fieldAccess
     };
@@ -128,7 +345,6 @@ function syncPaymentApprovalFromDatabase(payment) {
 
     if (typeof payment.doSelect === "function") {
         var description = payment.description;
-        var note = payment.note;
         if (description != null) description = String(description);
         try {
             var rc = payment.doSelect('id="' + escapeSmQueryValue(paymentId) + '"');
@@ -139,7 +355,6 @@ function syncPaymentApprovalFromDatabase(payment) {
             }
         } finally {
             payment.description = description;
-            payment.note = note;
         }
         return payment;
     }
@@ -162,15 +377,14 @@ function syncPaymentApprovalFromDatabase(payment) {
 }
 
 /**
- * Lấy Functional Rights của user dùng riêng cho logic tái phân công (Thanh toán).
+ * Lấy Functional Rights của user dùng riêng cho logic tái phân công (Thanh toán / Dự chi).
  */
-function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, rightPrefix) {
+function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, rightPrefix, requiredRightIds) {
     var prefix = getPaymentApprovalRightBase(rightPrefix);
     var RIGHT_APPROVE_1 = prefix + "0005";
     var RIGHT_APPROVE_2 = prefix + "0006";
 
     var rightMap = {};
-    var queriedIdentities = [];
     var contactName = String(currentUser == null ? "" : currentUser).trim();
 
     if (!contactName) {
@@ -179,6 +393,10 @@ function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, rightPr
             isApprovalKttc: false
         };
     }
+
+    var targetRights = requiredRightIds && requiredRightIds.length ?
+            uniqueStrings(requiredRightIds) :
+            [RIGHT_APPROVE_1, RIGHT_APPROVE_2];
 
     function addRights(source) {
         if (!source) return;
@@ -202,25 +420,7 @@ function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, rightPr
         }
     }
 
-    function addRightsByIdentity(identity) {
-        var safeIdentity = String(identity == null ? "" : identity).trim();
-
-        if (
-                !safeIdentity ||
-                !lib.ESD_PERMS_RIGHTS ||
-                !lib.ESD_PERMS_RIGHTS.permsRight
-        ) {
-            return;
-        }
-
-        if (queriedIdentities.indexOf(safeIdentity) >= 0) return;
-
-        try {
-            addRights(lib.ESD_PERMS_RIGHTS.permsRight(safeIdentity) || []);
-            queriedIdentities.push(safeIdentity);
-        } catch (ePermRights) {}
-    }
-
+    var hasSessionRights = false;
     try {
         var sessionContact = String(
                 vars["$lo.contact.name"] ||
@@ -234,73 +434,34 @@ function getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, rightPr
                 vars["$G.rights"]
         ) {
             addRights(vars["$G.rights"]);
+            hasSessionRights = true;
         }
     } catch (eSessionRights) {}
 
-    addRightsByIdentity(contactName);
-
-    var contactFile = null;
-
-    try {
-        contactFile = new SCFile("contacts", SCFILE_READONLY);
-        contactFile.setFields(["contact.id", "contact.name"]);
-
-        var contactRc = contactFile.doSelect(
-                'contact.name="' +
-                escapeSmQueryValue(contactName) +
-                '"'
-        );
-        if (contactRc !== RC_SUCCESS) {
-            contactRc = contactFile.doSelect(
-                    'tolower(contact.name)="' +
-                    escapeSmQueryValue(contactName.toLowerCase()) +
-                    '"'
-            );
-        }
-
-        if (contactRc === RC_SUCCESS) {
-            var canonicalContactName = String(
-                    contactFile["contact.name"] == null ?
-                            "" :
-                            contactFile["contact.name"]
-            ).trim();
-
-            var resolvedContactId = String(
-                    contactFile["contact.id"] == null ?
-                            "" :
-                            contactFile["contact.id"]
-            ).trim();
-
-            var hasDuplicate = false;
-            try {
-                hasDuplicate = contactFile.getNext() === RC_SUCCESS;
-            } catch (eGetNextContact) {
-                hasDuplicate = true;
-            }
-
-            if (!hasDuplicate) {
-                if (resolvedIdentity && canonicalContactName) {
-                    resolvedIdentity.contactName = canonicalContactName;
-                }
-                if (canonicalContactName) {
-                    addRightsByIdentity(canonicalContactName);
-                }
-
-                if (
-                        resolvedContactId &&
-                        resolvedContactId !== canonicalContactName
-                ) {
-                    addRightsByIdentity(resolvedContactId);
-                }
+    var missingRights = [];
+    if (!hasSessionRights) {
+        for (var rightIndex = 0; rightIndex < targetRights.length; rightIndex++) {
+            if (rightMap[targetRights[rightIndex]] !== true) {
+                missingRights.push(targetRights[rightIndex]);
             }
         }
-    } catch (eResolveContact) {
-    } finally {
+    }
+
+    if (missingRights.length) {
+        var identitiesToQuery = [contactName];
         try {
-            if (contactFile) {
-                contactFile.doClose();
+            var contactRecord = resolvePaymentApprovalContactRecord(contactName, resolvedIdentity);
+            if (contactRecord.unique && contactRecord.contactName && contactRecord.contactName !== contactName) {
+                identitiesToQuery.push(contactRecord.contactName);
             }
-        } catch (eCloseContact) {}
+        } catch (eResolveContact) {}
+
+        var queriedRightMap = queryPaymentApprovalRightsByContacts(identitiesToQuery, missingRights);
+        for (var queriedKey in queriedRightMap) {
+            if (queriedRightMap.hasOwnProperty(queriedKey) && queriedRightMap[queriedKey] === true) {
+                rightMap[queriedKey] = true;
+            }
+        }
     }
 
     return {
@@ -322,9 +483,9 @@ function readPaymentApprovalValue(payment, field) {
             value == null ? "" : value
     ).trim();
 }
-function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightPrefix) {
+function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightPrefix, accessOptions) {
     if (isDuChiPaymentApprovalRecord(payment)) {
-        return getDuChiApprovalAccess(payment, currentUser, resolvedIdentity);
+        return getDuChiApprovalAccess(payment, currentUser, resolvedIdentity, accessOptions);
     }
     var phase = readPaymentApprovalValue(payment, "current.phase").toLowerCase();
     var role = readPaymentApprovalValue(payment, "initial.role").toLowerCase();
@@ -356,11 +517,54 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
             status === "approved" ||
             status === "accounted";
 
-    var leaderAccess = getPaymentReassignmentRoleAccess(
-            currentUser,
-            resolvedIdentity,
-            rightPrefix || getPaymentApprovalRightPrefix(payment)
-    );
+    // Không tái phân công ở bước tạo mới.
+    var isPaymentCreationPhase =
+            !phase ||
+            phase === "start" ||
+            (role === "dmms" && phase === "initial_dmms") ||
+            (role === "kttc" && phase === "initial_kttc");
+
+    var effectiveRightPrefix = rightPrefix || getPaymentApprovalRightPrefix(payment);
+    var effectiveRightBase = getPaymentApprovalRightBase(effectiveRightPrefix);
+    var targetField = accessOptions && accessOptions.targetField ? String(accessOptions.targetField).trim() : "";
+    var forFieldOnly = !!(accessOptions && accessOptions.forFieldOnly === true && targetField);
+    var requiredLeaderRights = null;
+    var needLeaderCheck = true;
+
+    if (forFieldOnly) {
+        if (reassignmentClosed || isPaymentCreationPhase) {
+            needLeaderCheck = false;
+        } else if (targetField === "require.check.level1" || targetField === "require.check.level2") {
+            needLeaderCheck = false;
+        } else if (targetField === "user.checker.dmms" || targetField === "user.approver.dmms") {
+            if (canEditLevel1 || role !== "dmms" || (!!actor && actor === approverDmms)) {
+                needLeaderCheck = false;
+            } else {
+                requiredLeaderRights = [effectiveRightBase + "0005"];
+            }
+        } else if (targetField === "user.checker.kttc") {
+            if (canEditLevel1 || role !== "dmms" || (!!actor && actor === approverKttc)) {
+                needLeaderCheck = false;
+            } else {
+                requiredLeaderRights = [effectiveRightBase + "0006"];
+            }
+        } else if (targetField === "user.approver.kttc" || targetField === "user.checker.final" || targetField === "user.approver.final") {
+            if (canEditLevel2 || (!!actor && actor === approverKttc)) {
+                needLeaderCheck = false;
+            } else {
+                requiredLeaderRights = [effectiveRightBase + "0006"];
+            }
+        }
+    }
+
+    var leaderAccess = needLeaderCheck ?
+            getPaymentReassignmentRoleAccess(
+                    currentUser,
+                    resolvedIdentity,
+                    effectiveRightPrefix,
+                    requiredLeaderRights
+            ) :
+            { isApprovalDmms: false, isApprovalKttc: false };
 
     /*
      * Xác định quyền lãnh đạo theo 2 nguồn:
@@ -414,12 +618,6 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
      *    - require.check.level1 / require.check.level2
      *    - user.approver.final
      */
-    // Không tái phân công ở bước tạo mới.
-    var isPaymentCreationPhase =
-            !phase ||
-            phase === "start" ||
-            (role === "dmms" && phase === "initial_dmms") ||
-            (role === "kttc" && phase === "initial_kttc");
     /*
      * Tái phân công: ai có Functional Right Phê duyệt ĐMMS (0005) / Phê duyệt
      * KTTC (0006) đều được tái phân công, kể cả khi không nằm trong luồng phiếu
@@ -509,6 +707,11 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
         // Quyền lãnh đạo.
         isApprovalDmms: isApprovalDmms,
         isApprovalKttc: isApprovalKttc,
+        leaderChecked: needLeaderCheck && !requiredLeaderRights,
+        leaderRights: {
+            isApprovalDmms: leaderAccess.isApprovalDmms === true,
+            isApprovalKttc: leaderAccess.isApprovalKttc === true
+        },
 
         // Cho phép lãnh đạo nhìn dữ liệu sớm.
         canViewEarly:
@@ -520,33 +723,22 @@ function getPaymentApprovalAccess(payment, currentUser, resolvedIdentity, rightP
     };
 }
 
-function resolvePaymentApprovalContactId(currentUser) {
+function resolvePaymentApprovalContactId(currentUser, resolvedIdentity) {
     var actor = String(currentUser || "").trim();
-    var contact = null;
-    try {
-        contact = new SCFile("contacts", SCFILE_READONLY);
-        contact.setFields(["contact.name"]);
-        if (!actor) {
-            throw new Error("Không tìm thấy contact của user đăng nhập để kiểm tra phân quyền dữ liệu.");
-        }
-        var rc = contact.doSelect('contact.name="' + escapeSmQueryValue(actor) + '"');
-        if (rc !== RC_SUCCESS) {
-            rc = contact.doSelect('tolower(contact.name)="' + escapeSmQueryValue(actor.toLowerCase()) + '"');
-        }
-        if (rc !== RC_SUCCESS) {
-            throw new Error("Không tìm thấy contact của user đăng nhập để kiểm tra phân quyền dữ liệu.");
-        }
-        var contactId = String(contact["contact.name"] || "").trim();
-        if (!contactId || contact.getNext() === RC_SUCCESS) {
-            throw new Error("Không xác định được duy nhất contact của user đăng nhập.");
-        }
-        return contactId;
-    } finally {
-        if (contact) contact.doClose();
+    if (!actor) {
+        throw new Error("Không tìm thấy contact của user đăng nhập để kiểm tra phân quyền dữ liệu.");
     }
+    var record = resolvePaymentApprovalContactRecord(actor, resolvedIdentity);
+    if (!record.found) {
+        throw new Error("Không tìm thấy contact của user đăng nhập để kiểm tra phân quyền dữ liệu.");
+    }
+    if (!record.unique || !record.contactName) {
+        throw new Error("Không xác định được duy nhất contact của user đăng nhập.");
+    }
+    return record.contactName;
 }
 
-function getPaymentApprovalInitData(payment, currentUser, rightPrefix, isFromHK) {
+function getPaymentApprovalInitData(payment, currentUser, rightPrefix, isFromHK, precomputedAccess, resolvedIdentity) {
     var fields = getPaymentApprovalFields();
     var values = {};
     var selectedOptions = {};
@@ -580,8 +772,8 @@ function getPaymentApprovalInitData(payment, currentUser, rightPrefix, isFromHK)
     }
     values["require.check.level1"] = String(payment["require.check.level1"]) === "true";
     values["require.check.level2"] = String(payment["require.check.level2"]) === "true";
-    var approvalAccess = getPaymentApprovalAccess(
-            payment, currentUser, null, rightPrefix || getPaymentApprovalRightPrefix(payment)
+    var approvalAccess = precomputedAccess || getPaymentApprovalAccess(
+            payment, currentUser, resolvedIdentity || null, rightPrefix || getPaymentApprovalRightPrefix(payment)
     );
     if (isFromHK === true) {
         approvalAccess.canEditLevel1 = false;
@@ -649,6 +841,7 @@ function getPaymentApprovalData(details) {
                 "esdHTKTpayment",
                 SCFILE_READONLY
         );
+        payment.setFields(getPaymentApprovalReadFields());
 
         if (
                 payment.doSelect(
@@ -666,6 +859,8 @@ function getPaymentApprovalData(details) {
             return { success: false, code: "PAYMENT_APPROVAL_SCOPE_DENIED",
                 message: "Bạn không có quyền dữ liệu đối với hồ sơ Dự chi." };
         }
+        var resolvedIdentity = {};
+        var precomputedAccess = null;
         if (isDuChiPaymentApprovalRecord(paymentId) && !isDuChiPostAudit) {
             var actor = currentUser.toLowerCase();
             var relatedFields = ["created.by"].concat(getPaymentApprovalFields());
@@ -677,15 +872,18 @@ function getPaymentApprovalData(details) {
                 }
             }
             if (!related) {
-                var dcAccess = getDuChiApprovalAccess(payment, currentUser, {});
+                var dcAccess = getDuChiApprovalAccess(payment, currentUser, resolvedIdentity);
+                precomputedAccess = dcAccess;
                 if (!dcAccess.canViewEarly) {
                     return { success: false, code: "PAYMENT_APPROVAL_FORBIDDEN",
                         message: "Bạn không có quyền xem thông tin phê duyệt Dự chi." };
                 }
                 var scopeField = dcAccess.isApprovalKttc ?
                         "user.approver.kttc" : "user.approver.dmms";
+                var permissionContactId = resolvePaymentApprovalContactId(currentUser, resolvedIdentity);
                 var scopeResult = loadPaymentApprovalComboBoxesInternal(payment, scopeField, {
-                    currentUser: resolvePaymentApprovalContactId(currentUser),
+                    currentUser: permissionContactId,
+                    currentUserLv1: resolvedIdentity.lv1 || "",
                     page: 1, pageSize: 1, keyword: "",
                     rightPrefix: "0040040004", scopeOnly: true
                 });
@@ -703,7 +901,9 @@ function getPaymentApprovalData(details) {
                     payment,
                     currentUser,
                     "",
-                    details.isFromHK === true
+                    details.isFromHK === true,
+                    precomputedAccess,
+                    resolvedIdentity
             )
         };
 
@@ -790,7 +990,7 @@ function validateDuplicatePaymentApprovalUser(payment, currentField, newValue) {
     }
 }
 
-function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, reason, currentUser) {
+function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, reason, currentUser, precomputedLeadership, paymentRecord) {
     var payment = null;
 
     try {
@@ -825,7 +1025,7 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
             return;
         }
 
-        var leadership = getPaymentReassignmentRoleAccess(
+        var leadership = precomputedLeadership || getPaymentReassignmentRoleAccess(
                 safeCurrentUser,
                 null,
                 getPaymentApprovalRightPrefix(safePaymentId)
@@ -841,22 +1041,30 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
             return;
         }
 
-        payment = new SCFile("esdHTKTpayment", SCFILE_READONLY);
-        payment.setFields(["id", "initial.role", "transaction.type"]);
+        var initialRole = "";
+        var transactionType = "";
+        if (paymentRecord) {
+            initialRole = readPaymentApprovalValue(paymentRecord, "initial.role").toLowerCase();
+            transactionType = readPaymentApprovalValue(paymentRecord, "transaction.type").toLowerCase();
+        } else {
+            payment = new SCFile("esdHTKTpayment", SCFILE_READONLY);
+            payment.setFields(["id", "initial.role", "transaction.type"]);
 
-        if (
-                payment.doSelect(
-                        'id="' + escapeSmQueryValue(safePaymentId) + '"'
-                ) !== RC_SUCCESS
-        ) {
-            return;
+            if (
+                    payment.doSelect(
+                            'id="' + escapeSmQueryValue(safePaymentId) + '"'
+                    ) !== RC_SUCCESS
+            ) {
+                return;
+            }
+
+            initialRole = String(
+                    payment["initial.role"] == null ?
+                            "" :
+                            payment["initial.role"]
+            ).trim().toLowerCase();
+            transactionType = String(payment["transaction.type"] || "").trim().toLowerCase();
         }
-
-        var initialRole = String(
-                payment["initial.role"] == null ?
-                        "" :
-                        payment["initial.role"]
-        ).trim().toLowerCase();
 
         var canWriteReassignmentHistory = false;
 
@@ -890,7 +1098,6 @@ function createPaymentReassignmentHistory(paymentId, field, oldValue, newValue, 
             return;
         }
 
-        var transactionType = String(payment["transaction.type"] || "").trim().toLowerCase();
         var isExpense = transactionType
                 ? transactionType === "dự chi"
                 : safePaymentId.toUpperCase().indexOf("DC") === 0;
@@ -1003,6 +1210,9 @@ function runPaymentApprovalApi(details, save) {
             throw new Error("Thông tin phê duyệt không hợp lệ.");
         }
         payment = save ? new SCFile("esdHTKTpayment") : new SCFile("esdHTKTpayment", SCFILE_READONLY);
+        if (!save) {
+            payment.setFields(getPaymentApprovalReadFields());
+        }
         if (payment.doSelect('id="' + escapeSmQueryValue(paymentId) + '"') !== RC_SUCCESS) {
             throw new Error("Không tìm thấy phiếu thanh toán.");
         }
@@ -1017,7 +1227,8 @@ function runPaymentApprovalApi(details, save) {
                 payment,
                 currentUser,
                 resolvedIdentity,
-                rightPrefix
+                rightPrefix,
+                (!save || isCheckbox) ? { targetField: field, forFieldOnly: true } : null
         );
         if (timingStart) timingAccess = new Date().getTime();
         var apiEditable =
@@ -1064,21 +1275,24 @@ function runPaymentApprovalApi(details, save) {
         var pageSize = Math.max(1, Math.min(100, Math.floor(Number(details.pageSize) || 10)));
         var result;
         if (!save || (!isCheckbox && value)) {
-            var permissionContactId = resolvedIdentity.contactName || resolvePaymentApprovalContactId(currentUser);
+            var permissionContactId = resolvePaymentApprovalContactId(currentUser, resolvedIdentity);
             if (timingStart) timingIdentity = new Date().getTime();
             var loaded = save ? validatePaymentApprovalAssignee(payment, field, value, {
                 currentUser: permissionContactId,
+                currentUserLv1: resolvedIdentity.lv1 || "",
                 page: 1,
                 pageSize: 1,
-                keyword: ""
+                keyword: "",
+                rightPrefix: rightPrefix
             }) : loadPaymentApprovalComboBoxesInternal(payment, field, {
                 currentUser: permissionContactId,
+                currentUserLv1: resolvedIdentity.lv1 || "",
                 page: page,
                 pageSize: pageSize,
                 keyword: String(details.keyword || "").trim(),
-                    selectedId: "",
-                    rightPrefix: rightPrefix
-                });
+                selectedId: "",
+                rightPrefix: rightPrefix
+            });
             if (timingStart) timingOptions = new Date().getTime();
             if (!loaded.success) {
                 return {
@@ -1132,10 +1346,14 @@ function runPaymentApprovalApi(details, save) {
         var isSlaReassignment = !isDuChi && !isCheckbox && !!previousApprovalValue &&
                 previousApprovalValue !== value && !initialKttcSelection;
 
+        var precomputedLeaderRights = apiAccess && apiAccess.leaderChecked === true && apiAccess.leaderRights ?
+                apiAccess.leaderRights : null;
+
         if (isDuChi && !isCheckbox && previousApprovalValue &&
                 previousApprovalValue !== value && !isDuChiApprovalCreation(payment) &&
                 !initialKttcSelection) {
-            var dcRights = getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, "0040040004");
+            var dcRights = precomputedLeaderRights || getPaymentReassignmentRoleAccess(currentUser, resolvedIdentity, "0040040004");
+            precomputedLeaderRights = dcRights;
             var dmmsField = field === "user.checker.dmms" || field === "user.approver.dmms";
             var kttcField = field === "user.checker.kttc" ||
                     field === "user.approver.kttc" ||
@@ -1175,7 +1393,9 @@ function runPaymentApprovalApi(details, save) {
                     previousApprovalValue,
                     value,
                     details.reason,
-                    currentUser
+                    currentUser,
+                    precomputedLeaderRights,
+                    payment
             );
         }
 
@@ -1364,29 +1584,126 @@ function resolveHTKTApprovalDataDomain(targetLv1) {
         return result;
     }
 
-    var currentEntityCode = getHTKTApprovalActiveEntityCodeByPsCode(normalizedLv1);
-    if (currentEntityCode !== HEAD_OFFICE_OGL_SEG1) {
+    var entityFile = null;
+    var targetEntityCodes = [];
+    var seenTargetEntities = {};
+    var headOfficePsCodes = [];
+    var seenPsCodes = {};
+
+    try {
+        entityFile = new SCFile("esdDMentity", SCFILE_READONLY);
+        entityFile.setFields(["entity.code", "ps.code"]);
+
+        var rc = entityFile.doSelect(
+                '(ps.code="' + escapeSmQueryValue(normalizedLv1) +
+                '" or entity.code="' + HEAD_OFFICE_OGL_SEG1 +
+                '") and status="ACTIVE"'
+        );
+
+        while (rc === RC_SUCCESS) {
+            var rowEntityCode = String(entityFile["entity.code"] || "").trim();
+            var rowPsCode = normalizeHTKTApprovalUnitCode(entityFile["ps.code"]);
+
+            if (rowPsCode === normalizedLv1 && rowEntityCode && !seenTargetEntities[rowEntityCode]) {
+                seenTargetEntities[rowEntityCode] = true;
+                targetEntityCodes.push(rowEntityCode);
+            }
+
+            if (
+                    rowEntityCode === HEAD_OFFICE_OGL_SEG1 &&
+                    rowPsCode &&
+                    rowPsCode.indexOf(HEAD_OFFICE_PS_PREFIX) === 0 &&
+                    !seenPsCodes[rowPsCode]
+            ) {
+                seenPsCodes[rowPsCode] = true;
+                headOfficePsCodes.push(rowPsCode);
+            }
+
+            rc = entityFile.getNext();
+        }
+    } catch (e) {
+        return result;
+    } finally {
+        try { if (entityFile) entityFile.doClose(); } catch (closeError) {}
+    }
+
+    if (targetEntityCodes.length !== 1 || targetEntityCodes[0] !== HEAD_OFFICE_OGL_SEG1) {
         return result;
     }
 
-    var headOfficePsCodes = getHTKTApprovalActivePsCodesByEntityCode(
-            HEAD_OFFICE_OGL_SEG1,
-            HEAD_OFFICE_PS_PREFIX
-    );
-
-    if (!headOfficePsCodes.length) {
-        return result;
-    }
-
-    if (headOfficePsCodes.indexOf(normalizedLv1) < 0) {
+    if (!headOfficePsCodes.length || headOfficePsCodes.indexOf(normalizedLv1) < 0) {
         return result;
     }
 
     result.valid = true;
     result.type = "HEAD_OFFICE";
     result.entityCode = HEAD_OFFICE_OGL_SEG1;
-    result.allowedLv1List = uniqueStrings(headOfficePsCodes);
+    result.allowedLv1List = headOfficePsCodes;
     return result;
+}
+
+function readHTKTUserDataPermissionWithUnits(contactId, subModuleId) {
+    var safeContact = String(contactId == null ? "" : contactId).trim();
+    var safeSubModule = String(subModuleId == null ? "" : subModuleId).trim();
+    var out = {
+        scope: "",
+        permId: "",
+        units: []
+    };
+
+    if (!safeContact || !safeSubModule) return out;
+
+    var dpFile = null;
+    try {
+        dpFile = new SCFile("esdQTdataPermissions", SCFILE_READONLY);
+        dpFile.setFields(["id", "permission.scope"]);
+        var rc = dpFile.doSelect(
+                'contact.id="' + escapeSmQueryValue(safeContact) +
+                '" and sub.module="' + escapeSmQueryValue(safeSubModule) + '"'
+        );
+        if (rc !== RC_SUCCESS) return out;
+
+        out.scope = String(dpFile["permission.scope"] == null ? "" : dpFile["permission.scope"]).trim();
+        out.permId = String(dpFile["id"] == null ? "" : dpFile["id"]).trim();
+    } finally {
+        try { if (dpFile) dpFile.doClose(); } catch (eCloseDp) {}
+    }
+
+    if (!out.permId || out.scope === "QT_PQDL_01" || out.scope === "QT_PQDL_06") {
+        return out;
+    }
+
+    var joinFile = null;
+    var seenUnits = {};
+    try {
+        joinFile = new SCFile("esdjoinDatapermissionUnits", SCFILE_READONLY);
+        var sql =
+                "SELECT dpu.unit.id AS unitId, u.lv1.id AS unitLv1, u.level AS unitLevel, u.parent.id AS unitParent " +
+                "FROM esdjoinDatapermissionUnits dpu " +
+                "LEFT JOIN esdQTorgUnit u ON (dpu.unit.id = u.unit.id) " +
+                'WHERE dpu.status = "Dang hoat dong" ' +
+                'AND dpu.data.permission.id = "' + escapeSmQueryValue(out.permId) + '"';
+        var rcJoin = joinFile.doSelect(sql);
+        while (rcJoin === RC_SUCCESS) {
+            var rawUnitId = readSmJoinedField(joinFile, "unitId", "unit.id", 0);
+            var normalizedUnitId = normalizeHTKTApprovalUnitCode(rawUnitId);
+            if (normalizedUnitId && !seenUnits[normalizedUnitId]) {
+                seenUnits[normalizedUnitId] = true;
+                out.units.push({
+                    rawUnitId: rawUnitId,
+                    unitId: normalizedUnitId,
+                    unitLv1: normalizeHTKTApprovalUnitCode(readSmJoinedField(joinFile, "unitLv1", "lv1.id", 1)),
+                    unitLevel: readSmJoinedField(joinFile, "unitLevel", "level", 2),
+                    unitParent: normalizeHTKTApprovalUnitCode(readSmJoinedField(joinFile, "unitParent", "parent.id", 3))
+                });
+            }
+            rcJoin = joinFile.getNext();
+        }
+    } finally {
+        try { if (joinFile) joinFile.doClose(); } catch (eCloseJoin) {}
+    }
+
+    return out;
 }
 
 function getHTKTApprovalContactLv1(contactId) {
@@ -1412,157 +1729,173 @@ function getHTKTApprovalContactLv1(contactId) {
     }
 }
 
-function listContactsByRightsAndLv1(rightIds, targetLv1, subModuleId, resolvedDomain, keyword) {
-    var normalizedRights = rightIds || [];
+function listContactsWithDetailsByRightsAndLv1(rightIds, targetLv1, subModuleId, resolvedDomain, keyword) {
+    var emptyResult = {
+        ids: [],
+        detailsById: {},
+        timings: { rightsJoinMs: 0, dpUnitsMs: 0 }
+    };
+    var normalizedRights = uniqueStrings(rightIds || []);
     var domain = resolvedDomain || resolveHTKTApprovalDataDomain(targetLv1);
-    var allowedLv1List = domain.allowedLv1List || [];
+    var allowedLv1List = uniqueStrings(domain.allowedLv1List || []);
     if (!domain.valid || !allowedLv1List.length || !normalizedRights.length) {
-        return [];
+        return emptyResult;
     }
 
-    if (!lib.ESD_PERMS_RIGHTS || !lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter) {
-        return [];
-    }
-
-    // Functional Right + vị trí tổ chức phải nằm trong miền của hồ sơ.
-    var contacts = lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter(
-            normalizedRights, { "lv1.id": allowedLv1List }
-    ) || [];
-
-    if (contacts.toArray) contacts = contacts.toArray();
-    if (!contacts.length) return [];
-
+    var safeSubModule = String(subModuleId || "00401").trim();
     var normalizedKeyword = String(keyword == null ? "" : keyword).trim().toLowerCase();
-    if (normalizedKeyword) {
-        var keywordMatches = [];
-        for (var keywordOffset = 0; keywordOffset < contacts.length; keywordOffset += 100) {
-            var keywordConditions = [];
-            var keywordBatch = contacts.slice(keywordOffset, keywordOffset + 100);
-            for (var keywordIndex = 0; keywordIndex < keywordBatch.length; keywordIndex++) {
-                keywordConditions.push(
-                        'contact.name="' + escapeSmQueryValue(keywordBatch[keywordIndex]) + '"'
-                );
-            }
+    var rightClause = buildSmEqualsOrClause("jrp.rights.id", normalizedRights);
+    if (!rightClause) return emptyResult;
 
-            var keywordFile = null;
-            try {
-                keywordFile = new SCFile("contacts", SCFILE_READONLY);
-                keywordFile.setFields(["contact.name", "full.name", "position", "status"]);
-                var keywordRc = keywordFile.doSelect("(" + keywordConditions.join(" or ") + ")");
-                while (keywordRc === RC_SUCCESS) {
-                    var keywordContactId = String(keywordFile["contact.name"] || "").trim();
-                    var keywordStatus = String(keywordFile["status"] || "").trim();
-                    var keywordText = (
-                            keywordContactId + " " +
-                            String(keywordFile["full.name"] || "") + " " +
-                            String(keywordFile["position"] || "")
-                    ).toLowerCase();
-                    if (
-                            keywordContactId &&
-                            (!keywordStatus || keywordStatus === "Dang hoat dong") &&
-                            keywordText.indexOf(normalizedKeyword) >= 0
-                    ) {
-                        keywordMatches.push(keywordContactId);
-                    }
-                    keywordRc = keywordFile.getNext();
-                }
-            } finally {
-                try { if (keywordFile) keywordFile.doClose(); } catch (keywordCloseError) {}
-            }
-        }
-        contacts = uniqueStrings(keywordMatches);
-        if (!contacts.length) return [];
+    var allowedLv1Map = {};
+    for (var allowedIndex = 0; allowedIndex < allowedLv1List.length; allowedIndex++) {
+        var normalizedAllowedLv1 = normalizeHTKTApprovalUnitCode(allowedLv1List[allowedIndex]);
+        if (normalizedAllowedLv1) allowedLv1Map[normalizedAllowedLv1] = true;
     }
 
-    var permissionIds = [];
-    var contactByPermissionId = {};
+    var candidateIds = [];
+    var seenCandidates = {};
+    var keywordRejected = {};
+    var contactDetails = {};
     var acceptedContacts = {};
+    var pendingPermissionIds = [];
+    var seenPermissionIds = {};
+    var contactByPermissionId = {};
 
     var BATCH_SIZE = 100;
-    for (var contactOffset = 0; contactOffset < contacts.length; contactOffset += BATCH_SIZE) {
-        var contactConditions = [];
-        var contactBatch = contacts.slice(contactOffset, contactOffset + BATCH_SIZE);
-        for (var contactIndex = 0; contactIndex < contactBatch.length; contactIndex++) {
-            contactConditions.push(
-                    'contact.id="' + escapeSmQueryValue(contactBatch[contactIndex]) + '"'
-            );
-        }
+    var rightsJoinStart = new Date().getTime();
 
-        var permissionFile = null;
+    // Đẩy lọc lv1.id, functional rights và esdQTdataPermissions xuống DB trong 1 câu JOIN,
+    // đồng thời lấy luôn full.name + position để loại bỏ hoàn toàn bước đọc lại bảng contacts.
+    for (var lv1Offset = 0; lv1Offset < allowedLv1List.length; lv1Offset += BATCH_SIZE) {
+        var lv1Batch = allowedLv1List.slice(lv1Offset, lv1Offset + BATCH_SIZE);
+        var lv1Clause = buildSmEqualsOrClause("c.lv1.id", lv1Batch);
+        if (!lv1Clause) continue;
+
+        var joinFile = null;
         try {
-            permissionFile = new SCFile("esdQTdataPermissions", SCFILE_READONLY);
-            permissionFile.setFields(["id", "contact.id", "permission.scope"]);
-            var permissionRc = permissionFile.doSelect(
-                    "(" + contactConditions.join(" or ") + ")" +
-                    ' and sub.module="' + escapeSmQueryValue(subModuleId || "00401") + '"' +
-                    ' and permission.scope~="QT_PQDL_01"'
-            );
+            joinFile = new SCFile("contacts", SCFILE_READONLY);
+            var sql =
+                    "SELECT c.contact.name AS contactName, " +
+                    "c.full.name AS fullName, " +
+                    "c.position AS contactPosition, " +
+                    "dp.id AS permId, " +
+                    "dp.permission.scope AS permScope " +
+                    "FROM contacts c " +
+                    "JOIN esdjoinContactsPermissionGroup jcpg ON (jcpg.contact.id = c.contact.name) " +
+                    "JOIN esdQTpermissionGroup pg ON (pg.id = jcpg.permission.group.id) " +
+                    "JOIN esdjoinRightsPermission jrp ON (jrp.permission.group.id = pg.id) " +
+                    "JOIN esdQTdataPermissions dp ON (dp.contact.id = c.contact.name) " +
+                    'WHERE c.status = "Dang hoat dong" ' +
+                    "AND " + lv1Clause + " " +
+                    'AND pg.status = "Dang hoat dong" ' +
+                    "AND (pg.start.date <= tod() OR pg.start.date = NULL) " +
+                    "AND (pg.end.date >= tod() OR pg.end.date = NULL) " +
+                    "AND (jcpg.start.date <= tod() OR jcpg.start.date = NULL) " +
+                    "AND (jcpg.end.date >= tod() OR jcpg.end.date = NULL) " +
+                    "AND " + rightClause + " " +
+                    'AND dp.sub.module = "' + escapeSmQueryValue(safeSubModule) + '" ' +
+                    'AND dp.permission.scope ~= "QT_PQDL_01"';
 
-            while (permissionRc === RC_SUCCESS) {
-                var permissionId = String(permissionFile["id"] == null ? "" : permissionFile["id"]).trim();
-                var contactId = String(permissionFile["contact.id"] == null ? "" : permissionFile["contact.id"]).trim();
-                var scope = String(permissionFile["permission.scope"] == null ? "" : permissionFile["permission.scope"]).trim();
+            var joinRc = joinFile.doSelect(sql);
+            while (joinRc === RC_SUCCESS) {
+                var contactId = readSmJoinedField(joinFile, "contactName", "contact.name", 0);
+                var fullName = readSmJoinedField(joinFile, "fullName", "full.name", 1);
+                var position = readSmJoinedField(joinFile, "contactPosition", "position", 2);
+                var permId = readSmJoinedField(joinFile, "permId", "id", 3);
+                var permScope = readSmJoinedField(joinFile, "permScope", "permission.scope", 4);
 
-                if (permissionId && contactId && scope !== "QT_PQDL_01") {
-                    if (scope === "QT_PQDL_06") {
-                        if (domain.type === "HEAD_OFFICE") acceptedContacts[contactId] = true;
-                    } else {
-                        permissionIds.push(permissionId);
-                        contactByPermissionId[permissionId] = contactId;
+                if (contactId) {
+                    if (!seenCandidates[contactId]) {
+                        seenCandidates[contactId] = true;
+                        candidateIds.push(contactId);
+                        contactDetails[contactId] = {
+                            id: contactId,
+                            fullName: fullName,
+                            position: position
+                        };
+
+                        if (normalizedKeyword) {
+                            var displayText = (contactId + " " + (fullName || contactId) + (position ? " - " + position : "")).toLowerCase();
+                            var rawText = (contactId + " " + fullName + " " + position).toLowerCase();
+                            if (displayText.indexOf(normalizedKeyword) < 0 && rawText.indexOf(normalizedKeyword) < 0) {
+                                keywordRejected[contactId] = true;
+                            }
+                        }
+                    }
+
+                    if (!keywordRejected[contactId] && permId && permScope !== "QT_PQDL_01") {
+                        if (permScope === "QT_PQDL_06") {
+                            if (domain.type === "HEAD_OFFICE") {
+                                acceptedContacts[contactId] = true;
+                            }
+                        } else if (!seenPermissionIds[permId]) {
+                            seenPermissionIds[permId] = true;
+                            pendingPermissionIds.push(permId);
+                            contactByPermissionId[permId] = contactId;
+                        }
                     }
                 }
-                permissionRc = permissionFile.getNext();
+
+                joinRc = joinFile.getNext();
             }
         } finally {
-            try { if (permissionFile) permissionFile.doClose(); } catch (permissionCloseError) {}
+            try { if (joinFile) joinFile.doClose(); } catch (joinCloseError) {}
         }
     }
 
-    permissionIds = uniqueStrings(permissionIds);
+    var rightsJoinMs = new Date().getTime() - rightsJoinStart;
 
-    // Chỉ đọc các unit thực sự được gán cho permission của candidate. Cách cũ
-    // quét toàn bộ cây đơn vị của LV1 rồi tạo một câu OR rất dài ở mỗi lần mở list.
-    if (permissionIds.length) {
-        var allowedLv1Map = {};
-        var permissionUnitRows = [];
-        var unresolvedUnitIds = [];
-        var seenUnitIds = {};
-        var unitLv1Map = {};
-
-        for (var allowedIndex = 0; allowedIndex < allowedLv1List.length; allowedIndex++) {
-            var normalizedAllowedLv1 = normalizeHTKTApprovalUnitCode(allowedLv1List[allowedIndex]);
-            if (normalizedAllowedLv1) allowedLv1Map[normalizedAllowedLv1] = true;
+    var permissionIds = [];
+    for (var pIndex = 0; pIndex < pendingPermissionIds.length; pIndex++) {
+        var pendingPermId = pendingPermissionIds[pIndex];
+        var ownerContactId = contactByPermissionId[pendingPermId];
+        if (ownerContactId && !acceptedContacts[ownerContactId]) {
+            permissionIds.push(pendingPermId);
         }
+    }
+
+    var dpUnitsStart = new Date().getTime();
+
+    // Chỉ đọc unit của các permission chưa được chấp nhận qua QT_PQDL_06,
+    // LEFT JOIN esdQTorgUnit ngay trong DB để lấy lv1.id trong 1 lượt.
+    if (permissionIds.length) {
+        var fallbackRows = [];
+        var fallbackUnitIds = [];
+        var seenFallbackUnits = {};
 
         for (var offset = 0; offset < permissionIds.length; offset += BATCH_SIZE) {
-            var permissionConditions = [];
             var permissionBatch = permissionIds.slice(offset, offset + BATCH_SIZE);
-            for (var permissionIndex = 0; permissionIndex < permissionBatch.length; permissionIndex++) {
-                permissionConditions.push(
-                        'data.permission.id="' + escapeSmQueryValue(permissionBatch[permissionIndex]) + '"'
-                );
-            }
+            var permClause = buildSmEqualsOrClause("dpu.data.permission.id", permissionBatch);
+            if (!permClause) continue;
 
             var unitFile = null;
             try {
                 unitFile = new SCFile("esdjoinDatapermissionUnits", SCFILE_READONLY);
-                unitFile.setFields(["data.permission.id", "unit.id", "status"]);
-                var unitRc = unitFile.doSelect(
-                        "(" + permissionConditions.join(" or ") + ') and status="Dang hoat dong"'
-                );
+                var unitSql =
+                        "SELECT dpu.data.permission.id AS permId, dpu.unit.id AS unitId, u.lv1.id AS unitLv1 " +
+                        "FROM esdjoinDatapermissionUnits dpu " +
+                        "LEFT JOIN esdQTorgUnit u ON (dpu.unit.id = u.unit.id) " +
+                        'WHERE dpu.status = "Dang hoat dong" ' +
+                        "AND " + permClause;
+                var unitRc = unitFile.doSelect(unitSql);
 
                 while (unitRc === RC_SUCCESS) {
-                    var mappedPermissionId = String(
-                            unitFile["data.permission.id"] || unitFile.data_permission_id || ""
-                    ).trim();
-                    var mappedUnitId = normalizeHTKTApprovalUnitCode(unitFile["unit.id"]);
-                    if (mappedPermissionId && mappedUnitId) {
-                        permissionUnitRows.push({ permissionId: mappedPermissionId, unitId: mappedUnitId });
-                        if (allowedLv1Map[mappedUnitId]) {
-                            unitLv1Map[mappedUnitId] = mappedUnitId;
-                        } else if (!seenUnitIds[mappedUnitId]) {
-                            seenUnitIds[mappedUnitId] = true;
-                            unresolvedUnitIds.push(mappedUnitId);
+                    var mappedPermissionId = readSmJoinedField(unitFile, "permId", "data.permission.id", 0);
+                    var rawUnitId = readSmJoinedField(unitFile, "unitId", "unit.id", 1);
+                    var mappedUnitId = normalizeHTKTApprovalUnitCode(rawUnitId);
+                    var mappedUnitLv1 = normalizeHTKTApprovalUnitCode(readSmJoinedField(unitFile, "unitLv1", "lv1.id", 2));
+                    var mappedContactId = contactByPermissionId[mappedPermissionId];
+
+                    if (mappedContactId && !acceptedContacts[mappedContactId] && mappedUnitId) {
+                        if (allowedLv1Map[mappedUnitId] || (mappedUnitLv1 && allowedLv1Map[mappedUnitLv1])) {
+                            acceptedContacts[mappedContactId] = true;
+                        } else if (!mappedUnitLv1 && rawUnitId !== mappedUnitId) {
+                            fallbackRows.push({ contactId: mappedContactId, unitId: mappedUnitId });
+                            if (!seenFallbackUnits[mappedUnitId]) {
+                                seenFallbackUnits[mappedUnitId] = true;
+                                fallbackUnitIds.push(mappedUnitId);
+                            }
                         }
                     }
                     unitRc = unitFile.getNext();
@@ -1572,48 +1905,65 @@ function listContactsByRightsAndLv1(rightIds, targetLv1, subModuleId, resolvedDo
             }
         }
 
-        for (var unitOffset = 0; unitOffset < unresolvedUnitIds.length; unitOffset += BATCH_SIZE) {
-            var orgConditions = [];
-            var unitBatch = unresolvedUnitIds.slice(unitOffset, unitOffset + BATCH_SIZE);
-            for (var unitIndex = 0; unitIndex < unitBatch.length; unitIndex++) {
-                orgConditions.push('unit.id="' + escapeSmQueryValue(unitBatch[unitIndex]) + '"');
-            }
+        if (fallbackUnitIds.length) {
+            var unitLv1Map = {};
+            for (var unitOffset = 0; unitOffset < fallbackUnitIds.length; unitOffset += BATCH_SIZE) {
+                var unitBatch = fallbackUnitIds.slice(unitOffset, unitOffset + BATCH_SIZE);
+                var orgClause = buildSmEqualsOrClause("unit.id", unitBatch);
+                if (!orgClause) continue;
 
-            var orgFile = null;
-            try {
-                orgFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
-                orgFile.setFields(["unit.id", "lv1.id"]);
-                var orgRc = orgFile.doSelect("(" + orgConditions.join(" or ") + ")");
-                while (orgRc === RC_SUCCESS) {
-                    var orgUnitId = normalizeHTKTApprovalUnitCode(orgFile["unit.id"]);
-                    var orgLv1Id = normalizeHTKTApprovalUnitCode(orgFile["lv1.id"]);
-                    if (orgUnitId && orgLv1Id) unitLv1Map[orgUnitId] = orgLv1Id;
-                    orgRc = orgFile.getNext();
+                var orgFile = null;
+                try {
+                    orgFile = new SCFile("esdQTorgUnit", SCFILE_READONLY);
+                    orgFile.setFields(["unit.id", "lv1.id"]);
+                    var orgRc = orgFile.doSelect(orgClause);
+                    while (orgRc === RC_SUCCESS) {
+                        var orgUnitId = normalizeHTKTApprovalUnitCode(orgFile["unit.id"]);
+                        var orgLv1Id = normalizeHTKTApprovalUnitCode(orgFile["lv1.id"]);
+                        if (orgUnitId && orgLv1Id) unitLv1Map[orgUnitId] = orgLv1Id;
+                        orgRc = orgFile.getNext();
+                    }
+                } finally {
+                    try { if (orgFile) orgFile.doClose(); } catch (orgCloseError) {}
                 }
-            } finally {
-                try { if (orgFile) orgFile.doClose(); } catch (orgCloseError) {}
             }
-        }
 
-        for (var rowIndex = 0; rowIndex < permissionUnitRows.length; rowIndex++) {
-            var permissionUnit = permissionUnitRows[rowIndex];
-            var mappedLv1 = unitLv1Map[permissionUnit.unitId];
-            if (mappedLv1 && allowedLv1Map[mappedLv1]) {
-                var mappedContactId = contactByPermissionId[permissionUnit.permissionId];
-                if (mappedContactId) acceptedContacts[mappedContactId] = true;
+            for (var fbIndex = 0; fbIndex < fallbackRows.length; fbIndex++) {
+                var fbRow = fallbackRows[fbIndex];
+                var fbLv1 = unitLv1Map[fbRow.unitId];
+                if (fbLv1 && allowedLv1Map[fbLv1]) {
+                    acceptedContacts[fbRow.contactId] = true;
+                }
             }
         }
     }
 
-    var result = [];
-    for (var resultIndex = 0; resultIndex < contacts.length; resultIndex++) {
-        var resultContactId = String(contacts[resultIndex] == null ? "" : contacts[resultIndex]).trim();
+    var dpUnitsMs = new Date().getTime() - dpUnitsStart;
+
+    var resultIds = [];
+    var acceptedDetails = {};
+    for (var resultIndex = 0; resultIndex < candidateIds.length; resultIndex++) {
+        var resultContactId = candidateIds[resultIndex];
         if (resultContactId && acceptedContacts[resultContactId]) {
-            result.push(resultContactId);
+            resultIds.push(resultContactId);
+            acceptedDetails[resultContactId] = contactDetails[resultContactId];
         }
     }
 
-    return uniqueStrings(result);
+    return {
+        ids: resultIds,
+        detailsById: acceptedDetails,
+        timings: {
+            rightsJoinMs: rightsJoinMs,
+            dpUnitsMs: dpUnitsMs
+        }
+    };
+}
+
+function listContactsByRightsAndLv1(rightIds, targetLv1, subModuleId, resolvedDomain, keyword) {
+    return listContactsWithDetailsByRightsAndLv1(
+            rightIds, targetLv1, subModuleId, resolvedDomain, keyword
+    ).ids;
 }
 
 function uniqueStrings(source) {
@@ -1873,57 +2223,77 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
 
         try {
             var domain = resolvedTargetDomain || resolveHTKTApprovalDataDomain(targetLv1);
-            var allowedLv1List = domain.allowedLv1List || [];
+            var allowedLv1List = uniqueStrings(domain.allowedLv1List || []);
             if (!domain.valid || !allowedLv1List.length) {
                 validation.message = "Không xác định được miền dữ liệu hợp lệ của hồ sơ.";
                 return validation;
             }
-            if (!lib.ESD_PERMS_RIGHTS || !lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter) {
-                validation.message = "Không tải được thư viện phân quyền.";
+            var safeRights = normalizeArray(config.seedRights);
+            if (!safeRights.length) {
+                validation.message = "Không xác định được quyền phê duyệt cần kiểm tra.";
                 return validation;
             }
 
-            var matchedContacts = lib.ESD_PERMS_RIGHTS.listContactsByRightsAndFilter(
-                    config.seedRights,
-                    {
-                        "lv1.id": allowedLv1List,
-                        "contact.name": [normalizedSelectedId]
+            var rightClause = buildSmEqualsOrClause("jrp.rights.id", safeRights);
+            var permissionIds = [];
+            var seenPermIds = {};
+            var matchedAny = false;
+            var BATCH_SIZE = 100;
+
+            for (var lv1Offset = 0; lv1Offset < allowedLv1List.length; lv1Offset += BATCH_SIZE) {
+                var lv1Batch = allowedLv1List.slice(lv1Offset, lv1Offset + BATCH_SIZE);
+                var lv1Clause = buildSmEqualsOrClause("c.lv1.id", lv1Batch);
+                if (!lv1Clause) continue;
+
+                var candidateFile = null;
+                try {
+                    candidateFile = new SCFile("contacts", SCFILE_READONLY);
+                    var candidateSql =
+                            "SELECT dp.id AS permId, dp.permission.scope AS permScope " +
+                            "FROM contacts c " +
+                            "JOIN esdjoinContactsPermissionGroup jcpg ON (jcpg.contact.id = c.contact.name) " +
+                            "JOIN esdQTpermissionGroup pg ON (pg.id = jcpg.permission.group.id) " +
+                            "JOIN esdjoinRightsPermission jrp ON (jrp.permission.group.id = pg.id) " +
+                            "JOIN esdQTdataPermissions dp ON (dp.contact.id = c.contact.name) " +
+                            'WHERE c.contact.name = "' + escapeSmQueryValue(normalizedSelectedId) + '" ' +
+                            'AND c.status = "Dang hoat dong" ' +
+                            "AND " + lv1Clause + " " +
+                            'AND pg.status = "Dang hoat dong" ' +
+                            "AND (pg.start.date <= tod() OR pg.start.date = NULL) " +
+                            "AND (pg.end.date >= tod() OR pg.end.date = NULL) " +
+                            "AND (jcpg.start.date <= tod() OR jcpg.start.date = NULL) " +
+                            "AND (jcpg.end.date >= tod() OR jcpg.end.date = NULL) " +
+                            "AND " + rightClause + " " +
+                            'AND dp.sub.module = "' + escapeSmQueryValue(HTKT_SUB_MODULE) + '" ' +
+                            'AND dp.permission.scope ~= "QT_PQDL_01"';
+                    var candidateRc = candidateFile.doSelect(candidateSql);
+                    while (candidateRc === RC_SUCCESS) {
+                        matchedAny = true;
+                        var permissionId = readSmJoinedField(candidateFile, "permId", "id", 0);
+                        var scope = readSmJoinedField(candidateFile, "permScope", "permission.scope", 1);
+                        if (scope === "QT_PQDL_06" && domain.type === "HEAD_OFFICE") {
+                            validation.valid = true;
+                            validation.message = "Cán bộ hợp lệ.";
+                            return validation;
+                        }
+                        if (permissionId && scope !== "QT_PQDL_01" && scope !== "QT_PQDL_06" && !seenPermIds[permissionId]) {
+                            seenPermIds[permissionId] = true;
+                            permissionIds.push(permissionId);
+                        }
+                        candidateRc = candidateFile.getNext();
                     }
-            ) || [];
-            if (matchedContacts.toArray) matchedContacts = matchedContacts.toArray();
-            if (normalizeArray(matchedContacts).indexOf(normalizedSelectedId) < 0) {
+                } finally {
+                    try { if (candidateFile) candidateFile.doClose(); } catch (candidateCloseError) {}
+                }
+
+                if (matchedAny) break;
+            }
+
+            if (!matchedAny) {
                 validation.message = "Cán bộ không có đúng quyền hoặc không thuộc miền của hồ sơ.";
                 return validation;
             }
 
-            var permissionIds = [];
-            var permissionFile = null;
-            try {
-                permissionFile = new SCFile("esdQTdataPermissions", SCFILE_READONLY);
-                permissionFile.setFields(["id", "permission.scope"]);
-                var permissionRc = permissionFile.doSelect(
-                        'contact.id="' + escapeQueryValue(normalizedSelectedId) + '"' +
-                        ' and sub.module="' + escapeQueryValue(HTKT_SUB_MODULE) + '"' +
-                        ' and permission.scope~="QT_PQDL_01"'
-                );
-                while (permissionRc === RC_SUCCESS) {
-                    var permissionId = normalizeValue(permissionFile["id"]);
-                    var scope = normalizeValue(permissionFile["permission.scope"]);
-                    if (scope === "QT_PQDL_06" && domain.type === "HEAD_OFFICE") {
-                        validation.valid = true;
-                        validation.message = "Cán bộ hợp lệ.";
-                        return validation;
-                    }
-                    if (permissionId && scope !== "QT_PQDL_01" && scope !== "QT_PQDL_06") {
-                        permissionIds.push(permissionId);
-                    }
-                    permissionRc = permissionFile.getNext();
-                }
-            } finally {
-                try { if (permissionFile) permissionFile.doClose(); } catch (permissionCloseError) {}
-            }
-
-            permissionIds = normalizeArray(permissionIds);
             if (!permissionIds.length) {
                 validation.message = "Cán bộ không có phân quyền dữ liệu phù hợp.";
                 return validation;
@@ -1935,30 +2305,49 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
                 if (allowedLv1) allowedLv1Map[allowedLv1] = true;
             }
 
-            var BATCH_SIZE = 100;
             for (var offset = 0; offset < permissionIds.length; offset += BATCH_SIZE) {
-                var permissionConditions = [];
                 var permissionBatch = permissionIds.slice(offset, offset + BATCH_SIZE);
-                for (var permissionIndex = 0; permissionIndex < permissionBatch.length; permissionIndex++) {
-                    permissionConditions.push(
-                            'data.permission.id="' + escapeQueryValue(permissionBatch[permissionIndex]) + '"'
-                    );
-                }
+                var permClause = buildSmEqualsOrClause("dpu.data.permission.id", permissionBatch);
+                if (!permClause) continue;
 
                 var unitFile = null;
                 try {
                     unitFile = new SCFile("esdjoinDatapermissionUnits", SCFILE_READONLY);
-                    unitFile.setFields(["unit.id", "status"]);
-                    var unitRc = unitFile.doSelect(
-                            "(" + permissionConditions.join(" or ") + ') and status="Dang hoat dong"'
-                    );
+                    var unitSql =
+                            "SELECT dpu.unit.id AS unitId, u.lv1.id AS unitLv1, u.level AS unitLevel, u.parent.id AS unitParent " +
+                            "FROM esdjoinDatapermissionUnits dpu " +
+                            "LEFT JOIN esdQTorgUnit u ON (dpu.unit.id = u.unit.id) " +
+                            'WHERE dpu.status = "Dang hoat dong" ' +
+                            "AND " + permClause;
+                    var unitRc = unitFile.doSelect(unitSql);
                     while (unitRc === RC_SUCCESS) {
-                        var unitId = normalizeUnitCode(unitFile["unit.id"]);
-                        var unitLv1 = allowedLv1Map[unitId] ? unitId : resolveLv1FromUnit(unitId);
-                        if (unitLv1 && allowedLv1Map[unitLv1]) {
-                            validation.valid = true;
-                            validation.message = "Cán bộ hợp lệ.";
-                            return validation;
+                        var rawUnitId = readSmJoinedField(unitFile, "unitId", "unit.id", 0);
+                        var unitId = normalizeUnitCode(rawUnitId);
+                        if (unitId) {
+                            var unitLv1 = "";
+                            if (allowedLv1Map[unitId]) {
+                                unitLv1 = unitId;
+                            } else {
+                                var joinedLevel = readSmJoinedField(unitFile, "unitLevel", "level", 2);
+                                var joinedLv1 = normalizeUnitCode(readSmJoinedField(unitFile, "unitLv1", "lv1.id", 1));
+                                var joinedParent = normalizeUnitCode(readSmJoinedField(unitFile, "unitParent", "parent.id", 3));
+                                if (joinedLevel && isLevel1(joinedLevel)) {
+                                    unitLv1 = unitId;
+                                } else if (joinedLv1) {
+                                    unitLv1 = joinedLv1;
+                                } else if (joinedParent) {
+                                    unitLv1 = resolveLv1FromUnit(joinedParent);
+                                } else if (rawUnitId !== unitId) {
+                                    unitLv1 = resolveLv1FromUnit(unitId);
+                                } else {
+                                    unitLv1 = unitId;
+                                }
+                            }
+                            if (unitLv1 && allowedLv1Map[unitLv1]) {
+                                validation.valid = true;
+                                validation.message = "Cán bộ hợp lệ.";
+                                return validation;
+                            }
                         }
                         unitRc = unitFile.getNext();
                     }
@@ -2014,7 +2403,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             var candidateStartedAt = apiOptions && !apiOptions.selectedId ? new Date().getTime() : 0;
             if (selectedOnly) {
                 selectedId = normalizeValue(safeFileGet(file, [config.saveField]));
-                contactIds = { ids: selectedId ? [selectedId] : [], poolCount: 0, rejectedCount: 0 };
+                contactIds = { ids: selectedId ? [selectedId] : [], detailsById: null, poolCount: 0, rejectedCount: 0 };
             } else {
                 contactIds = getContactsForRoleInLv1(config, targetLv1);
             }
@@ -2023,16 +2412,26 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             result.debug.poolCount = contactIds.poolCount;
             result.debug.rejectedCount = contactIds.rejectedCount;
 
-            var comboData = apiOptions ?
-                    readContactPage(contactIds.ids, apiOptions) :
-                    readContactData(contactIds.ids, selectedOnly);
+            var comboData;
+            if (apiOptions) {
+                comboData = contactIds.detailsById ?
+                        buildContactPageFromDetails(contactIds.ids, contactIds.detailsById, apiOptions) :
+                        readContactPage(contactIds.ids, apiOptions);
+            } else {
+                comboData = contactIds.detailsById ?
+                        buildContactDataFromDetails(contactIds.ids, contactIds.detailsById) :
+                        readContactData(contactIds.ids, selectedOnly);
+            }
             if (candidateStartedAt) {
                 try {
+                    var stepTimings = contactIds.timings || {};
                     print(
                             "[PAY_APR][LIST_TIMING] field=" + config.saveField +
                             " candidates=" + (candidateFinishedAt - candidateStartedAt) + "ms" +
                             " labels=" + (new Date().getTime() - candidateFinishedAt) + "ms" +
-                            " pool=" + contactIds.ids.length
+                            " pool=" + contactIds.ids.length +
+                            " rightsJoin=" + (typeof stepTimings.rightsJoinMs === "number" ? stepTimings.rightsJoinMs : -1) + "ms" +
+                            " dpUnits=" + (typeof stepTimings.dpUnitsMs === "number" ? stepTimings.dpUnitsMs : -1) + "ms"
                     );
                 } catch (timingError) {}
             }
@@ -2079,14 +2478,85 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
     }
 
     function getContactsForRoleInLv1(config, targetLv1) {
-        var ids = normalizeArray(listContactsByRightsAndLv1(
+        var loaded = listContactsWithDetailsByRightsAndLv1(
                 config.seedRights,
                 targetLv1,
                 HTKT_SUB_MODULE,
                 resolvedTargetDomain,
                 apiOptions ? apiOptions.keyword : ""
-        ));
-        return { ids: ids, poolCount: ids.length, rejectedCount: 0 };
+        );
+        var ids = normalizeArray(loaded.ids);
+        return {
+            ids: ids,
+            detailsById: loaded.detailsById || {},
+            timings: loaded.timings || {},
+            poolCount: ids.length,
+            rejectedCount: 0
+        };
+    }
+
+    function formatContactDisplay(contactId, fullName, position) {
+        var safeName = normalizeValue(fullName) || contactId;
+        var safePosition = normalizeValue(position);
+        return safeName + (safePosition ? " - " + safePosition : "");
+    }
+
+    function buildContactPageFromDetails(contactIds, detailsById, options) {
+        var ids = normalizeArray(contactIds).sort();
+        if (options.selectedId) {
+            ids = ids.indexOf(options.selectedId) >= 0 ? [options.selectedId] : [];
+        }
+        var result = { ids: [], names: [], hasMore: false };
+        var skip = (options.page - 1) * options.pageSize;
+        var matched = 0;
+        var keyword = normalizeValue(options.keyword).toLowerCase();
+        for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            var detail = detailsById[id] || { id: id, fullName: "", position: "" };
+            var display = formatContactDisplay(id, detail.fullName, detail.position);
+            var rawText = (id + " " + normalizeValue(detail.fullName) + " " + normalizeValue(detail.position)).toLowerCase();
+            if (
+                    !keyword ||
+                    (id + " " + display).toLowerCase().indexOf(keyword) >= 0 ||
+                    rawText.indexOf(keyword) >= 0
+            ) {
+                if (matched++ >= skip) {
+                    if (result.ids.length === options.pageSize) {
+                        result.hasMore = true;
+                        return result;
+                    }
+                    result.ids.push(id);
+                    result.names.push(display);
+                }
+            }
+        }
+        return result;
+    }
+
+    function buildContactDataFromDetails(contactIds, detailsById) {
+        var ids = normalizeArray(contactIds);
+        var rows = [];
+        for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            var detail = detailsById[id] || { id: id, fullName: "", position: "" };
+            rows.push({
+                id: id,
+                display: formatContactDisplay(id, detail.fullName, detail.position)
+            });
+        }
+        rows.sort(function(a, b) {
+            var da = normalizeValue(a.display).toLowerCase();
+            var db = normalizeValue(b.display).toLowerCase();
+            if (da < db) return -1;
+            if (da > db) return 1;
+            return 0;
+        });
+        var data = { ids: [], names: [] };
+        for (var j = 0; j < rows.length; j++) {
+            data.ids.push(rows[j].id);
+            data.names.push(rows[j].display);
+        }
+        return data;
     }
 
     function readContactPage(contactIds, options) {
@@ -2177,40 +2647,46 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
         }
 
         var dp = null;
-
         try {
-            dp = lib.ESD_PERMS_RIGHTS.getUnitByDataPermissions(
-                    contactId,
-                    HTKT_SUB_MODULE
-            ) || {};
+            dp = readHTKTUserDataPermissionWithUnits(contactId, HTKT_SUB_MODULE);
         } catch (e) {
             result.message = String(e.message || e);
             return result;
         }
 
-        result.scope = normalizeValue(
-                dp.scope ||
-                dp.dataScopeList ||
-                dp["permission.scope"] ||
-                ""
-        );
+        result.scope = normalizeValue(dp && dp.scope ? dp.scope : "");
 
         if (!result.scope) {
             result.scope = "QT_PQDL_01";
         }
 
-        result.rawUnits = normalizeArray(
-                dp.unit ||
-                dp.arrUnitRights ||
-                dp.units || []
-        );
+        var unitEntries = dp && dp.units ? dp.units : [];
+        for (var uIndex = 0; uIndex < unitEntries.length; uIndex++) {
+            result.rawUnits.push(unitEntries[uIndex].unitId);
+        }
+
+        var allowedLv1Map = {};
+        for (var allowedIndex = 0; allowedIndex < targetDomain.allowedLv1List.length; allowedIndex++) {
+            var allowedLv1 = normalizeUnitCode(targetDomain.allowedLv1List[allowedIndex]);
+            if (allowedLv1) allowedLv1Map[allowedLv1] = true;
+        }
 
         if (result.scope === "QT_PQDL_06") {
             if (targetDomain.type === "HEAD_OFFICE") {
-                var currentUserLv1 = normalizeUnitCode(getHTKTApprovalContactLv1(contactId));
-                var currentUserDomain = resolveHTKTApprovalDataDomain(currentUserLv1);
+                var currentUserLv1 = (apiOptions && apiOptions.currentUser === contactId && apiOptions.currentUserLv1) ?
+                        normalizeUnitCode(apiOptions.currentUserLv1) :
+                        normalizeUnitCode(getHTKTApprovalContactLv1(contactId));
 
-                if (currentUserDomain.valid && currentUserDomain.type === "HEAD_OFFICE") {
+                var isHeadOfficeUser = false;
+                if (currentUserLv1) {
+                    if (currentUserLv1 === targetLv1) {
+                        isHeadOfficeUser = true;
+                    } else if (allowedLv1Map[currentUserLv1]) {
+                        isHeadOfficeUser = getHTKTApprovalActiveEntityCodeByPsCode(currentUserLv1) === "1010098";
+                    }
+                }
+
+                if (isHeadOfficeUser) {
                     result.canAccessTargetLv1 = true;
                     result.resolvedLv1List = targetDomain.allowedLv1List.slice(0);
                     result.message = "User scope toàn hàng thuộc Trụ sở chính, được thao tác trong toàn miền Trụ sở chính.";
@@ -2236,23 +2712,32 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
             return result;
         }
 
-        if (result.rawUnits.length === 0) {
+        if (unitEntries.length === 0) {
             result.canAccessTargetLv1 = false;
             result.message = "User có scope đơn vị nhưng không có unit phân quyền dữ liệu.";
             return result;
         }
 
         var resolvedLv1Map = {};
-        var allowedLv1Map = {};
 
-        for (var allowedIndex = 0; allowedIndex < targetDomain.allowedLv1List.length; allowedIndex++) {
-            var allowedLv1 = normalizeUnitCode(targetDomain.allowedLv1List[allowedIndex]);
-            if (allowedLv1) allowedLv1Map[allowedLv1] = true;
-        }
+        for (var i = 0; i < unitEntries.length; i++) {
+            var unitEntry = unitEntries[i];
+            var rawUnit = unitEntry.unitId;
+            var currentLv1 = "";
 
-        for (var i = 0; i < result.rawUnits.length; i++) {
-            var rawUnit = normalizeUnitCode(result.rawUnits[i]);
-            var currentLv1 = rawUnit === targetLv1 ? rawUnit : resolveLv1FromUnit(rawUnit);
+            if (allowedLv1Map[rawUnit]) {
+                currentLv1 = rawUnit;
+            } else if (unitEntry.unitLevel && isLevel1(unitEntry.unitLevel)) {
+                currentLv1 = rawUnit;
+            } else if (unitEntry.unitLv1) {
+                currentLv1 = unitEntry.unitLv1;
+            } else if (unitEntry.unitParent) {
+                currentLv1 = resolveLv1FromUnit(unitEntry.unitParent);
+            } else if (unitEntry.rawUnitId !== rawUnit) {
+                currentLv1 = resolveLv1FromUnit(rawUnit);
+            } else {
+                currentLv1 = rawUnit;
+            }
 
             if (currentLv1 && !resolvedLv1Map[currentLv1]) {
                 resolvedLv1Map[currentLv1] = true;
@@ -2407,6 +2892,7 @@ function loadPaymentApprovalComboBoxesInternal(paymentFile, requestedField, apiO
 
         try {
             f = new SCFile("esdQTorgUnit", SCFILE_READONLY);
+            f.setFields(["id", "unit.id", "unit.name", "level", "status", "parent.id", "org.unit", "lv1.id"]);
             var rc = f.doSelect(
                     'unit.id="' + escapeQueryValue(unitCode) + '"'
             );

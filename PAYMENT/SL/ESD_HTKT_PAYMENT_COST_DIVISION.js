@@ -809,13 +809,12 @@ function getCostDivision(input) {
 
     var isExpense = isExpenseRequest(paymentId);
     var query = 'payment.id="' + escapeQueryValue(paymentId) + '"';
-    // Nếu là Dự chi (DC) và có refId (món dự chi) thì lọc theo ref.id
-    if (isExpense && refId) {
+    // Lọc theo ref.id (món dự chi hoặc dòng NCC+PO của thanh toán) và vendor.id
+    if (refId) {
         query += ' and ref.id="' + escapeQueryValue(refId) + '"';
-    } else if (vendorId) {
+    }
+    if (vendorId) {
         query += ' and vendor.id="' + escapeQueryValue(vendorId) + '"';
-    } else if (refId) {
-        query += ' and ref.id="' + escapeQueryValue(refId) + '"';
     }
 
     var f = new SCFile("esdHTKTpaymentCostDivision", SCFILE_READONLY);
@@ -1018,9 +1017,10 @@ function updateCostDivision(input) {
                     '" and id!="' +
                     escapeQueryValue(id) +
                     '"';
-            if (isExpense && targetRefId) {
+            if (targetRefId) {
                 dupQuery += ' and ref.id="' + escapeQueryValue(targetRefId) + '"';
-            } else if (!isExpense && targetVendorId) {
+            }
+            if (targetVendorId) {
                 dupQuery += ' and vendor.id="' + escapeQueryValue(targetVendorId) + '"';
             }
             var rcDup = fDup.doSelect(dupQuery);
@@ -1185,9 +1185,10 @@ function deleteCostDivision(input) {
             if (itemPaymentId) {
                 queryDel += ' and payment.id="' + escapeQueryValue(itemPaymentId) + '"';
             }
-            if (isExpense && itemRefId) {
+            if (itemRefId) {
                 queryDel += ' and ref.id="' + escapeQueryValue(itemRefId) + '"';
-            } else if (!isExpense && itemVendorId) {
+            }
+            if (itemVendorId) {
                 queryDel += ' and vendor.id="' + escapeQueryValue(itemVendorId) + '"';
             }
 
@@ -1702,9 +1703,10 @@ function validateSingleCostDivision(data) {
                 '" and account.number="' +
                 escapeQueryValue(accountNum) +
                 '"';
-        if (isExpense && itemRefId) {
+        if (itemRefId) {
             query += ' and ref.id="' + escapeQueryValue(itemRefId) + '"';
-        } else if (!isExpense && itemVendorId) {
+        }
+        if (itemVendorId) {
             query += ' and vendor.id="' + escapeQueryValue(itemVendorId) + '"';
         }
         var rcSelect = f.doSelect(query);
@@ -1863,9 +1865,10 @@ function processSingleCostDivision(data) {
                 '" and account.number="' +
                 escapeQueryValue(accountNum) +
                 '"';
-        if (isExpense && refId) {
+        if (refId) {
             queryDup += ' and ref.id="' + escapeQueryValue(refId) + '"';
-        } else if (!isExpense && itemVendorId) {
+        }
+        if (itemVendorId) {
             queryDup += ' and vendor.id="' + escapeQueryValue(itemVendorId) + '"';
         }
         var rcDup = fCheck.doSelect(queryDup);

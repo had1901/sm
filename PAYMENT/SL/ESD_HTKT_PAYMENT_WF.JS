@@ -400,7 +400,7 @@ function cancelRequest(record) {
     var unlinkResult = lib.ESD_HTKT_PAYMENT_INVOICE.unlinkAllInvoicesOnPaymentCancel(paymentIdForUnlink);
     if (!unlinkResult || unlinkResult.success !== true) {
         throw new Error("Không thể xóa đề nghị thanh toán do lỗi gỡ liên kết hóa đơn: " +
-            (unlinkResult && unlinkResult.message ? unlinkResult.message : "Không xác định"));
+                (unlinkResult && unlinkResult.message ? unlinkResult.message : "Không xác định"));
     }
     record.status = "cancelled";
 
@@ -561,7 +561,7 @@ function returnToUpdate(record, documentsAlreadyDeleted) {
     if (!returnPhase) {
         throw new Error("Không xác định được initial.role để trả phiếu về chỉnh sửa.");
     }
-    
+
     if (isPostAuditOperator()) {
         throw new Error("Cán bộ Hậu kiểm không được thực hiện thao tác này.");
     }
@@ -632,7 +632,7 @@ function validateDataInPhase(record, type) {
     if (type !== "wf") {
         return null;
     }
-    
+
     var submissionPhase = record.current_phase || record["current.phase"];
     if (submissionPhase === "initial_dmms" || submissionPhase === "initial_kttc") {
         try {
@@ -693,6 +693,22 @@ function validateDataInPhase(record, type) {
         errorMss = errorMss.concat(phaseErrors);
     }
 
+    // Tái kiểm tra BR-04, BR-05 tại thời điểm phê duyệt (BR-07)
+    if (currentPhase === "approval_dmms" || currentPhase === "approval_kttc" || currentPhase === "approval_final") {
+        var pIdAppr = String(record["id"] || record.id || "");
+        try {
+            if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+                typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.validateApproval === "function") {
+                var hhdvApprErr = lib.ESD_HTKT_HHDV_DISBURSEMENT.validateApproval(pIdAppr, false);
+                if (hhdvApprErr) {
+                    errorMss.push(hhdvApprErr);
+                }
+            }
+        } catch (eAppr) {
+            print("[ESD_HTKT_PAYMENT_WF] validateApproval HHDV err: " + eAppr);
+        }
+    }
+
     return errorMss.length > 0 ? errorMss : null;
 }
 
@@ -718,6 +734,18 @@ function validateFromCbDmmsToCbKttc() {
         errorMss.push("Nội dung giao dịch không được để trống.");
     } else if (description.length > 255) {
         errorMss.push("Nội dung giao dịch không được vượt quá 255 ký tự.");
+    }
+
+    // Validate HHDV Disbursement (BR-06)
+    try {
+        if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+            typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission === "function") {
+            var paymentIdDmms = String(record["id"] || record.id || "");
+            var hhdvErrDmms = lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission(paymentIdDmms, false);
+            if (hhdvErrDmms) errorMss.push(hhdvErrDmms);
+        }
+    } catch (eHhdvDmms) {
+        print("[ESD_HTKT_PAYMENT_WF] validateSubmission HHDV err: " + eHhdvDmms);
     }
 
     return errorMss.length > 0 ? errorMss : null;
@@ -795,6 +823,17 @@ function validateFromCbKttc() {
     } else if (initialRole === "kttc") {
         mss = validateFromCbKttcToPdDmms();
         if (mss && mss.length > 0) errorMss = errorMss.concat(mss);
+    }
+
+    // Validate HHDV Disbursement (BR-06)
+    try {
+        if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+            typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission === "function") {
+            var hhdvErrKttc = lib.ESD_HTKT_HHDV_DISBURSEMENT.validateSubmission(paymentId, false);
+            if (hhdvErrKttc) errorMss.push(hhdvErrKttc);
+        }
+    } catch (eHhdvKttc) {
+        print("[ESD_HTKT_PAYMENT_WF] validateSubmission HHDV err: " + eHhdvKttc);
     }
 
     return errorMss;
@@ -1214,7 +1253,7 @@ function validateVendorAndPaymentDetailsOnWorkflow(record) {
         var sourceErrors = lib.ESD_HTKT_PAYMENT_VENDOR.validatePaymentXdcbVendors(record);
         if (sourceErrors && sourceErrors.length) return sourceErrors;
     }
-    
+
     var paymentId = String(record.id || "");
     var vendor = new SCFile("esdHTKTpaymentVendor", SCFILE_READONLY);
     var rc = vendor.doSelect('payment.id="' + paymentId + '"');
@@ -1853,6 +1892,18 @@ function completeApprovalAfterSignature(record, signResult) {
                 errorUpdate,
                 { replaceResult: replaceResult.data, retrySafe: true }
         );
+    }
+
+    // Cập nhật thông tin giải ngân HHDV sang các phân hệ HĐ và Kế hoạch khi phê duyệt cuối (BR-08 / Mục 3)
+    if (phase === HTKT_WF_PHASE.APPROVAL_FINAL) {
+        try {
+            if (typeof lib.ESD_HTKT_HHDV_DISBURSEMENT !== "undefined" &&
+                typeof lib.ESD_HTKT_HHDV_DISBURSEMENT.syncFinalApproval === "function") {
+                lib.ESD_HTKT_HHDV_DISBURSEMENT.syncFinalApproval(actorResult.data.paymentId, false);
+            }
+        } catch (eSyncHhdv) {
+            print("[ESD_HTKT_PAYMENT_WF] syncFinalApproval HHDV err: " + eSyncHhdv);
+        }
     }
 
     return htktWfOk({

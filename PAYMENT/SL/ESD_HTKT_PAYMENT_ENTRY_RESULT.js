@@ -47,17 +47,26 @@ var ACCOUNTING_STATUS_MAP = {
 function renderTabAccountingResults() {
     var currentRecord = vars['$L.file'];
     var paymentId = textValue(vars['$G.payment.id']).trim() ||
-            textValue(vars['$G.prepayment.id']).trim();
+        textValue(vars['$G.prepayment.id']).trim();
     if (!paymentId && currentRecord) {
         paymentId = textValue(currentRecord['id']).trim();
     }
 
     var transactionType = textValue(currentRecord &&
-                          (currentRecord['transaction.type'] || currentRecord.transaction_type)).trim().toLowerCase();
-    var isExpense = transactionType === 'dự chi' || 
-                    paymentId.toUpperCase().indexOf('DC.') === 0;
-            
-    var result = loadAccountingResults(paymentId);
+        (currentRecord['transaction.type'] || currentRecord.transaction_type)).trim().toLowerCase();
+    var isExpense = transactionType === 'dự chi' ||
+        paymentId.toUpperCase().indexOf('DC.') === 0;
+
+    // Phiếu mới khởi tạo chưa phát sinh bản ghi hạch toán; tránh query thừa khi mở form lần đầu.
+    var recordPhase = textValue(currentRecord &&
+        (currentRecord['current.phase'] || currentRecord.current_phase)).trim().toLowerCase();
+    var recordStatus = textValue(currentRecord && currentRecord['status']).trim().toLowerCase();
+    var isFreshRecord = recordPhase === 'start' ||
+        recordStatus === 'kttc_created' ||
+        recordStatus === 'dmms_created' ||
+        recordStatus === 'initialized';
+
+    var result = isFreshRecord ? { rows: [], error: '' } : loadAccountingResults(paymentId);
 
     return buildAccountingResultsHtml(result.rows, result.error, !isExpense);
 }
@@ -75,6 +84,11 @@ function loadAccountingResults(paymentId) {
 
     try {
         f = new SCFile(ACCOUNTING_INFORMATION_TABLE, SCFILE_READONLY);
+        f.setFields([
+            'request.id', 'vendor.id', 'type', 'sub.type', 'amount',
+            'batch.name', 'ap.code', 'host.res.num', 'status',
+            'transaction.id', 'message', 'checked.time', 'data', 'response'
+        ]);
         var query = 'prepayment.id="' + escapeQueryValue(paymentId) + '"';
         var rc = f.doSelect(query);
 
@@ -83,26 +97,26 @@ function loadAccountingResults(paymentId) {
 
             rc = f.getNext();
         }
-        
+
         result.rows = buildGroupedResultRows(groups);
-//        print('result.rows = ', JSON.stringify(result.rows));
+        //        print('result.rows = ', JSON.stringify(result.rows));
     } catch (e) {
         result.error = 'Kh&#244;ng th&#7875; t&#7843;i k&#7871;t qu&#7843; h&#7841;ch to&#225;n.';
     } finally {
         try {
             if (f) f.doClose();
-        } catch (eClose) {}
+        } catch (eClose) { }
     }
 
     return result;
 }
 
 function addAccountingResultGroup(groupMap, groups, record) {
-//    print('record = ', JSON.stringify(record));
+    //    print('record = ', JSON.stringify(record));
     var response = parseAccountingPayload(record['response']);
     var responseData = response.data && typeof response.data === 'object'
-            ? response.data
-            : {};
+        ? response.data
+        : {};
     var info = {
         requestId: textValue(record['request.id']),
         vendorId: textValue(record['vendor.id']),
@@ -112,7 +126,7 @@ function addAccountingResultGroup(groupMap, groups, record) {
         batchName: textValue(record['batch.name']),
         invoiceNumber: textValue(record['ap.code']),
         paymentNumber: textValue(response.paymentNumber).trim() ||
-                textValue(responseData.paymentNumber).trim(),
+            textValue(responseData.paymentNumber).trim(),
         hostRefNum: textValue(record['host.res.num']).trim(),
         status: textValue(record['status']),
         transactionId: record['transaction.id'] || record['transactionId'],
@@ -122,16 +136,16 @@ function addAccountingResultGroup(groupMap, groups, record) {
     };
     var entrySummary = getEntrySummary(info.requestId, info.vendorId, info.accountingType);
     var payloadSummary = getAccountingPayloadSummary(
-            info.accountingType,
-            info.payload
+        info.accountingType,
+        info.payload
     );
     var accountingTypeCode = textValue(info.accountingType)
-            .trim()
-            .toUpperCase();
+        .trim()
+        .toUpperCase();
 
     if (
-            accountingTypeCode === GL_ENTRY_TYPE &&
-            hasContentValue(payloadSummary.contentLines)
+        accountingTypeCode === GL_ENTRY_TYPE &&
+        hasContentValue(payloadSummary.contentLines)
     ) {
         entrySummary.contentLines = payloadSummary.contentLines;
     } else if (!hasContentValue(entrySummary.contentLines)) {
@@ -151,10 +165,14 @@ function addAccountingResultGroup(groupMap, groups, record) {
     if (!group) {
         group = {
             key: key,
+            order: groups.length,
+            vendorId: textValue(info.vendorId).trim(),
+            poId: entrySummary.poId,
+            subType: textValue(info.subType).trim().toUpperCase(),
             accountingTypeCode: textValue(info.accountingType).trim().toUpperCase(),
             accountingType: mapAccountingTypeLabel(
-                    info.accountingType,
-                    info.subType
+                info.accountingType,
+                info.subType
             ),
             contentLines: [],
             amount: 0,
@@ -175,8 +193,8 @@ function addAccountingResultGroup(groupMap, groups, record) {
 
     appendFirstContentLine(group.contentLines, entrySummary.contentLines);
     group.beneficiaryAccount = mergeTextValue(
-            group.beneficiaryAccount,
-            entrySummary.beneficiaryAccount
+        group.beneficiaryAccount,
+        entrySummary.beneficiaryAccount
     );
 
     var itemAmount = 0;
@@ -184,8 +202,8 @@ function addAccountingResultGroup(groupMap, groups, record) {
         itemAmount = info.amount || numberValue(entrySummary.debitAmount);
     } else {
         itemAmount = numberValue(entrySummary.debitAmount) > 0
-                ? numberValue(entrySummary.debitAmount)
-                : info.amount;
+            ? numberValue(entrySummary.debitAmount)
+            : info.amount;
     }
     group.amount += itemAmount;
 
@@ -203,20 +221,20 @@ function addAccountingResultGroup(groupMap, groups, record) {
 function makeAccountingResultGroupKey(info) {
     // Logic tách giao dịch hạch toán thành từng bản ghi để hiển thị riêng trên UI
     return textValue(info.requestId).trim();
-    
+
     // Logic gộp giao dịch hạch toán theo NCC 
-//    var accountingType = textValue(info.accountingType).trim().toUpperCase();
-//    var glGroupOrder =
-//            accountingType === GL_ENTRY_TYPE
-//                    ? textValue(info.glGroupOrder).trim() || '1'
-//                    : '';
-//
-//    return [
-//        accountingType,
-//        textValue(info.vendorId).trim(),
-//        textValue(info.subType).trim(),
-//        glGroupOrder
-//    ].join('|');
+    //    var accountingType = textValue(info.accountingType).trim().toUpperCase();
+    //    var glGroupOrder =
+    //            accountingType === GL_ENTRY_TYPE
+    //                    ? textValue(info.glGroupOrder).trim() || '1'
+    //                    : '';
+    //
+    //    return [
+    //        accountingType,
+    //        textValue(info.vendorId).trim(),
+    //        textValue(info.subType).trim(),
+    //        glGroupOrder
+    //    ].join('|');
 }
 
 /**
@@ -238,12 +256,46 @@ function mapAccountingTypeLabel(accountingType, subType) {
     return type;
 }
 
+/**
+ * Thứ tự dòng kết quả khớp các bảng Thông tin hạch toán (NCC + PO):
+ * loại bút toán (AP-Standard, AP-Payment, GL, CORE) rồi NCC, rồi PO.
+ */
+function getAccountingResultTypeRank(group) {
+    var type = textValue(group.accountingTypeCode).trim().toUpperCase();
+    if (type === AP_ENTRY_TYPE) {
+        return mapAccountingTypeLabel(type, group.subType) === 'AP-Payment' ? 1 : 0;
+    }
+    if (type === GL_ENTRY_TYPE) return 2;
+    if (type === CORE_ENTRY_TYPE) return 3;
+    return 9;
+}
+
+function compareTextValue(left, right) {
+    left = textValue(left);
+    right = textValue(right);
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+}
+
+function sortAccountingResultGroups(groups) {
+    return groups.slice().sort(function (left, right) {
+        return getAccountingResultTypeRank(left) - getAccountingResultTypeRank(right) ||
+            compareTextValue(left.vendorId, right.vendorId) ||
+            compareTextValue(left.poId, right.poId) ||
+            left.order - right.order;
+    });
+}
+
 function buildGroupedResultRows(groups) {
     var rows = [];
-//    print("groups = ", JSON.stringify(groups))
+    //    print("groups = ", JSON.stringify(groups))
+    groups = sortAccountingResultGroups(groups);
     for (var i = 0; i < groups.length; i++) {
         rows.push({
             index: i + 1,
+            vendorId: groups[i].vendorId,
+            poId: groups[i].poId,
             accountingTypeCode: groups[i].accountingTypeCode,
             accountingType: groups[i].accountingType,
             contentLines: groups[i].contentLines,
@@ -299,8 +351,8 @@ function getAccountingPayloadSummary(accountingType, payload) {
         var glLines = isArrayValue(data.line) ? data.line : [];
         summary.contentLines = [
             textValue(
-                    (glLines.length > 0 ? glLines[0].lineDesc : '') ||
-                    data.transactionDesc
+                (glLines.length > 0 ? glLines[0].lineDesc : '') ||
+                data.transactionDesc
             ).trim()
         ];
         summary.currency = textValue(data.currencyCode).trim();
@@ -309,14 +361,14 @@ function getAccountingPayloadSummary(accountingType, payload) {
 
     if (type === AP_ENTRY_TYPE) {
         var invoiceLines = isArrayValue(data.invoiceLineList)
-                ? data.invoiceLineList
-                : [];
+            ? data.invoiceLineList
+            : [];
         summary.contentLines = [
             textValue(
-                    data.description ||
-                    (invoiceLines.length > 0
-                            ? invoiceLines[0].description
-                            : '')
+                data.description ||
+                (invoiceLines.length > 0
+                    ? invoiceLines[0].description
+                    : '')
             ).trim()
         ];
         summary.currency = textValue(data.currency).trim();
@@ -325,24 +377,24 @@ function getAccountingPayloadSummary(accountingType, payload) {
 
     if (type === CORE_ENTRY_TYPE) {
         var coreData =
-                data.data && typeof data.data === 'object' ? data.data : {};
+            data.data && typeof data.data === 'object' ? data.data : {};
         var internalAccount =
-                coreData.depAcctIdTo && typeof coreData.depAcctIdTo === 'object'
-                        ? coreData.depAcctIdTo
-                        : {};
+            coreData.depAcctIdTo && typeof coreData.depAcctIdTo === 'object'
+                ? coreData.depAcctIdTo
+                : {};
         var coreAmounts = isArrayValue(coreData.amount)
-                ? coreData.amount
-                : [];
+            ? coreData.amount
+            : [];
 
         summary.contentLines = [
             textValue(coreData.notes || coreData.trnDesc).trim()
         ];
         summary.currency = textValue(
-                internalAccount.acctCur ||
-                (coreAmounts.length > 0 ? coreAmounts[0].crcd : '')
+            internalAccount.acctCur ||
+            (coreAmounts.length > 0 ? coreAmounts[0].crcd : '')
         ).trim();
         summary.beneficiaryAccount = textValue(
-                internalAccount.acctId || coreData.toAcctId
+            internalAccount.acctId || coreData.toAcctId
         ).trim();
     }
 
@@ -384,7 +436,7 @@ function mergeTextValue(currentValue, nextValue) {
 
     // Tách chuỗi hiện tại thành mảng các giá trị (phân tách bởi dấu ;)
     var parts = cur.split(/\s*;\s*/);
-    
+
     // Nếu giá trị mới chưa có trong mảng thì mới push vào
     if (parts.indexOf(next) === -1) {
         parts.push(next);
@@ -399,23 +451,23 @@ function mergeStatus(currentStatus, nextStatus) {
     var currentCode = textValue(currentStatus).trim().toUpperCase();
     var nextCode = textValue(nextStatus).trim().toUpperCase();
     var currentFailed =
-            currentCode === ACCOUNTING_STATUS.ERROR ||
-            currentCode === ACCOUNTING_STATUS.NOT_FOUND;
+        currentCode === ACCOUNTING_STATUS.ERROR ||
+        currentCode === ACCOUNTING_STATUS.NOT_FOUND;
     var nextFailed =
-            nextCode === ACCOUNTING_STATUS.ERROR ||
-            nextCode === ACCOUNTING_STATUS.NOT_FOUND;
+        nextCode === ACCOUNTING_STATUS.ERROR ||
+        nextCode === ACCOUNTING_STATUS.NOT_FOUND;
     var currentProcessing =
-            currentCode === ACCOUNTING_STATUS.PROCESSING ||
-            currentCode === ACCOUNTING_STATUS.IN_QUEUE ||
-            currentCode === ACCOUNTING_STATUS.CREATED ||
-            currentCode === ACCOUNTING_STATUS.PENDING_APPROVAL ||
-            currentCode === ACCOUNTING_STATUS.INITIAL;
+        currentCode === ACCOUNTING_STATUS.PROCESSING ||
+        currentCode === ACCOUNTING_STATUS.IN_QUEUE ||
+        currentCode === ACCOUNTING_STATUS.CREATED ||
+        currentCode === ACCOUNTING_STATUS.PENDING_APPROVAL ||
+        currentCode === ACCOUNTING_STATUS.INITIAL;
     var nextProcessing =
-            nextCode === ACCOUNTING_STATUS.PROCESSING ||
-            nextCode === ACCOUNTING_STATUS.IN_QUEUE ||
-            nextCode === ACCOUNTING_STATUS.CREATED ||
-            nextCode === ACCOUNTING_STATUS.PENDING_APPROVAL ||
-            nextCode === ACCOUNTING_STATUS.INITIAL;
+        nextCode === ACCOUNTING_STATUS.PROCESSING ||
+        nextCode === ACCOUNTING_STATUS.IN_QUEUE ||
+        nextCode === ACCOUNTING_STATUS.CREATED ||
+        nextCode === ACCOUNTING_STATUS.PENDING_APPROVAL ||
+        nextCode === ACCOUNTING_STATUS.INITIAL;
 
     if (!currentCode) return nextCode;
     if (!nextCode) return currentCode;
@@ -424,8 +476,8 @@ function mergeStatus(currentStatus, nextStatus) {
     if (currentProcessing) return currentCode;
     if (nextProcessing) return nextCode;
     if (
-            currentCode === ACCOUNTING_STATUS.COMPLETED &&
-            nextCode === ACCOUNTING_STATUS.COMPLETED
+        currentCode === ACCOUNTING_STATUS.COMPLETED &&
+        nextCode === ACCOUNTING_STATUS.COMPLETED
     ) {
         return ACCOUNTING_STATUS.COMPLETED;
     }
@@ -446,7 +498,9 @@ function getEntrySummary(requestId, vendorId, accountingType) {
         debitAmount: 0,
         currency: '',
         beneficiaryAccount: '',
-        glGroupOrder: ''
+        glGroupOrder: '',
+        // PO của Entry gắn request.id để sắp dòng kết quả theo bảng NCC + PO.
+        poId: ''
     };
     var f;
 
@@ -465,6 +519,7 @@ function getEntrySummary(requestId, vendorId, accountingType) {
         var rc = f.doSelect(query);
 
         while (rc === RC_SUCCESS) {
+            if (!summary.poId) summary.poId = textValue(f['po.id']).trim();
             var desc = textValue(f['description']).trim();
             if (desc) {
                 summary.contentLines.push(desc);
@@ -473,8 +528,8 @@ function getEntrySummary(requestId, vendorId, accountingType) {
             if (entryType === GL_ENTRY_TYPE && !summary.glGroupOrder) {
                 var paymentId = textValue(f['payment.id']).trim() || textValue(f['prepayment.id']).trim();
                 summary.glGroupOrder = getGlEntryGroupOrder(
-                        paymentId,
-                        textValue(f['id'])
+                    paymentId,
+                    textValue(f['id'])
                 );
             }
 
@@ -484,8 +539,8 @@ function getEntrySummary(requestId, vendorId, accountingType) {
 
             // Bút toán CORE (chuyển tiền): tài khoản thụ hưởng lấy từ account.number
             if (
-                    accountingTypeCode === CORE_ENTRY_TYPE &&
-                    !summary.beneficiaryAccount
+                accountingTypeCode === CORE_ENTRY_TYPE &&
+                !summary.beneficiaryAccount
             ) {
                 summary.beneficiaryAccount = textValue(f['account.number']).trim();
             }
@@ -499,7 +554,7 @@ function getEntrySummary(requestId, vendorId, accountingType) {
     } finally {
         try {
             if (f) f.doClose();
-        } catch (eClose) {}
+        } catch (eClose) { }
     }
 
     return summary;
@@ -520,19 +575,19 @@ function getGlEntryGroupOrder(paymentId, entryId) {
     var parts = id.substring(prefix.length).split('.');
 
     if (
-            parts.length === 2 &&
-            /^\d+$/.test(parts[0]) &&
-            /^\d+$/.test(parts[1]) &&
-            Number(parts[0]) > 0 &&
-            Number(parts[1]) > 0
+        parts.length === 2 &&
+        /^\d+$/.test(parts[0]) &&
+        /^\d+$/.test(parts[1]) &&
+        Number(parts[0]) > 0 &&
+        Number(parts[1]) > 0
     ) {
         return String(Number(parts[0]));
     }
 
     if (
-            parts.length === 1 &&
-            /^\d+$/.test(parts[0]) &&
-            Number(parts[0]) > 0
+        parts.length === 1 &&
+        /^\d+$/.test(parts[0]) &&
+        Number(parts[0]) > 0
     ) {
         return '1';
     }
@@ -558,8 +613,8 @@ function buildAccountingResultsHtml(rows, error, showTransferResults) {
 
     for (var i = 0; i < rows.length; i++) {
         if (
-                textValue(rows[i].accountingTypeCode).trim().toUpperCase() ===
-                CORE_ENTRY_TYPE
+            textValue(rows[i].accountingTypeCode).trim().toUpperCase() ===
+            CORE_ENTRY_TYPE
         ) {
             transferRows.push(rows[i]);
         } else {
@@ -612,36 +667,36 @@ function buildAccountingResultsHtml(rows, error, showTransferResults) {
         '</style></head><body>',
         '<main class="result">',
         buildAccountingResultSection(
-                'Kết quả hạch toán',
-                'Số bút toán đồng bộ thành công',
-                accountingRows,
-                error,
-                'accounting-results-table',
-                false
+            'Kết quả hạch toán',
+            'Số bút toán đồng bộ thành công',
+            accountingRows,
+            error,
+            'accounting-results-table',
+            false
         ),
         showTransferResults !== false ? buildTransferResultSection(
-                'Kết quả chuyển tiền',
-                'Số giao dịch đồng bộ thành công',
-                transferRows,
-                error,
-                'transfer-results-table'
+            'Kết quả chuyển tiền',
+            'Số giao dịch đồng bộ thành công',
+            transferRows,
+            error,
+            'transfer-results-table'
         ) : '',
         '</main>',
         '<div id="accounting-cell-tooltip" class="accounting-cell-tooltip" role="tooltip" aria-hidden="true"></div>',
         buildSortingScript('accounting-results-table'),
-        showTransferResults !== false ?  buildSortingScript('transfer-results-table') : '',
+        showTransferResults !== false ? buildSortingScript('transfer-results-table') : '',
         buildAccountingTooltipScript(),
         '</body></html>'
     ].join('');
 }
 
 function buildAccountingResultSection(
-        title,
-        counterLabel,
-        rows,
-        error,
-        tableId,
-        isTransferSection
+    title,
+    counterLabel,
+    rows,
+    error,
+    tableId,
+    isTransferSection
 ) {
     var successCount = 0;
     var bodyRows = [];
@@ -649,25 +704,25 @@ function buildAccountingResultSection(
     for (var i = 0; i < rows.length; i++) {
         var status = getStatusView(rows[i].status);
         var accountingTypeLabel = isTransferSection
-                ? 'Hạch toán thanh toán - AP'
-                : rows[i].accountingType;
+            ? 'Hạch toán thanh toán - AP'
+            : rows[i].accountingType;
 
         if (status.code === 'success') successCount++;
         bodyRows.push(
-                buildAccountingResultRow(
-                        rows[i],
-                        status,
-                        i + 1,
-                        accountingTypeLabel
-                )
+            buildAccountingResultRow(
+                rows[i],
+                status,
+                i + 1,
+                accountingTypeLabel
+            )
         );
     }
 
     if (!bodyRows.length) {
         bodyRows.push(
-                '<tr><td class="empty" colspan="10">' +
-                (error || 'Kh&#244;ng c&#243; d&#7919; li&#7879;u') +
-                '</td></tr>'
+            '<tr><td class="empty" colspan="10">' +
+            (error || 'Kh&#244;ng c&#243; d&#7919; li&#7879;u') +
+            '</td></tr>'
         );
     }
 
@@ -702,7 +757,7 @@ function buildAccountingResultSection(
 }
 
 function buildTransferResultSection(title, counterLabel, rows, error, tableId) {
-//    print('rows = ', JSON.stringify(rows));
+    //    print('rows = ', JSON.stringify(rows));
     var successCount = 0;
     var bodyRows = [];
 
@@ -715,9 +770,9 @@ function buildTransferResultSection(title, counterLabel, rows, error, tableId) {
 
     if (!bodyRows.length) {
         bodyRows.push(
-                '<tr><td class="empty" colspan="8">' +
-                (error || 'Kh&#244;ng c&#243; d&#7919; li&#7879;u') +
-                '</td></tr>'
+            '<tr><td class="empty" colspan="8">' +
+            (error || 'Kh&#244;ng c&#243; d&#7919; li&#7879;u') +
+            '</td></tr>'
         );
     }
 
@@ -752,7 +807,7 @@ function buildTransferResultSection(title, counterLabel, rows, error, tableId) {
 
 function buildHeader(className, label, columnIndex, sortType) {
     return '<th class="' + className + '" data-column="' + columnIndex + '" data-sort-type="' + sortType +
-            '" tabindex="0" role="button" aria-sort="none">' + label + '<span class="sort">&#8597;</span></th>';
+        '" tabindex="0" role="button" aria-sort="none">' + label + '<span class="sort">&#8597;</span></th>';
 }
 
 function buildAccountingResultRow(row, status, displayIndex, accountingTypeLabel) {
@@ -767,7 +822,7 @@ function buildAccountingResultRow(row, status, displayIndex, accountingTypeLabel
     var transactionId = textValue(row.transactionId).trim() || status.transactionId;
     var paymentNumber = textValue(row.paymentNumber).trim();
     var paymentNumberLabel = paymentNumber || '-';
-    
+
     return [
         '<tr data-result-row="true" data-original-index="', rowIndex, '">',
         '<td class="accounting-tooltip-target" data-sort="', rowIndex, '"', buildTooltipAttributes(rowIndex), '>', rowIndex, '</td>',
@@ -785,7 +840,7 @@ function buildAccountingResultRow(row, status, displayIndex, accountingTypeLabel
 }
 
 function buildTransferResultRow(row, status, displayIndex) {
-//print('buildTransferResultRow - row = ', JSON.stringify(row))
+    //print('buildTransferResultRow - row = ', JSON.stringify(row))
     var firstLineContent = textValue((row.contentLines && row.contentLines.length > 0) ? row.contentLines[0] : '').trim();
     var contentSortValue = firstLineContent;
     var content = buildAccountingContent(row.contentLines);
@@ -795,7 +850,7 @@ function buildTransferResultRow(row, status, displayIndex) {
     var statusTooltip = textValue(row.message).trim() || status.tooltip;
     var hostRefNum = textValue(row.hostRefNum).trim();
     var hostRefNumLabel = hostRefNum || '-';
-    
+
     return [
         '<tr data-result-row="true" data-original-index="', rowIndex, '">',
         '<td class="accounting-tooltip-target" data-sort="', rowIndex, '"', buildTooltipAttributes(rowIndex), '>', rowIndex, '</td>',
@@ -819,17 +874,17 @@ function buildAccountingContent(contentLines) {
     }
 
     return '<div class="content-line accounting-tooltip-target"' +
-            buildTooltipAttributes(content) +
-            '>' +
-            htmlValue(content) +
-            '</div>';
+        buildTooltipAttributes(content) +
+        '>' +
+        htmlValue(content) +
+        '</div>';
 }
 
 function buildTooltipAttributes(value) {
     var tooltip = textValue(value).trim() || '-';
 
     return ' data-tooltip="' + attributeValue(tooltip) +
-            '" aria-label="' + attributeValue(tooltip) + '"';
+        '" aria-label="' + attributeValue(tooltip) + '"';
 }
 
 function buildAccountingTooltipScript() {
@@ -890,15 +945,15 @@ function buildSortingScript(tableId) {
 function getStatusView(value) {
     var status = textValue(value).trim().toUpperCase();
     var label =
-            ACCOUNTING_STATUS_MAP[status] ||
-            status;
+        ACCOUNTING_STATUS_MAP[status] ||
+        status;
 
     if (
-            status === ACCOUNTING_STATUS.INITIAL ||
-            status === ACCOUNTING_STATUS.IN_QUEUE ||
-            status === ACCOUNTING_STATUS.CREATED ||
-            status === ACCOUNTING_STATUS.PENDING_APPROVAL ||
-            status === ACCOUNTING_STATUS.PROCESSING
+        status === ACCOUNTING_STATUS.INITIAL ||
+        status === ACCOUNTING_STATUS.IN_QUEUE ||
+        status === ACCOUNTING_STATUS.CREATED ||
+        status === ACCOUNTING_STATUS.PENDING_APPROVAL ||
+        status === ACCOUNTING_STATUS.PROCESSING
     ) {
         return { code: 'processing', label: htmlValue(label), tooltip: label };
     }
@@ -906,8 +961,8 @@ function getStatusView(value) {
         return { code: 'success', label: htmlValue(label), tooltip: label };
     }
     if (
-            status === ACCOUNTING_STATUS.ERROR ||
-            status === ACCOUNTING_STATUS.NOT_FOUND
+        status === ACCOUNTING_STATUS.ERROR ||
+        status === ACCOUNTING_STATUS.NOT_FOUND
     ) {
         return { code: 'failed', label: htmlValue(label), tooltip: label };
     }
@@ -927,7 +982,7 @@ function formatCheckedTime(value) {
 
     if (typeof value.getFullYear === 'function') {
         return padNumber(value.getHours()) + ':' + padNumber(value.getMinutes()) + ' ' +
-                padNumber(value.getDate()) + '/' + padNumber(value.getMonth() + 1) + '/' + value.getFullYear();
+            padNumber(value.getDate()) + '/' + padNumber(value.getMonth() + 1) + '/' + value.getFullYear();
     }
 
     return textValue(value);
@@ -958,11 +1013,11 @@ function attributeValue(value) {
 
 function escapeHtml(value) {
     return textValue(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function escapeQueryValue(value) {
@@ -977,7 +1032,7 @@ function normalizeIdentity(value) {
     var s = textValue(value).toLowerCase();
     try {
         if (s.normalize) s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    } catch (e) {}
+    } catch (e) { }
     return s.replace(/\u0111/g, 'd').replace(/[^a-z0-9]/g, '');
 }
 
@@ -993,6 +1048,6 @@ function textValue(value) {
 function closeFile(file) {
     try {
         if (file) file.doClose();
-    } catch (e) {}
+    } catch (e) { }
 }
 

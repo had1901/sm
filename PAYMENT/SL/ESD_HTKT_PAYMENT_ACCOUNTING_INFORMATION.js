@@ -109,16 +109,19 @@ function generatePaymentAccountingInformation(paymentId, previewOnly) {
     if (!vendors.length) warnings.push('Khong co NCC tai esdHTKTpaymentVendor.');
     if (!entries.length) warnings.push('Khong co but toan tai esdHTKTpaymentEntry.');
     var accountingDate = dateYmd(new Date());
+    // Mỗi dòng esdHTKTpaymentVendor (NCC + PO) là một bộ hạch toán riêng.
+    var distinctVendorCount = countDistinctVendors(vendors);
     for (var i = 0; i < vendors.length; i++) {
-        vendors[i].payment_vendor_count = vendors.length;
+        // Số NCC phân biệt: một NCC nhiều PO vẫn ghép hóa đơn theo MST như một NCC.
+        vendors[i].payment_vendor_count = distinctVendorCount;
         var contextResult = buildVendorContext(payment, vendors[i]);
         if (!contextResult.success) return contextResult;
-        var vendorEntries = filterEntriesByVendor(entries, vendors[i].vendor_id);
+        var vendorEntries = filterEntriesByVendorRow(entries, vendors[i], vendors);
         var totalDebit = sumEntryDebitAmounts(vendorEntries);
         var totalCredit = sumEntryCreditAmounts(vendorEntries);
         if (Math.abs(totalDebit - totalCredit) > 0.000001) {
             return errorResult(
-                    'NCC ' + vendors[i].vendor_id +
+                    'NCC ' + vendors[i].vendor_id + (vendors[i].po_id ? ' PO ' + vendors[i].po_id : '') +
                     ': tong ghi no (' + totalDebit +
                     ') khong bang tong ghi co (' + totalCredit + ').'
             );
@@ -369,7 +372,7 @@ function buildVendorPayloads(payment, vendorRow, entries, context, accountingDat
             cashout: context.cashout,
             contractId: payment.contract_id, liabilityAccount: liabilityAccount,
             invoiceLineList: apLines, applyList: applyList,
-            vatList: getVatList(payment.id, context.vendorNumber, vendorRow.payment_vendor_count)
+            vatList: getVatList(payment.id, context.vendorNumber, vendorRow.payment_vendor_count, vendorRow)
         };
         var invoiceValidation = validateInvoicePayload(invoicePayload);
         if (!invoiceValidation.success) return invalidPayload('AP_INVOICE', invoiceValidation, invoicePayload);
@@ -683,6 +686,7 @@ function getPaymentVendors(paymentId) {
     return selectMany(TABLE_VENDOR_ROW, 'payment.id="' + escapeQueryValue(paymentId) + '"', function (f) {
         return { id: readText(f, 'id').trim(),
             payment_id: readText(f, 'payment.id').trim(), vendor_id: readText(f, 'vendor.id').trim(),
+            po_id: readText(f, 'po.id').trim(),
             vendor_site_id: readText(f, 'vendor.site.id').trim(),
             approved_invoice_amount: readNumber(f, 'approved.invoice.amount'), amount: readNumber(f, 'amount'),
             refund_amount: readNumber(f, 'refund.amount'), vendor_type: readText(f, 'vendor.type').trim(),
@@ -703,19 +707,23 @@ function getPaymentEntries(paymentId) {
             department: readText(f, 'department').trim(), transaction_code: readText(f, 'transaction.code').trim(),
             amount: readNumber(f, 'amount'), currency: readText(f, 'currency').trim(), ap_code: readText(f, 'ap.code').trim(),
             description: readText(f, 'description').trim(), vendor_id: readText(f, 'vendor.id').trim(),
+            po_id: readText(f, 'po.id').trim(), payment_vendor_id: readText(f, 'payment.vendor.id').trim(),
             type: readText(f, 'type').trim(), order: readNumber(f, 'order'), ref_id: readText(f, 'ref.id').trim() };
     });
     rows.sort(function (a, b) { return toNumber(a.order) - toNumber(b.order); });
     return rows;
 }
 
-function getVatList(paymentId, vendorNumber, vendorCount) {
+function getVatList(paymentId, vendorNumber, vendorCount, vendorRow) {
     var result = [];
     var links = selectMany(TABLE_PAYMENT_INVOICE,
             'payment.id="' + escapeQueryValue(paymentId) + '"', function (f) {
-                return { invoiceId: readText(f, 'invoice.id'), deductionType: readText(f, 'deduction.type') };
+                return { invoiceId: readText(f, 'invoice.id'), deductionType: readText(f, 'deduction.type'),
+                    refId: readText(f, 'ref.id').trim(), poId: readText(f, 'po.id').trim() };
             });
     for (var i = 0; i < links.length; i++) {
+        // Hóa đơn đi theo dòng NCC+PO; liên kết cũ chưa gắn dòng tính cho PO đầu của NCC.
+        if (vendorRow && !isSourceForVendorRow(vendorRow, vendorRow.vendor_id, links[i].poId, links[i].refId, true)) continue;
         var invoice = selectOne(TABLE_INVOICE, 'id="' + escapeQueryValue(links[i].invoiceId) + '"', function (f) {
             return { oglId: readText(f, 'ogl.id'), taxCode: readText(f, 'seller.tax.code') };
         });
@@ -733,9 +741,10 @@ function getVatList(paymentId, vendorNumber, vendorCount) {
 function mapDiscountType(deductionType) {
     var value = safeString(deductionType).trim().toUpperCase();
 
-    if (value === DEDUCTION_FULL) return DISCOUNT_FULL;
-    if (value === DEDUCTION_RATE) return DISCOUNT_RATE;
-    if (value === DEDUCTION_NONE) return DISCOUNT_NONE;
+    // Nhận cả mã KHAUTRU_00x và mã dạng mới KHAU_TRU_TOAN_BO/KHAU_TRU_TY_LE/KHONG_KHAU_TRU.
+    if (value === DEDUCTION_FULL || value === DISCOUNT_FULL) return DISCOUNT_FULL;
+    if (value === DEDUCTION_RATE || value === DISCOUNT_RATE) return DISCOUNT_RATE;
+    if (value === DEDUCTION_NONE || value === DISCOUNT_NONE) return DISCOUNT_NONE;
 
     return '';
 }
@@ -808,6 +817,73 @@ function mapEntityCodeByTransactionCode(transactionCode, branchCode) {
 function filterEntriesByVendor(entries, vendorId) {
     var result = [];
     for (var i = 0; i < entries.length; i++) if (safeString(entries[i].vendor_id) === safeString(vendorId)) result.push(entries[i]);
+    return result;
+}
+
+function countDistinctVendors(vendors) {
+    var seen = {};
+    var count = 0;
+    for (var i = 0; i < vendors.length; i++) {
+        var key = '$' + safeString(vendors[i].vendor_id).trim();
+        if (!seen[key]) { seen[key] = true; count++; }
+    }
+    return count;
+}
+
+/**
+ * Dòng NCC+PO của một bản ghi nguồn: rowId (payment.vendor.id / ref.id) trùng id dòng,
+ * rồi cùng NCC + po.id, cuối cùng (dữ liệu cũ) là dòng PO đầu tiên của NCC.
+ */
+function resolveVendorRow(vendors, vendorId, poId, rowId) {
+    var id = safeString(rowId).trim();
+    var po = safeString(poId).trim();
+    var sameVendor = [];
+    for (var i = 0; i < vendors.length; i++) {
+        if (id && safeString(vendors[i].id).trim() === id) return vendors[i];
+        if (lookupIdsEqual(vendors[i].vendor_id, vendorId)) sameVendor.push(vendors[i]);
+    }
+    if (po) {
+        for (var j = 0; j < sameVendor.length; j++) {
+            if (safeString(sameVendor[j].po_id).trim() === po) return sameVendor[j];
+        }
+    }
+    // Dữ liệu cũ: dòng PO đầu = id nhỏ nhất (cùng quy tắc sinh bút toán và tab Hóa đơn).
+    var first = null;
+    for (var k = 0; k < sameVendor.length; k++) {
+        if (!first || safeString(sameVendor[k].id).trim() < safeString(first.id).trim()) first = sameVendor[k];
+    }
+    return first;
+}
+
+/**
+ * strictPo: liên kết hóa đơn có po.id khác PO của dòng thì không thuộc dòng (kể cả khi
+ * không tìm thấy dòng PO đó), giống quy tắc hóa đơn đi theo PO của tạm ứng.
+ */
+function isSourceForVendorRow(vendorRow, vendorId, poId, rowId, strictPo) {
+    var vendors = vendorRow.all_vendor_rows || [vendorRow];
+    var po = safeString(poId).trim();
+    var byId = safeString(rowId).trim();
+    if (strictPo && po && !byId && po !== safeString(vendorRow.po_id).trim()) return false;
+    var resolved = resolveVendorRow(vendors, vendorId, po, byId);
+    return !!resolved && safeString(resolved.id).trim() === safeString(vendorRow.id).trim();
+}
+
+/** Entry của đúng dòng NCC+PO; entry cũ chưa gắn PO thuộc dòng PO đầu tiên của NCC. */
+function filterEntriesByVendorRow(entries, vendorRow, vendors) {
+    var result = [];
+    vendorRow.all_vendor_rows = vendors;
+    for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i];
+        if (safeString(entry.type).trim().toUpperCase() === TYPE_GL) {
+            // Giữ hành vi cũ: GL được lọc theo vendor.id rồi bỏ qua trong buildVendorPayloads.
+            if (safeString(entry.vendor_id) === safeString(vendorRow.vendor_id)) result.push(entry);
+            continue;
+        }
+        if (!lookupIdsEqual(entry.vendor_id, vendorRow.vendor_id)) continue;
+        if (isSourceForVendorRow(vendorRow, entry.vendor_id, entry.po_id, entry.payment_vendor_id, false)) {
+            result.push(entry);
+        }
+    }
     return result;
 }
 
