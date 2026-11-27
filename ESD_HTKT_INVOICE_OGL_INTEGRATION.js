@@ -62,58 +62,41 @@ function parseHttpResponseWithMeta(operation, response) {
  * @param {Object} invoiceData - Object chứa thông tin hóa đơn truyền vào từ SM
  * @returns {Object|null} Trả về data kết quả từ API hoặc null
  */
-function checkInvoice(invoiceData) {
-    var token = lib.ESD_HTKT_BASE_API_INTEGRATION.getActiveToken('ogl');
-    var config = lib.ESD_HTKT_BASE_API_INTEGRATION.getConfigSystem();
-    if (!token || !config) return null;
 
-    var url = config.oglBaseUrl + "/invoice/check-invoice";
+function checkInvoice(invoiceData) {
+    var token = lib.ESD_HTKT_BASE_API_INTEGRATION.getActiveToken('vatin');
+    var config = lib.ESD_HTKT_BASE_API_INTEGRATION.getConfigSystem();
+    if (!token || !config) {
+        logger.error('checkInvoice::error: Missing token or system config');
+        return { success: false, message: "Missing authorization token or system configuration" };
+    }
+
+    var url = config.vatinBaseUrl + "/tax/check-all-api";
     var headers = [
         new Header("Content-Type", "application/json"),
         new Header("Authorization", "Bearer " + token)
     ];
+    
+    var payload = rteJSONStringify(invoiceData);
+    var responseStr = lib.ESD_HTKT_BASE_API_INTEGRATION.postJson(url, payload, headers);
 
-    var response = lib.ESD_HTKT_BASE_API_INTEGRATION.postJson(url, rteJSONStringify(invoiceData), headers);
-    return parseHttpResponse('checkInvoice', response);
+    if (responseStr) {
+        if (typeof responseStr === 'string' && responseStr.trim() === '') {
+            return { success: false, message: "API returned empty response" };
+        }
+        try {
+            return parseHttpResponse('checkInvoice', responseStr);
+        } catch (e) {
+            print('checkInvoice::error: API return invalid JSON. Raw response: ' + JSON.stringify(responseStr));
+            return {
+                success: false,
+                message: "API returned non-JSON content",
+                rawResponse: responseStr
+            };
+        }
+    }
+    return { success: false, message: "No response from API server" };
 }
-
-//function checkInvoice(invoiceData) {
-//    var token = lib.ESD_HTKT_BASE_API_INTEGRATION.getActiveToken('vatin');
-//    var config = lib.ESD_HTKT_BASE_API_INTEGRATION.getConfigSystem();
-//    if (!token || !config) {
-//        logger.error('checkInvoice::error: Missing token or system config');
-//        return { success: false, message: "Missing authorization token or system configuration" };
-//    }
-//
-//    var url = config.vatinBaseUrl + "/tax/check-all-api";
-//    var headers = [
-//        new Header("Content-Type", "application/json"),
-//        new Header("Authorization", "Bearer " + token)
-//    ];
-//    
-//    var payload = rteJSONStringify(invoiceData);
-//    var responseStr = lib.ESD_HTKT_BASE_API_INTEGRATION.postJson(url, payload, headers);
-//    
-//    if (responseStr) {
-//        if (typeof responseStr === 'string' && responseStr.trim() === '') {
-//            return { success: false, message: "API returned empty response" };
-//        }
-//
-//        try {
-//            return rteJSONParse(responseStr);
-//        } catch (e) {
-//            logger.error('checkInvoice::error: API return invalid JSON. Raw response: ' + responseStr);
-//            return {
-//                success: false,
-//                message: "API returned non-JSON content",
-//                rawResponse: responseStr
-//            };
-//        }
-//    }
-//
-//    logger.error('checkInvoice::error: No response received from API endpoint');
-//    return { success: false, message: "No response from API server" };
-//}
 
 /**
  * 2. Kiểm tra số tiền hóa đơn (Check Amount)
@@ -137,6 +120,7 @@ function checkAmount(checkAmountList) {
 
 // Van tin site NCC
 function getVendorSiteInfo(vendorData) {
+    print('[getVendorSiteInfo] vendorData = ', JSON.stringify(vendorData))
     if (!vendorData || !vendorData.vendorNumber) {
         print('ESD_HTKT_INVOICE_OGL_INTEGRATION::getVendorSiteInfo: Du lieu truy van khong hop le');
         return null;
@@ -155,13 +139,14 @@ function getVendorSiteInfo(vendorData) {
         new Header("Content-Type", "application/json"),
         new Header("Authorization", "Bearer " + token)
     ];
-
     var response = lib.ESD_HTKT_BASE_API_INTEGRATION.get(url, headers);
     return parseHttpResponse('getVendorSiteInfo', response);
 }
 
 // Tao site/Ncc 
+
 function createVendorSiteInfo(vendorData) {
+    print('[createVendorSiteInfo] vendorData = ', JSON.stringify(vendorData))
     var token = lib.ESD_HTKT_BASE_API_INTEGRATION.getActiveToken('ogl');
     var config = lib.ESD_HTKT_BASE_API_INTEGRATION.getConfigSystem();
     if (!token || !config) return null;
@@ -180,20 +165,20 @@ function createVendorSiteInfo(vendorData) {
 }
 
 // Kiem tra cong no
-function checkVendorDebtReport(vendorData) {
-    var token = lib.ESD_HTKT_BASE_API_INTEGRATION.getActiveToken('ogl');
-    var config = lib.ESD_HTKT_BASE_API_INTEGRATION.getConfigSystem();
-    if (!token || !config) return null;
-
-    var url = config.oglBaseUrl + "/vendor-debts/report";
-    var headers = [
-        new Header("Content-Type", "application/json"),
-        new Header("Authorization", "Bearer " + token)
-    ];
-
-    var response = lib.ESD_HTKT_BASE_API_INTEGRATION.postJson(url, rteJSONStringify(vendorData), headers);
-    return parseHttpResponse('checkVendorDebtReport', response);
-}
+//function checkVendorDebtReport(vendorData) {
+//    var token = lib.ESD_HTKT_BASE_API_INTEGRATION.getActiveToken('ogl');
+//    var config = lib.ESD_HTKT_BASE_API_INTEGRATION.getConfigSystem();
+//    if (!token || !config) return null;
+//
+//    var url = config.oglBaseUrl + "/vendor-debts/report";
+//    var headers = [
+//        new Header("Content-Type", "application/json"),
+//        new Header("Authorization", "Bearer " + token)
+//    ];
+//
+//    var response = lib.ESD_HTKT_BASE_API_INTEGRATION.postJson(url, rteJSONStringify(vendorData), headers);
+//    return parseHttpResponse('checkVendorDebtReport', response);
+//}
 
 // Thanh toan hoa don
 function createApInvoice(invoiceData) {
@@ -206,10 +191,6 @@ function createApInvoice(invoiceData) {
         new Header("Content-Type", "application/json"),
         new Header("Authorization", "Bearer " + token)
     ];
-
-    // tam thoi trong luc cho confirm
-    //    invoiceData.checker = "VTB.HTKT.110";
-    //    invoiceData.maker = "VTB.HTKT.113";
 
     var response = lib.ESD_HTKT_BASE_API_INTEGRATION.postJson(url, rteJSONStringify(invoiceData), headers);
     return parseHttpResponseWithMeta('createApInvoice', response);
@@ -279,7 +260,7 @@ function createApPayment(invoiceData) {
         new Header("Authorization", "Bearer " + token)
     ];
 
-    rteJSONStringify("token " + token)
+//    rteJSONStringify("token " + token)
 
     var response = lib.ESD_HTKT_BASE_API_INTEGRATION.postJson(url, rteJSONStringify(invoiceData), headers);
     return parseHttpResponseWithMeta('createApPayment', response);

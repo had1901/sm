@@ -104,7 +104,7 @@ function escapeHtml(input) {
         .replace(/'/g, "&#39;");
 }
 
-function getPrepaymentStatusUI(status) {
+function getPrepaymentStatusUI(status, currentPhase) {
     var statusMap = {
         "dmms_created": {
             label: "Tạo mới",
@@ -122,27 +122,27 @@ function getPrepaymentStatusUI(status) {
             textColor: "#D78B00"
         },
         "kttc_checked": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ KTTC rà soát",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "dmms_checked": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ DMMS rà soát",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "dmms_approved": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ DMMS phê duyệt",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "kttc_approved": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ KTTC phê duyệt",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "checked": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ KTTC rà soát",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
@@ -167,6 +167,24 @@ function getPrepaymentStatusUI(status) {
             textColor: "#1F845A"
         }
     };
+
+    var phase = String(currentPhase || "").trim().toLowerCase().replace(/[._\s-]/g, "");
+    var pendingStatuses = ["kttc_checked", "dmms_checked", "dmms_approved", "kttc_approved", "checked"];
+    var phaseLabels = {
+        "initialkttc": "Chờ KTTC rà soát",
+        "checkdmms": "Chờ DMMS rà soát",
+        "approvaldmms": "Chờ DMMS phê duyệt",
+        "approvalkttc": "Chờ KTTC phê duyệt",
+        "checkfinal": "Chờ KTTC rà soát",
+        "approvalfinal": "Chờ cấp có thẩm quyền phê duyệt"
+    };
+    if (pendingStatuses.indexOf(String(status || "").trim().toLowerCase()) >= 0 && phaseLabels[phase]) {
+        return {
+            label: phaseLabels[phase],
+            backgroundColor: "#FFF1CC",
+            textColor: "#D78B00"
+        };
+    }
 
     if (statusMap[status]) {
         return statusMap[status];
@@ -179,7 +197,38 @@ function getPrepaymentStatusUI(status) {
     };
 }
 
-function getPaymentStatusUI(status) {
+function getSlaStatusUI(status) {
+    status = status === null || typeof status === "undefined" ? "" : String(status);
+    status = status.replace(/^\s+|\s+$/g, "");
+    var statusMap = {
+        "Chờ hiệu lực": {
+            label: "Chờ hiệu lực",
+            backgroundColor: "#F4F5F7",
+            textColor: "#6B778C"
+        },
+        "Đang hoạt động": {
+            label: "Đang hoạt động",
+            backgroundColor: "#E3FCEF",
+            textColor: "#1F845A"
+        },
+        "Không hoạt động": {
+            label: "Không hoạt động",
+            backgroundColor: "#FDEDEA",
+            textColor: "#DE350B"
+        }
+    };
+
+    if (Object.prototype.hasOwnProperty.call(statusMap, status)) {
+        return statusMap[status];
+    }
+    return {
+        label: status,
+        backgroundColor: "#F4F5F7",
+        textColor: "#42526E"
+    };
+}
+
+function getPaymentStatusUI(status, currentPhase) {
     var statusMap = {
         "dmms_created": {
             label: "Tạo mới",
@@ -197,27 +246,27 @@ function getPaymentStatusUI(status) {
             textColor: "#D78B00"
         },
         "kttc_checked": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ KTTC rà soát",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "dmms_checked": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ DMMS rà soát",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "dmms_approved": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ DMMS phê duyệt",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "kttc_approved": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ KTTC phê duyệt",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
         "checked": {
-            label: "Chờ phê duyệt đề nghị",
+            label: "Chờ KTTC rà soát",
             backgroundColor: "#FFF1CC",
             textColor: "#D78B00"
         },
@@ -242,6 +291,24 @@ function getPaymentStatusUI(status) {
             textColor: "#1F845A"
         }
     };
+
+    var phase = String(currentPhase || "").trim().toLowerCase().replace(/[._\s-]/g, "");
+    var pendingStatuses = ["kttc_checked", "dmms_checked", "dmms_approved", "kttc_approved", "checked"];
+    var phaseLabels = {
+        "initialkttc": "Chờ KTTC rà soát",
+        "checkdmms": "Chờ DMMS rà soát",
+        "approvaldmms": "Chờ DMMS phê duyệt",
+        "approvalkttc": "Chờ KTTC phê duyệt",
+        "checkfinal": "Chờ KTTC rà soát",
+        "approvalfinal": "Chờ cấp có thẩm quyền phê duyệt"
+    };
+    if (pendingStatuses.indexOf(String(status || "").trim().toLowerCase()) >= 0 && phaseLabels[phase]) {
+        return {
+            label: phaseLabels[phase],
+            backgroundColor: "#FFF1CC",
+            textColor: "#D78B00"
+        };
+    }
 
     if (statusMap[status]) {
         return statusMap[status];
@@ -288,7 +355,11 @@ function renderStatus(status) {
   let backgroundColor = '#E5E7EB'
   let color = '#4B5563'          
  
-  if (normalized.includes('IN_QUEUE') || normalized.includes('ERROR') || normalized.includes('NEW') || normalized.includes('CREATED')) {
+  if (normalized.includes('PENDING_APPROVAL')) {
+     label = 'Chờ phê duyệt khai báo'
+     backgroundColor = '#FFF0C2'
+     color = '#D97706'
+  } else if (normalized.includes('IN_QUEUE') || normalized.includes('ERROR') || normalized.includes('NEW') || normalized.includes('CREATED')) {
      label = 'Đang hạch toán'
      backgroundColor = '#FFF0C2'
      color = '#D97706'

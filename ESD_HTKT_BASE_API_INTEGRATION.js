@@ -64,7 +64,6 @@ function sendRequest(method, url, headers, body) {
             responseHeaders
         );
         var statusCode = extractHttpStatus(responseHeaders, null);
-
         return {
             success: statusCode === null || (statusCode >= 200 && statusCode < 300),
             statusCode: statusCode,
@@ -107,7 +106,6 @@ function getAccessToken(system, baseUrl, username, apiKey) {
 
     var jsonStr = rteJSONStringify(payload);
     var response = sendRequest("POST", url, headers, jsonStr);
-
     if (response && response.body) {
         var responseObj = rteJSONParse(response.body);
         if (responseObj && responseObj.success === true && responseObj.data) {
@@ -135,7 +133,6 @@ function getCoreAccessToken(url, clientId, clientSecret) {
     ];
     var httpBody = "client_id=" + encodeURIComponent(clientId) + "&client_secret=" + encodeURIComponent(clientSecret) + "&grant_type=client_credentials";
     var response = sendRequest("POST", url, headers, httpBody);
-
     if (response && response.body) {
         var responseObj = rteJSONParse(response.body);
         if (responseObj) {
@@ -280,6 +277,7 @@ function updateConfig(system, config) {
     }
 }
 
+
 function getActiveToken(system) {
     const timestampSeconds = getUnixTimestamp();
     var config = getConfig();
@@ -308,6 +306,7 @@ function getActiveToken(system) {
         if (config) {
             return getAccessToken(system, config[system + 'BaseUrl'], config[system + 'Username'], config[system + 'ApiKey']);
         }
+
     }
 }
 

@@ -20,6 +20,12 @@ function run() {
     var result = null;
     try {
         switch (name) {
+            case "getAccountingDashboardSummary":
+                result = lib.ESD_HTKT_DASHBOARD.getAccountingDashboardSummary(details);
+                break;
+            case "getPaymentApprovalData":
+                result = lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.getPaymentApprovalData(details);
+                break;
             case "getPaymentApprovalOptions":
                 result = lib.ESD_HTKT_PAYMENT_LOAD_APRROVAL_COMBOBOX.getPaymentApprovalOptions(details);
                 break;
@@ -117,6 +123,14 @@ function run() {
                 result = lib.ESD_HTKT_PAYMENT_COST_DIVISION.getGlAccounts(input);
                 break;
 
+                // --- TAB HÀNG HOÁ DỊCH VỤ (giải ngân theo HHDV) ---
+            case "getHHDVDisbursement":
+                result = lib.ESD_HTKT_HHDV_DISBURSEMENT.getHHDVDisbursement(details);
+                break;
+            case "saveHHDVDisbursement":
+                result = lib.ESD_HTKT_HHDV_DISBURSEMENT.saveHHDVDisbursement(details);
+                break;
+
 
                 //Danh sách Đề nghị theo nhà cung cấp
             case 'getListPaymentVendor':
@@ -201,6 +215,7 @@ function run() {
             case "deletePaymentSourceDocument":
                 result = lib.ESD_HTKT_PAYMENT_FILE_ATTACHMENT.deletePaymentSourceDocument(input);
                 break;
+                
             case 'listFileAttachment':
                 lib.ESD_HTKT_PAYMENT_CREATE_REQUEST.listFileAttachment(input);
                 break;
@@ -226,18 +241,18 @@ function run() {
             case "listExpenseSourceDocuments": // Dự chi: S4 lấy tài liệu theo SHTL, HHDV giữ reader S2.
                 result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.listExpenseSourceDocuments(input);
                 break;
-            case "listExpenseContracts": // Dự chi: quyền/phase trên phiếu cha -> HHDV ủy quyền S2; XDCB qua SHTL -> HĐ S4.
+            case "listExpenseContracts": // Dự chi: quyền/phase trên phiếu cha -> HHDV lấy từ S2; XDCB lấy từ S4 qua SHTL -> HĐ
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseContracts(input);
                 break;
-            case "listExpenseXdcbContracts": // Đọc Dự chi XDCB qua hai loại SHTL; lọc HĐ/phạm vi rồi phân trang trên SM.
+            case "listExpenseXdcbContracts":  // Đọc Dự chi HD - XDCB qua hai loại SHTL; lọc HĐ/phạm vi rồi phân trang trên SM
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.listExpenseXdcbContracts(input);
                 break;
-            case "getExpenseXdcbContract": // Đọc lại nguồn SHTL và chi tiết theo HĐ.id; TH2 phải phân giải hồ sơ.ctr.id.
+            case "getExpenseXdcbContract": // Đọc lại nguồn SHTL và chi tiết theo HĐ.id; TH2 phải phân giải hồ sơ.ctr.id
                 result = lib.ESD_HTKT_EXPENSE_CONTRACT.getExpenseXdcbContract(input);
                 break;
-            case "getExpenceList":
-                result = lib.ESD_HTKT_EXPENSE_CREATE_REQUEST.getList(input);
-                break;
+//            case "getExpenceList":
+//                result = lib.ESD_HTKT_EXPENSE_CREATE_REQUEST.getList(input);
+//                break;
             case "createExpenseRequest":
                 result = lib.ESD_HTKT_EXPENSE_CREATE_REQUEST.createExpenseRequest(input);
                 break;
@@ -287,7 +302,10 @@ function run() {
             case "deleteExpenseFileAttachment":
                 result = lib.ESD_HTKT_EXPENSE_FILE_ATTACHMENT.deleteFileAttachment(input);
                 break;
-
+            case 'addPaymentVendorsByPO':
+                var data = lib.ESD_HTKT_PAYMENT_VENDOR.addPaymentVendorsByPO(input);
+                result = { success: data.success, data: data };
+                break;
             default:
                 result = {
                     success: false,

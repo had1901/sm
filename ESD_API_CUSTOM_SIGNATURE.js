@@ -51,32 +51,6 @@ function run() {
                 result = lib.ESD_DIGITAL_SIGNATURE.getTokenKeycloak();
                 break;
             case "getUserInfo":
-//                var reqId = "111";
-//                var reqTime = "2222";
-//                var payload = {
-//                    accessToken: parsed.accessToken,
-//                    ClientId: 'A452_DSM',
-//                    ClientPassword: 'Aa123456',
-//                    RequestId: reqId,
-//                    RequestTime: reqTime,
-//
-//                    body: {
-//                        requestId: reqId,
-//                        username: null,
-//                        password: null,
-//                        clientDt: reqTime,
-//                        channel: 'A100_IBC',
-//                        reftype: 'x',
-//                        refid: null,
-//                        sessionkey: null,
-//                        spname: null,
-//                        data: {
-//                            app_id: 'A452_DSM',
-//                            userad: 'os.hpt-ducdm',
-//                        },
-//                    },
-//
-//                }
                 result = lib.ESD_DIGITAL_SIGNATURE.getUserInfo(parsed);
                 result = safeParse(result);
                 break;
@@ -93,6 +67,75 @@ function run() {
             case "getFileECM":
                 result = lib.ESD_ACTIONS_INTEGRATIONS.get_file_ecm(parsed);
                 break;
+            case "getStatusSign":
+                result = lib.ESD_DIGITAL_SIGNATURE.getStatusSign(parsed);
+                result = safeParse(result);
+                break;
+            case "getTokenHSM":
+                result = lib.ESD_DIGITAL_SIGNATURE.getTokenHSM(parsed);
+                result = safeParse(result);
+                break;
+            case "ky-so":
+                result = lib.ESD_ACTIONS_INTEGRATIONS.ky_so(parsed);
+                result = safeParse(result);
+                break;
+            case "ky-so-HD":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.ky_so_HD(parsed);
+                result = safeParse(result);
+                break;    
+             case "deleteFileECM":
+                result = lib.ESD_ACTIONS_INTEGRATIONS.deleteFileECM(parsed);
+                break;
+            case "addFileECM":
+                result = lib.ESD_ACTIONS_INTEGRATIONS.addFileECM(parsed);
+                break;
+            case "updateFileECM":
+                result = lib.ESD_ACTIONS_INTEGRATIONS.updateFileECM(parsed);
+                break;
+            case "getStatusPhieu":
+                result = lib.ESD_ACTIONS_INTEGRATIONS.getStatusSign(parsed);
+                break;
+            case "getStatusPhieuHD":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.getStatusSignHD(parsed);
+                break;    
+            case "addFileECM_HD":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.addFileECM(parsed);
+                break;
+            case "addMultiFileECM_HD":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.addMultiECM(parsed);
+                break;
+            case "createScheduleSignatureHDshtl":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.createScheduleSignatureHDshtl(parsed);
+                break;
+            case "getStatusKySoHD":
+                result = lib.ESD_ACTIONS_INTEGRATIONS.getStatusKySoHD(parsed);
+                break;
+            case "getStatusKySoHDYCTK":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.getStatusKySoHDYCTK(parsed);
+                break;    
+            case "addFileECMForSignature":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.addFileECMForSignature(parsed);
+                break;      
+            case "getFileECM_HD":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.get_file_ecm_hd(parsed);
+                break;    
+            case "createScheduleSignatureHDYCTK":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.createScheduleSignatureHDYCTK(parsed);
+                break;
+            case "deleteFileECMForHD":
+                result = lib.ESD_ACTIONS_INTEGRATIONS_HD.deleteFileECMForHD(parsed);
+                break;    
+            case "requestNumberStamp":
+                result = lib.ESD_ACTION_NUMBER_LEVEL.requestNumberStamp(parsed);
+                break;
+            case "getNumberStamp":
+                result = lib.ESD_ACTION_NUMBER_LEVEL.getNumberStamp(parsed);
+                break;  
+            case "gettextstatus":
+                result = lib.ESD_ACTION_NUMBER_LEVEL.get_text_status(parsed);
+                break;
+                
+            // HTKT start
             case "getFileECM_HTKT":
                 result = lib.ESD_HTKT_PREPAYMENT_DOCUMENT.get_file_ecm_HTKT(parsed);
                 result = safeParse(result);
@@ -101,20 +144,13 @@ function run() {
                 result = lib.ESD_HTKT_EXPENSE_DOCUMENT.get_file_ecm_HTKT_Expense(parsed);
                 result = safeParse(result);
                 break;
-            case "getStatusSign":
-                result = lib.ESD_DIGITAL_SIGNATURE.getStatusSign(parsed);
-                result = safeParse(result);
-                break;
+                
             case "getStatusKySo_HTKT":
                 result = lib.ESD_ACTIONS_INTEGRATIONS_HTKT.getStatusKySo_HTKT(parsed);
                 result = safeParse(result);
                 break;
             case "getStatusKySo_Expense_HTKT":
                 result = lib.ESD_ACTIONS_INTEGRATIONS_HTKT.getStatusKySo_Expense_HTKT(parsed);
-                result = safeParse(result);
-                break;
-            case "getTokenHSM":
-                result = lib.ESD_DIGITAL_SIGNATURE.getTokenHSM(parsed);
                 result = safeParse(result);
                 break;
             case "ky-so_HTKT":
@@ -124,12 +160,6 @@ function run() {
             case "ky-so_HTKT_Expense":
                 result = lib.ESD_ACTIONS_INTEGRATIONS_HTKT.ky_so_Expense_HTKT(parsed);
                 result = safeParse(result);
-                break;
-            case "deleteFileECM":
-                result = lib.ESD_ACTIONS_INTEGRATIONS.deleteFileECM(parsed);
-                break;
-            case "addFileECM":
-                result = lib.ESD_ACTIONS_INTEGRATIONS.addFileECM(parsed);
                 break;
             case "deleteFileECM_HTKT":
                 result = lib.ESD_HTKT_PREPAYMENT_DOCUMENT.deleteFileECM_HTKT(parsed);
@@ -151,9 +181,7 @@ function run() {
                 result = lib.ESD_ACTIONS_INTEGRATIONS_HTKT.getStatusPhieu_Expense_HTKT(parsed);
                 result = safeParse(result);
                 break;
-            case "test-minh": 
-                result = lib.ESD_DIGITAL_SIGNATURE.testApi(parsed);
-                break;
+            // HTKT end  
             default:
                 result = { success: false, message: "Unknown action: " + name };
         }
