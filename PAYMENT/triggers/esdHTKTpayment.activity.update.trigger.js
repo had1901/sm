@@ -30,15 +30,16 @@ function mapPaymentToPayload(rec, extraData) {
         payload["approved.invoice.amount"] = extraData.approvedInvoiceAmount;
         payload["total.refund.amount"] = extraData.refundAmount;
         
-        // Đã sửa lại thành gán Object trực tiếp (BỎ JSON.stringify) để giống bên Tạm ứng
         if (extraData.supplierDetails !== undefined) {
-            payload["supplier"] = {
+            var supplierObject = {
                 "suppliers": extraData.supplierDetails
             };
+            payload["supplier"] = JSON.stringify(supplierObject); 
         }
     } else {
-//        print("[PAYMENT_LOG] mapPaymentToPayload: No extraData provided.");
+        print("[PAYMENT_LOG] mapPaymentToPayload: No extraData provided.");
     }
+     print("[PAYMENT_LOG] mapPrepaymentToPayload: Final Payload = " + JSON.stringify(payload));
     return payload;
 }
 
@@ -47,6 +48,7 @@ function mapPaymentToPayload(rec, extraData) {
  */
 function handlePhaseChangeUpdate(rec, oldRec) {
     if (!rec) return;
+    
     // TT XDCB chưa bật đồng bộ tiến độ S4. Giữ workflow/hạch toán phía dưới,
     // chỉ ngăn helper tiến độ S2 nhận ID HĐ/NCC của S4 ở mọi lần đổi phase.
     if (String(rec["original.contract.category"] || "").toUpperCase() === "XDCB") return;
@@ -127,4 +129,21 @@ if (isPayment && ((record["status"] == "approved" && (!oldrecord || oldrecord["s
     }
 } else {
 //    print("[PAYMENT_LOG] Skipping Vendor Debt Report Sync.");
+}
+
+// 6. Đồng bộ số liệu Dashboard Quản trị Tài chính
+try {
+    print("[dashboard_log] Log dashboard");
+    lib.ESD_HTKT_DASHBOARD_SET_DATA.setDataDashboard(record, oldrecord, "esdHTKTpayment");
+} catch (eDashboard) {
+    print("[ERROR] Dashboard sync failed for Prepayment ID: " + record["id"] + " | Exception: " + eDashboard);
+}
+
+// 5. Đồng bộ description từ Dự chi sang các dòng bút toán (nếu dòng bút toán đang rỗng description)
+if (isExpense) {
+    try {
+        lib.ESD_HTKT_EXPENSE_ENTRY.syncPaymentDescriptionToEntries(record, oldrecord);
+    } catch (eDesc) {
+        // print("[ERROR] syncPaymentDescriptionToEntries failed: " + eDesc);
+    }
 }

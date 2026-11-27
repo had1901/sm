@@ -1,6 +1,4 @@
-// Trigger: esdHTKTpaymentVendor.after.update
-// Table: esdHTKTpaymentVendor | Type: 4 - After Update
-var paymentId = String(record["payment.id"] || "").trim();
+var paymentId = String(record["payment.id"] || "");
 
 if (paymentId.substring(0, 2).toUpperCase() === "DC") {
     lib.ESD_HTKT_EXPENSE_VENDOR.syncExpenseTotalAmount(paymentId);
