@@ -1,6 +1,4 @@
 
-// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
-vars.$supplierCode = vars.$supplierId || "";
 try {
     if (system.functions.filename(vars.$L_file) == "ModuleStatus") {
         lib.custom.selectWfPhaseByWorkflow(vars.$L_file.workflow);
@@ -10,6 +8,9 @@ try {
     var table = system.functions.filename(vars.$L_file);
     lib.ESD_Utils.backQueue(table);
 } catch (e) { }
+
+// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
+vars.$supplierCode = vars.$supplierId || "";
 
 vars.$ReadOnly = !lib.ESD_HTKT_PAYMENT_WF.canEditInCurrenPhase(vars.$L_file);
 vars.$L_mode = "view";
@@ -32,8 +33,10 @@ var isPostAuditPaymentVendorView = isPayment &&
     isExpense && String(vars["$G.HTKT_DUCHI_MENU_CONTEXT"] || "").trim().toLowerCase() === "post_audit";
 vars.$isPayment = isPayment;
 vars.$isExpense = isExpense;
+
 // Xóa hàng hồ sơ cũ và nạp đúng HS–HĐ đang lưu; TH1/HHDV sẽ ẩn hàng này.
 vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file) === true;
+print('vars.$showContractDossier = ', vars.$showContractDossier);
 var isXDCB = vars.$L_file["original.contract.category"] === "XDCB";
 
 if (isExpense) {
@@ -159,14 +162,14 @@ if (isPayment) {
   vars.$bankname = bankList.map((b) => b.name);
 }
 
-print("[HTKT_PAYMENT_VENDOR][ACTION_FLAGS] paymentId=" + paymentId +
-    " menuContext=" + String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "") +
-    " postAudit=" + String(isPostAuditPaymentVendorView) +
-    " readOnly=" + String(vars.$ReadOnly) +
-    " canEditObj=" + String(vars.$canEditObj) +
-    " canEditSite=" + String(vars.$canEditSite) +
-    " canEditAmount=" + String(vars.$canEditAmount) +
-    " showSyncVendorOgl=" + String(vars.$showSyncVendorOgl));
+//print("[HTKT_PAYMENT_VENDOR][ACTION_FLAGS] paymentId=" + paymentId +
+//    " menuContext=" + String(vars["$G.HTKT_PAYMENT_MENU_CONTEXT"] || "") +
+//    " postAudit=" + String(isPostAuditPaymentVendorView) +
+//    " readOnly=" + String(vars.$ReadOnly) +
+//    " canEditObj=" + String(vars.$canEditObj) +
+//    " canEditSite=" + String(vars.$canEditSite) +
+//    " canEditAmount=" + String(vars.$canEditAmount) +
+//    " showSyncVendorOgl=" + String(vars.$showSyncVendorOgl));
 
 
 

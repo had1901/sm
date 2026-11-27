@@ -1,5 +1,3 @@
-// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
-vars.$supplierCode = vars.$supplierId || "";
 try {
   if (system.functions.filename(vars.$L_file) == "ModuleStatus") {
     lib.custom.selectWfPhaseByWorkflow(vars.$L_file.workflow);
@@ -9,6 +7,9 @@ try {
   var table = system.functions.filename(vars.$L_file);
   lib.ESD_Utils.backQueue(table);
 } catch (e) { }
+
+// Biến Mã NCC trên FD; HHDV giữ mã cũ, loader XDCB sẽ điền mã đã lưu tại S6.
+vars.$supplierCode = vars.$supplierId || "";
 
 vars.$canEditSite = false;
 vars.$approvedInvoiceAmount = 0;
@@ -34,6 +35,7 @@ vars.$L_file['contract.id'] = contractId;
 
 // Dùng khóa hồ sơ đúng nguồn TT/DC, chỉ điền các biến đọc cho hàng thông tin TH2.
 vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(vars.$L_file) === true;
+print('vars.$showContractDossier - new = ', vars.$showContractDossier);
 
 // ID của món hiện tại (nếu đang ở màn hình xem/sửa món đã tồn tại)
 var currentItemId = vars.$L_file ? (vars.$L_file['id'] || vars.$L_file.id || vars.$G_payment_vendor_id) : null;
@@ -44,15 +46,28 @@ var isDC = (paymentId && String(paymentId).indexOf("DC.") === 0) ||
 
 arrVendors = [];
 
-
 if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
   // TT XDCB: loader đọc nguồn SHTL và lọc NCC đã có theo MST; không JOIN danh mục S2.
   arrVendors = lib.ESD_HTKT_PAYMENT_VENDOR.loadPaymentXdcbVendorInfoSafe(vars.$L_file);
 } else if (paymentId || vars.$L_file['payment.id']) { // Chỉ thực hiện truy vấn nếu có paymentId
 
   // =========================================================================
-  // LOGIC DÀNH RIÊNG CHO DỰ CHI (DC):
-  // Nếu là TT hoặc các loại khác thì bỏ qua khối này, excludedSupplierIds luôn rỗng
+  // BƯỚC 1: LẤY THÔNG TIN TỪ BẢNG THANH TOÁN (Nếu chưa có contractId hoặc des)
+  // =========================================================================
+  var paymentDescription = "";
+  var paymentFile = new SCFile("esdHTKTpayment");
+  var rcPayment = paymentFile.doSelect('id="' + String(paymentId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"');
+  if (rcPayment == RC_SUCCESS) {
+    if (!contractId) {
+      contractId = paymentFile["contract.id"];
+      vars.$L_file['contract.id'] = contractId;
+    }
+    paymentDescription = paymentFile["description"] || "";
+  }
+  try { if (paymentFile) paymentFile.doClose(); } catch (eP) { }
+
+  // =========================================================================
+  // BƯỚC 2: LOGIC LOẠI TRỪ DÀNH CHO DỰ CHI (DC)
   // =========================================================================
   var excludedSupplierIds = {};
 
@@ -62,7 +77,6 @@ if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
     if (contractId) {
       paymentVendorQuery += ' and contract.id="' + String(contractId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
     }
-    // Nếu đang xem/sửa món đã có: loại trừ chính món đó ra để vẫn hiển thị NCC của món này
     if (currentItemId) {
       paymentVendorQuery += ' and id~="' + String(currentItemId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
     }
@@ -83,67 +97,66 @@ if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
       }
       rc = paymentVendorFile.getNext();
     }
-    try {
-      if (paymentVendorFile) paymentVendorFile.doClose();
-    } catch (ePV) { }
+    try { if (paymentVendorFile) paymentVendorFile.doClose(); } catch (ePV) { }
   }
 
   // =========================================================================
-  // BƯỚC B: Query lấy NCC từ Hợp đồng
+  // BƯỚC 3: QUERY LẤY NCC TRỰC TIẾP TỪ HỢP ĐỒNG (esdHDcontractSupplier)
   // =========================================================================
   arrVendors = [];
-  var seenSupplierIds = {}; // Biến dedup nguyên bản của logic cũ (chạy cho TT, TU, DC...)
-  var itemFile = new SCFile("esdHTKTpayment");
+  var seenSupplierIds = {};
 
-  var contractJoinCondition = contractId
-    ? 'hdVendor.contract.id = "' + String(contractId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'
-    : 'htktPayment.contract.id = hdVendor.contract.id';
+  if (contractId) {
+    var hdVendorFile = new SCFile("esdHDcontractSupplier");
+    var hdVendorQuery = 'contract.id="' + String(contractId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    var rcHdVendor = hdVendorFile.doSelect(hdVendorQuery);
 
-  var itemQuery =
-    `select hdVendor.contract.id as contract.id, hdVendor.supplier.id as supplier.id, hdVendor.supplier.name as supplier.name,` +
-    ` hdVendor.payment.method as payment.method, hdVendor.unpaid.amount as unpaid.amount,` +
-    ` dmVendor.tax.code as tax.code, htktPayment.description as description, dmVendor.address as address, dmVendor.type as type,` +
-    ` htktPayment.unit.lv1 as unit.lv1` +
-    ` from esdHTKTpayment htktPayment` +
-    ` JOIN esdHDcontractSupplier hdVendor ON (` + contractJoinCondition + `)` +
-    ` JOIN esdDMSupplier dmVendor ON (hdVendor.supplier.id = dmVendor.id)` +
-    ` where htktPayment.id = "` + String(paymentId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + `"`;
+    while (rcHdVendor == RC_SUCCESS) {
+      var currentSupplierId = hdVendorFile["supplier.id"];
 
-  var rcItem = itemFile.doSelect(itemQuery);
+      // CHỈ DỰ CHI: Bỏ qua nếu NCC này đã có ở món khác
+      if (isDC && excludedSupplierIds[currentSupplierId]) {
+        rcHdVendor = hdVendorFile.getNext();
+        continue;
+      }
 
-  while (rcItem == RC_SUCCESS) {
-    var currentSupplierId = itemFile["supplier.id"];
-    var currentContractId = itemFile['contract.id'];
+      if (currentSupplierId && !seenSupplierIds[currentSupplierId]) {
+        // Lấy thông tin bổ sung từ danh mục esdDMSupplier (MST, Address, Type)
+        var taxCode = "";
+        var address = "";
+        var dmType = "";
 
-    // CHỈ DỰ CHI: Bỏ qua nếu NCC này đã có ở món khác của hợp đồng này trong cùng ĐNDC
-    if (isDC && excludedSupplierIds[currentSupplierId]) {
-      rcItem = itemFile.getNext();
-      continue;
+        var dmSupplierFile = new SCFile("esdDMSupplier");
+        var rcDm = dmSupplierFile.doSelect('id="' + String(currentSupplierId).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"');
+        if (rcDm == RC_SUCCESS) {
+          taxCode = dmSupplierFile["tax.code"] || "";
+          address = dmSupplierFile["address"] || "";
+          dmType = dmSupplierFile["type"] || "";
+        }
+        try { if (dmSupplierFile) dmSupplierFile.doClose(); } catch (eDm) { }
+
+        arrVendors.push({
+          "supplier.id": currentSupplierId,
+          "supplier.name": hdVendorFile["supplier.name"],
+          "payment.method": hdVendorFile["payment.method"],
+          "remaining.amount": hdVendorFile["unpaid.amount"],
+          "tax.code": taxCode,
+          "bank": hdVendorFile["bank"],
+          "expire.date": hdVendorFile["expire.date"],
+          "address": address,
+          "type": dmType,
+          "transaction.des": paymentDescription
+        });
+
+        seenSupplierIds[currentSupplierId] = true;
+      }
+
+      rcHdVendor = hdVendorFile.getNext();
     }
-
-    // LOGIC CŨ CHO TT & TU (và các NCC hợp lệ của DC): Chống nhân bản dòng do SQL JOIN
-    if (!seenSupplierIds[currentSupplierId]) {
-      arrVendors.push({
-        "supplier.id": currentSupplierId,
-        "supplier.name": itemFile["supplier.name"],
-        "payment.method": itemFile["payment.method"],
-        "remaining.amount": itemFile['unpaid.amount'],
-        "tax.code": itemFile["tax.code"],
-        "bank": itemFile["bank"],
-        "expire.date": itemFile["expire.date"],
-        "address": itemFile["address"],
-        "type": itemFile["type"],
-        "transaction.des": itemFile["description"]
-      });
-      seenSupplierIds[currentSupplierId] = true;
-    }
-    rcItem = itemFile.getNext();
+    try { if (hdVendorFile) hdVendorFile.doClose(); } catch (eHd) { }
   }
-  try {
-    if (itemFile) itemFile.doClose();
-  } catch (eItem) { }
 
-  // Gán mô tả giao dịch từ dòng đầu tiên (chạy 1 lần ngoài vòng lặp)
+  // Gán mô tả giao dịch từ dòng đầu tiên
   if (arrVendors.length > 0 && arrVendors[0]["transaction.des"]) {
     if (!vars.$L_file["transaction.des"]) {
       vars.$L_file["transaction.des"] = arrVendors[0]["transaction.des"];
@@ -151,7 +164,7 @@ if (lib.ESD_HTKT_PAYMENT_VENDOR.isPaymentXdcb(vars.$L_file)) {
     vars.$G_description = arrVendors[0]["transaction.des"];
   }
 
-  // 4. Set vào biến cho droplist và các biến bảo lãnh (lấy dòng đầu tiên nếu có)
+  // Set vào biến cho droplist
   vars.$supplierdisplays = arrVendors.map((x) => x["supplier.name"]);
   vars.$suppliervalues = arrVendors.map((x) => x["supplier.id"]);
 } else {

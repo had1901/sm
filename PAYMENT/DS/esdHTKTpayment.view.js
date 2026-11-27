@@ -1,3 +1,9 @@
+//var result = lib.ESD_SHTL_TEST_DATA.addSecondSupplier({
+//    paymentId: "DC.100.26.0000511",
+//    contractId: "S6DC_TEST_aff72456_M8_05_C"
+//});
+//
+//print("[DC-MOCK-NCC2] " + JSON.stringify(result));
 try {
     if (system.functions.filename(vars.$L_file) == "ModuleStatus") {
         lib.custom.selectWfPhaseByWorkflow(vars.$L_file.workflow);
@@ -13,9 +19,9 @@ try {
 } catch (e) { }
 
 var record = vars.$L_file;
+
 // Hàng hồ sơ chỉ có ở TT XDCB TH2; tiền HĐ gốc bên dưới giữ nguyên.
 vars.$showContractDossier = lib.ESD_HTKT_EXPENSE_CONTRACT_SUPPLIER.loadContractDossierScreen(record) === true;
-
 
 vars.$showTab = false;
 vars.$descriptionReadOnly = !lib.ESD_HTKT_PAYMENT_WF.canEditInCurrenPhase(vars.$L_file);
